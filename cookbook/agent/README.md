@@ -18,9 +18,9 @@ graph TD
     A -->|answer| C[AnswerQuestion]
     B -->|decide| A
     
-    style A fill:#cba6f7,stroke:#1e1e2e,stroke-width:2px
-    style B fill:#89b4fa,stroke:#1e1e2e,stroke-width:2px
-    style C fill:#a6e3a1,stroke:#1e1e2e,stroke-width:2px
+    style A fill:#cba6f7,stroke:#1e1e2e,stroke-width:2px,color:#000
+    style B fill:#89b4fa,stroke:#1e1e2e,stroke-width:2px,color:#000
+    style C fill:#a6e3a1,stroke:#1e1e2e,stroke-width:2px,color:#000
 ```
 
 ## Prerequisites

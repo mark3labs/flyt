@@ -24,9 +24,9 @@ graph LR
     PREP[PREP<br/>What do I need?] --> EXEC[EXEC<br/>Do the work!]
     EXEC --> POST[POST<br/>What's next?]
     
-    style PREP fill:#89dceb,stroke:#1e1e2e,stroke-width:2px
-    style EXEC fill:#fab387,stroke:#1e1e2e,stroke-width:2px
-    style POST fill:#a6e3a1,stroke:#1e1e2e,stroke-width:2px
+    style PREP fill:#89dceb,stroke:#1e1e2e,stroke-width:2px,color:#000
+    style EXEC fill:#fab387,stroke:#1e1e2e,stroke-width:2px,color:#000
+    style POST fill:#a6e3a1,stroke:#1e1e2e,stroke-width:2px,color:#000
 ```
 
 - **PREP**: "What do I need?" - Gathers inputs from the shared storage
@@ -51,10 +51,10 @@ graph LR
     Process --> Save
     Process --> ErrorHandler[Error Handler]
     
-    style Start fill:#cba6f7,stroke:#1e1e2e,stroke-width:2px
-    style Process fill:#89b4fa,stroke:#1e1e2e,stroke-width:2px
-    style Save fill:#a6e3a1,stroke:#1e1e2e,stroke-width:2px
-    style ErrorHandler fill:#f38ba8,stroke:#1e1e2e,stroke-width:2px
+    style Start fill:#cba6f7,stroke:#1e1e2e,stroke-width:2px,color:#000
+    style Process fill:#89b4fa,stroke:#1e1e2e,stroke-width:2px,color:#000
+    style Save fill:#a6e3a1,stroke:#1e1e2e,stroke-width:2px,color:#000
+    style ErrorHandler fill:#f38ba8,stroke:#1e1e2e,stroke-width:2px,color:#000
 ```
 
 ### 4. **Action** - The Decision Maker
