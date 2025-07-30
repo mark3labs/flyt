@@ -266,8 +266,8 @@ func TestBatchNodeValidation(t *testing.T) {
 		t.Error("expected batch size validation error")
 	}
 
-	expectedErr := "batch size 10 exceeds maximum 5"
-	if err.Error() != fmt.Sprintf("exec failed after 1 retries: %s", expectedErr) {
+	expectedErr := "batchNode: exec failed: batch size 10 exceeds maximum 5"
+	if err.Error() != fmt.Sprintf("run: exec failed after 1 retries: %s", expectedErr) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

@@ -78,15 +78,15 @@ func (s *SharedStore) GetAll() map[string]any {
 
 // Merge merges another map into the store
 func (s *SharedStore) Merge(data map[string]any) {
+	if data == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for k, v := range data {
 		s.data[k] = v
 	}
 }
-
-// Shared is a map for sharing data between nodes (deprecated: use SharedStore)
-type Shared map[string]any
 
 // Params holds node-specific parameters
 type Params map[string]any
@@ -98,11 +98,15 @@ const (
 	// DefaultAction is the default action if none is specified
 	DefaultAction Action = "default"
 
-	// Common shared store keys
-	KeyItems      = "items"
-	KeyData       = "data"
-	KeyBatch      = "batch"
-	KeyResults    = "results"
+	// KeyItems is the shared store key for items to be processed
+	KeyItems = "items"
+	// KeyData is the shared store key for generic data
+	KeyData = "data"
+	// KeyBatch is the shared store key for batch data
+	KeyBatch = "batch"
+	// KeyResults is the shared store key for processing results
+	KeyResults = "results"
+	// KeyBatchCount is the shared store key for batch count
 	KeyBatchCount = "batch_count"
 )
 
@@ -113,15 +117,18 @@ type BatchError struct {
 
 func (e *BatchError) Error() string {
 	if len(e.Errors) == 0 {
-		return "batch error: no errors"
+		return "batch: no errors recorded"
 	}
 	if len(e.Errors) == 1 {
-		return fmt.Sprintf("batch error: %v", e.Errors[0])
+		return fmt.Sprintf("batch: %v", e.Errors[0])
 	}
-	return fmt.Sprintf("batch errors: %d errors occurred, first: %v", len(e.Errors), e.Errors[0])
+	return fmt.Sprintf("batch: %d errors occurred, first: %v", len(e.Errors), e.Errors[0])
 }
 
-// Node is the interface that all nodes must implement
+// Node is the interface that all nodes must implement.
+//
+// Important: Nodes should not be shared across concurrent flow executions.
+// If you need to run the same logic concurrently, create separate node instances.
 type Node interface {
 	// Prep reads and preprocesses data from shared store
 	Prep(ctx context.Context, shared *SharedStore) (any, error)
@@ -248,18 +255,18 @@ type FallbackNode interface {
 func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
 	// Check context before each phase
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("context cancelled: %w", err)
+		return "", fmt.Errorf("run: context cancelled: %w", err)
 	}
 
 	// Prep phase
 	prepResult, err := node.Prep(ctx, shared)
 	if err != nil {
-		return "", fmt.Errorf("prep failed: %w", err)
+		return "", fmt.Errorf("run: prep failed: %w", err)
 	}
 
 	// Check context again
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("context cancelled after prep: %w", err)
+		return "", fmt.Errorf("run: context cancelled after prep: %w", err)
 	}
 
 	// Get retry settings if available
@@ -278,7 +285,7 @@ func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Check context before retry
 		if err := ctx.Err(); err != nil {
-			return "", fmt.Errorf("context cancelled during retry: %w", err)
+			return "", fmt.Errorf("run: context cancelled during retry: %w", err)
 		}
 
 		if attempt > 0 && wait > 0 {
@@ -286,7 +293,7 @@ func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
 			case <-time.After(wait):
 				// Continue with retry
 			case <-ctx.Done():
-				return "", fmt.Errorf("context cancelled during wait: %w", ctx.Err())
+				return "", fmt.Errorf("run: context cancelled during wait: %w", ctx.Err())
 			}
 		}
 
@@ -302,14 +309,14 @@ func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
 			execResult, execErr = fallback.ExecFallback(prepResult, execErr)
 		}
 		if execErr != nil {
-			return "", fmt.Errorf("exec failed after %d retries: %w", maxRetries, execErr)
+			return "", fmt.Errorf("run: exec failed after %d retries: %w", maxRetries, execErr)
 		}
 	}
 
 	// Post phase
 	action, err := node.Post(ctx, shared, prepResult, execResult)
 	if err != nil {
-		return "", fmt.Errorf("post failed: %w", err)
+		return "", fmt.Errorf("run: post failed: %w", err)
 	}
 
 	if action == "" {
@@ -345,6 +352,9 @@ func (f *Flow) Connect(from Node, action Action, to Node) {
 
 // Run executes the flow starting from the start node
 func (f *Flow) Run(ctx context.Context, shared *SharedStore) error {
+	if f.start == nil {
+		return fmt.Errorf("flow: run failed: no start node configured")
+	}
 	current := f.start
 
 	// Propagate flow params to start node
@@ -355,7 +365,7 @@ func (f *Flow) Run(ctx context.Context, shared *SharedStore) error {
 	for current != nil {
 		// Check context
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("flow cancelled: %w", err)
+			return fmt.Errorf("flow: run cancelled: %w", err)
 		}
 
 		// Run the current node
@@ -439,13 +449,19 @@ type WorkerPool struct {
 	workers int
 	tasks   chan func()
 	wg      sync.WaitGroup
+	done    chan struct{}
 }
 
 // NewWorkerPool creates a new worker pool
 func NewWorkerPool(workers int) *WorkerPool {
+	if workers <= 0 {
+		workers = 1
+	}
+
 	p := &WorkerPool{
 		workers: workers,
 		tasks:   make(chan func(), workers*2),
+		done:    make(chan struct{}),
 	}
 
 	// Start workers
@@ -457,8 +473,16 @@ func NewWorkerPool(workers int) *WorkerPool {
 }
 
 func (p *WorkerPool) worker() {
-	for task := range p.tasks {
-		task()
+	for {
+		select {
+		case task, ok := <-p.tasks:
+			if !ok {
+				return
+			}
+			task()
+		case <-p.done:
+			return
+		}
 	}
 }
 
@@ -476,8 +500,9 @@ func (p *WorkerPool) Wait() {
 	p.wg.Wait()
 }
 
-// Close closes the worker pool
+// Close closes the worker pool and waits for all workers to finish
 func (p *WorkerPool) Close() {
+	close(p.done)
 	close(p.tasks)
 }
 
@@ -517,7 +542,7 @@ func (n *batchNode) Prep(ctx context.Context, shared *SharedStore) (any, error) 
 			return val, nil
 		}
 	}
-	return nil, fmt.Errorf("no batch data found in shared store (looked for: %s, %s, %s)",
+	return nil, fmt.Errorf("batchNode: prep failed: no batch data found in shared store (looked for: %s, %s, %s)",
 		KeyItems, KeyData, KeyBatch)
 }
 
@@ -527,7 +552,7 @@ func (n *batchNode) Exec(ctx context.Context, prepResult any) (any, error) {
 
 	// Validate batch size
 	if n.config != nil && n.config.MaxBatchSize > 0 && len(items) > n.config.MaxBatchSize {
-		return nil, fmt.Errorf("batch size %d exceeds maximum %d", len(items), n.config.MaxBatchSize)
+		return nil, fmt.Errorf("batchNode: exec failed: batch size %d exceeds maximum %d", len(items), n.config.MaxBatchSize)
 	}
 
 	if len(items) == 0 {
@@ -555,7 +580,7 @@ func (n *batchNode) Exec(ctx context.Context, prepResult any) (any, error) {
 				// Check context
 				if ctx.Err() != nil {
 					mu.Lock()
-					errors[idx] = ctx.Err()
+					errors[idx] = fmt.Errorf("batch item %d: context cancelled: %w", idx, ctx.Err())
 					mu.Unlock()
 					return
 				}
@@ -572,9 +597,9 @@ func (n *batchNode) Exec(ctx context.Context, prepResult any) (any, error) {
 
 		// Collect all errors
 		var batchErrors []error
-		for i, err := range errors {
+		for _, err := range errors {
 			if err != nil {
-				batchErrors = append(batchErrors, fmt.Errorf("item %d: %w", i, err))
+				batchErrors = append(batchErrors, err)
 			}
 		}
 
@@ -586,12 +611,12 @@ func (n *batchNode) Exec(ctx context.Context, prepResult any) (any, error) {
 		for i, item := range items {
 			// Check context
 			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("context cancelled at item %d: %w", i, err)
+				return nil, fmt.Errorf("batchNode: exec cancelled at item %d: %w", i, err)
 			}
 
 			result, err := n.processFunc(ctx, item)
 			if err != nil {
-				return nil, fmt.Errorf("item %d failed: %w", i, err)
+				return nil, fmt.Errorf("batch item %d: process failed: %w", i, err)
 			}
 			results[i] = result
 		}
@@ -693,32 +718,38 @@ type batchFlowNode struct {
 }
 
 func (n *batchFlowNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
-	// Store shared in params for Exec to access
-	n.SetParams(Params{"shared": shared})
-	return nil, nil
-}
-
-func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	// Safe type assertion with error handling
-	sharedParam, ok := n.GetParams()["shared"]
-	if !ok {
-		return nil, fmt.Errorf("shared parameter not found")
-	}
-
-	shared, ok := sharedParam.(*SharedStore)
-	if !ok {
-		return nil, fmt.Errorf("shared parameter is not *SharedStore, got %T", sharedParam)
-	}
-
-	// Get batch parameters
+	// Get batch parameters during prep phase
 	batchParams, err := n.batchFunc(ctx, shared)
 	if err != nil {
 		return nil, fmt.Errorf("batch func failed: %w", err)
 	}
 
+	// Return both params and shared data as prepResult
+	return map[string]any{
+		"batchParams": batchParams,
+		"sharedData":  shared.GetAll(),
+	}, nil
+}
+
+func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	// Extract data from prepResult
+	data, ok := prepResult.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid prepResult type %T, expected map[string]any", prepResult)
+	}
+
+	batchParams, ok := data["batchParams"].([]Params)
+	if !ok {
+		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid batchParams type in prepResult")
+	}
+
+	sharedData, ok := data["sharedData"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid sharedData type in prepResult")
+	}
 	// Validate batch size
 	if n.config != nil && n.config.MaxBatchSize > 0 && len(batchParams) > n.config.MaxBatchSize {
-		return nil, fmt.Errorf("batch size %d exceeds maximum %d", len(batchParams), n.config.MaxBatchSize)
+		return nil, fmt.Errorf("batchFlowNode: exec failed: batch size %d exceeds maximum %d", len(batchParams), n.config.MaxBatchSize)
 	}
 
 	if len(batchParams) == 0 {
@@ -735,16 +766,19 @@ func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
 		pool := NewWorkerPool(maxWorkers)
 		defer pool.Close()
 
-		errors := make([]error, 0, len(batchParams))
+		errors := make([]error, len(batchParams))
 		var errMu sync.Mutex
+		hasError := false
 
 		for i, params := range batchParams {
 			idx, p := i, params // Capture loop variables
+			sd := sharedData    // Capture shared data
 			pool.Submit(func() {
 				// Check context
 				if ctx.Err() != nil {
 					errMu.Lock()
-					errors = append(errors, fmt.Errorf("batch %d: context cancelled: %w", idx, ctx.Err()))
+					errors[idx] = fmt.Errorf("batchFlowNode: flow %d cancelled: %w", idx, ctx.Err())
+					hasError = true
 					errMu.Unlock()
 					return
 				}
@@ -756,14 +790,15 @@ func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
 				localShared := NewSharedStore()
 
 				// Copy shared data
-				localShared.Merge(shared.GetAll())
+				localShared.Merge(sd)
 
 				// Merge params
 				localShared.Merge(p)
 
 				if err := flow.Run(ctx, localShared); err != nil {
 					errMu.Lock()
-					errors = append(errors, fmt.Errorf("batch %d: %w", idx, err))
+					errors[idx] = fmt.Errorf("batchFlowNode: flow %d failed: %w", idx, err)
+					hasError = true
 					errMu.Unlock()
 				}
 			})
@@ -771,25 +806,36 @@ func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
 
 		pool.Wait()
 
-		if len(errors) > 0 {
-			return nil, &BatchError{Errors: errors}
+		if hasError {
+			// Collect non-nil errors
+			var batchErrors []error
+			for _, err := range errors {
+				if err != nil {
+					batchErrors = append(batchErrors, err)
+				}
+			}
+			return nil, &BatchError{Errors: batchErrors}
 		}
 	} else {
 		// Run flows sequentially
+		// Create a shared store for sequential execution
+		seqShared := NewSharedStore()
+		seqShared.Merge(sharedData)
+
 		for i, params := range batchParams {
 			// Check context
 			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("context cancelled at batch %d: %w", i, err)
+				return nil, fmt.Errorf("batchFlowNode: exec cancelled at flow %d: %w", i, err)
 			}
 
 			// Create a new flow instance for each iteration
 			flow := n.flowFactory()
 
 			// Merge params into shared for the flow execution
-			shared.Merge(params)
+			seqShared.Merge(params)
 
-			if err := flow.Run(ctx, shared); err != nil {
-				return nil, fmt.Errorf("batch %d failed: %w", i, err)
+			if err := flow.Run(ctx, seqShared); err != nil {
+				return nil, fmt.Errorf("batchFlowNode: flow %d failed: %w", i, err)
 			}
 		}
 	}
