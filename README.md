@@ -24,9 +24,9 @@ graph LR
     PREP[PREP<br/>What do I need?] --> EXEC[EXEC<br/>Do the work!]
     EXEC --> POST[POST<br/>What's next?]
     
-    style PREP fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    style EXEC fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style POST fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style PREP fill:#89dceb,stroke:#1e1e2e,stroke-width:2px
+    style EXEC fill:#fab387,stroke:#1e1e2e,stroke-width:2px
+    style POST fill:#a6e3a1,stroke:#1e1e2e,stroke-width:2px
 ```
 
 - **PREP**: "What do I need?" - Gathers inputs from the shared storage
@@ -50,6 +50,11 @@ graph LR
     Start --> Process
     Process --> Save
     Process --> ErrorHandler[Error Handler]
+    
+    style Start fill:#cba6f7,stroke:#1e1e2e,stroke-width:2px
+    style Process fill:#89b4fa,stroke:#1e1e2e,stroke-width:2px
+    style Save fill:#a6e3a1,stroke:#1e1e2e,stroke-width:2px
+    style ErrorHandler fill:#f38ba8,stroke:#1e1e2e,stroke-width:2px
 ```
 
 ### 4. **Action** - The Decision Maker
