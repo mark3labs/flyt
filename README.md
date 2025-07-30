@@ -195,6 +195,16 @@ processFiles := flyt.NewBatchNode(
 
 store := flyt.NewSharedStore()
 store.Set("items", []string{"file1.txt", "file2.txt", "file3.txt"})
+
+// Or use custom keys to avoid conflicts
+processImages := flyt.NewBatchNodeWithKeys(
+    func(ctx context.Context, img any) (any, error) {
+        return processImage(img), nil
+    },
+    true,           // parallel
+    "images",       // read from this key
+    "processed",    // write results to this key
+)
 ```
 
 ### Retry Logic
@@ -250,6 +260,38 @@ config := &flyt.BatchConfig{
 }
 
 node := flyt.NewBatchNodeWithConfig(processFunc, true, config)
+```
+
+### Batch Flows
+Run the same flow multiple times with different parameters:
+
+```go
+// Create a flow factory
+flowFactory := func() *flyt.Flow {
+    // Create your flow here
+    return flyt.NewFlow(startNode)
+}
+
+// Define batch parameters
+batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Params, error) {
+    // Return different parameters for each flow execution
+    return []flyt.Params{
+        {"user_id": 1},
+        {"user_id": 2},
+        {"user_id": 3},
+    }, nil
+}
+
+// Create batch flow
+batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true) // true = concurrent
+
+// Or with custom count key to avoid conflicts
+userBatchFlow := flyt.NewBatchFlowWithCountKey(
+    flowFactory, 
+    batchFunc, 
+    true, 
+    "user_batch_count", // custom key for batch count
+)
 ```
 
 ### Graceful Shutdown
