@@ -12,7 +12,6 @@ func CreateAgentFlow(apiKey string) *flyt.Flow {
 
 	params := flyt.Params{"api_key": apiKey}
 	decide.SetParams(params)
-	search.SetParams(params)
 	answer.SetParams(params)
 
 	flow := flyt.NewFlow(decide)
@@ -23,7 +22,6 @@ func CreateAgentFlow(apiKey string) *flyt.Flow {
 
 	return flow
 }
-
 func NewSharedState() *flyt.SharedStore {
 	return flyt.NewSharedStore()
 }
