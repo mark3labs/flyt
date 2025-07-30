@@ -1,16 +1,12 @@
 # Flyt
 
-Flyt (Norwegian for "flow") is a minimalist workflow framework for Go, inspired by [Pocket Flow](https://github.com/The-Pocket/PocketFlow). It provides a simple graph-based abstraction for orchestrating tasks with just the essentials - no bloat, no dependencies, no vendor lock-in.
+A simple workflow framework for Go - like connecting LEGO blocks where each block does one specific job.
 
-## Features
+**Flyt** (Norwegian for "flow") is inspired by [Pocket Flow](https://github.com/The-Pocket/PocketFlow), bringing the same simplicity and elegance to Go with zero dependencies.
 
-- **Ultra-Lightweight**: Core framework in ~250 lines, with optional helpers
-- **Graph-based**: Model workflows as directed graphs of nodes
-- **Flexible**: Support for sequential, branching, and looping workflows
-- **Go-Idiomatic**: Use goroutines, channels, and other Go concurrency primitives naturally
-- **Batch Helpers**: Convenient functions for common batch processing patterns
-- **Retry support**: Built-in retry mechanism with configurable attempts and delays
-- **Zero Dependencies**: Only uses Go standard library
+## What is Flyt?
+
+Think of Flyt as a way to organize tasks that need to happen in a specific order, like a recipe or assembly instructions. It breaks complex workflows into simple, reusable pieces.
 
 ## Installation
 
@@ -18,359 +14,300 @@ Flyt (Norwegian for "flow") is a minimalist workflow framework for Go, inspired 
 go get github.com/mark3labs/flyt
 ```
 
-## Quick Start
+## The Building Blocks
 
-### Basic Example
+### 1. **Node** - The Basic Task Unit
+A Node is like a single worker that does ONE specific job. It has three phases:
+
+```
+[PREP] → [EXEC] → [POST]
+```
+
+- **PREP**: "What do I need?" - Gathers inputs from the shared storage
+- **EXEC**: "Do the work!" - Actually performs the task
+- **POST**: "What's next?" - Saves results and decides what happens next
+
+### 2. **SharedStore** - The Shared Notebook
+A thread-safe storage that all nodes can read from and write to:
+
+```go
+store := flyt.NewSharedStore()
+store.Set("username", "John")     // Write
+name, _ := store.Get("username")  // Read
+```
+
+### 3. **Flow** - The Task Organizer
+Connects nodes together like a flowchart:
+
+```mermaid
+graph LR
+    Start --> Process
+    Process --> Save
+    Process --> ErrorHandler[Error Handler]
+```
+
+### 4. **Action** - The Decision Maker
+After each node finishes, it returns an "Action" that determines what happens next:
+- `"default"` = continue to the next node
+- Custom actions = branch to different nodes
+
+## Quick Example - AI Email Assistant
 
 ```go
 package main
 
 import (
+    "context"
     "fmt"
-    "log"
+    "os"
+    
     "github.com/mark3labs/flyt"
+    "github.com/openai/openai-go"
+    "github.com/openai/openai-go/option"
 )
 
-// Define a simple node
-type HelloNode struct {
+// Initialize OpenAI client
+var aiClient = openai.NewClient(
+    option.WithAPIKey(os.Getenv("OPENAI_API_KEY")), // Set your API key
+)
+
+// Define nodes (workers)
+type AnalyzeEmailNode struct {
     *flyt.BaseNode
 }
 
-func (n *HelloNode) Exec(prepResult any) (any, error) {
-    return "Hello, World!", nil
+func (n *AnalyzeEmailNode) Prep(ctx context.Context, store *flyt.SharedStore) (any, error) {
+    email, _ := store.Get("email_text")
+    return email, nil
 }
 
-func (n *HelloNode) Post(shared flyt.Shared, prepResult, execResult any) (flyt.Action, error) {
-    shared["message"] = execResult
-    return flyt.DefaultAction, nil
+func (n *AnalyzeEmailNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    email := prepResult.(string)
+    
+    // Call OpenAI to analyze email sentiment
+    completion, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+        Messages: []openai.ChatCompletionMessageParamUnion{
+            openai.UserMessage(fmt.Sprintf(
+                "Analyze this email sentiment. Reply with only one word: positive, negative, or neutral.\n\nEmail: %s", 
+                email,
+            )),
+        },
+        Model: openai.ChatModelGPT4oMini,
+    })
+    if err != nil {
+        return nil, err
+    }
+    
+    sentiment := completion.Choices[0].Message.Content
+    return sentiment, nil
+}
+
+func (n *AnalyzeEmailNode) Post(ctx context.Context, store *flyt.SharedStore, prep, exec any) (flyt.Action, error) {
+    sentiment := exec.(string)
+    store.Set("sentiment", sentiment)
+    
+    // Branch based on sentiment
+    if sentiment == "negative" {
+        return "urgent_response", nil
+    }
+    return "normal_response", nil
+}
+
+type GenerateResponseNode struct {
+    *flyt.BaseNode
+    urgent bool
+}
+
+func (n *GenerateResponseNode) Prep(ctx context.Context, store *flyt.SharedStore) (any, error) {
+    email, _ := store.Get("email_text")
+    return email, nil
+}
+
+func (n *GenerateResponseNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    email := prepResult.(string)
+    
+    // Generate appropriate response
+    responseType := "professional and friendly"
+    if n.urgent {
+        responseType = "urgent, empathetic, and helpful"
+    }
+    
+    completion, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+        Messages: []openai.ChatCompletionMessageParamUnion{
+            openai.SystemMessage(fmt.Sprintf("You are a helpful customer service agent. Write a %s email response.", responseType)),
+            openai.UserMessage(fmt.Sprintf("Customer email: %s", email)),
+        },
+        Model: openai.ChatModelGPT4oMini,
+    })
+    if err != nil {
+        return nil, err
+    }
+    
+    return completion.Choices[0].Message.Content, nil
 }
 
 func main() {
-    // Create node and flow
-    hello := &HelloNode{BaseNode: flyt.NewBaseNode()}
-    flow := flyt.NewFlow(hello)
+    // Create nodes
+    analyze := &AnalyzeEmailNode{BaseNode: flyt.NewBaseNode()}
+    urgentResponse := &GenerateResponseNode{BaseNode: flyt.NewBaseNode(), urgent: true}
+    normalResponse := &GenerateResponseNode{BaseNode: flyt.NewBaseNode(), urgent: false}
     
-    // Run the flow
-    shared := flyt.Shared{}
-    if err := flow.Run(shared); err != nil {
-        log.Fatal(err)
+    // Create flow
+    flow := flyt.NewFlow(analyze)
+    flow.Connect(analyze, "urgent_response", urgentResponse)
+    flow.Connect(analyze, "normal_response", normalResponse)
+    
+    // Create shared storage
+    store := flyt.NewSharedStore()
+    store.Set("email_text", "I'm very disappointed with the service...")
+    
+    // Run it!
+    ctx := context.Background()
+    if err := flow.Run(ctx, store); err != nil {
+        panic(err)
     }
     
-    fmt.Println(shared["message"]) // Output: Hello, World!
+    sentiment, _ := store.Get("sentiment")
+    fmt.Printf("Email sentiment: %s\n", sentiment) // "negative"
 }
 ```
 
-### Workflow with Branching
+## Special Features
+
+### Batch Processing
+Process many items at once:
 
 ```go
-// Create nodes for a simple approval workflow
-submit := &SubmitNode{BaseNode: flyt.NewBaseNode()}
+// Process files in parallel
+processFiles := flyt.NewBatchNode(
+    func(ctx context.Context, file any) (any, error) {
+        // process each file
+        return processFile(file), nil
+    }, 
+    true, // true = parallel processing
+)
+
+store := flyt.NewSharedStore()
+store.Set("items", []string{"file1.txt", "file2.txt", "file3.txt"})
+```
+
+### Retry Logic
+Automatically retry failed operations:
+
+```go
+node := flyt.NewBaseNode(
+    flyt.WithMaxRetries(3),           // Try 3 times
+    flyt.WithWait(time.Second),       // Wait 1 second between tries
+)
+```
+
+### Timeouts and Cancellation
+Set time limits on operations:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+err := flow.Run(ctx, store) // Will stop after 5 seconds
+```
+
+### Error Handling
+Batch operations collect all errors:
+
+```go
+_, err := flyt.Run(ctx, batchNode, store)
+
+var batchErr *flyt.BatchError
+if errors.As(err, &batchErr) {
+    fmt.Printf("Had %d errors\n", len(batchErr.Errors))
+}
+```
+
+## Common Patterns
+
+### Branching Workflow
+```go
+// Approval workflow
 review := &ReviewNode{BaseNode: flyt.NewBaseNode()}
 approve := &ApproveNode{BaseNode: flyt.NewBaseNode()}
 reject := &RejectNode{BaseNode: flyt.NewBaseNode()}
 
-// Create workflow with branching
-flow := flyt.NewFlow(submit)
-flow.Connect(submit, "review", review)
+flow := flyt.NewFlow(review)
 flow.Connect(review, "approve", approve)
 flow.Connect(review, "reject", reject)
+```
 
-// Run the workflow
-shared := flyt.Shared{"amount": 500.0}
-if err := flow.Run(shared); err != nil {
+### Worker Pool (Built-in)
+```go
+config := &flyt.BatchConfig{
+    MaxConcurrency: 10, // Use 10 workers
+}
+
+node := flyt.NewBatchNodeWithConfig(processFunc, true, config)
+```
+
+### Graceful Shutdown
+```go
+ctx, cancel := context.WithCancel(context.Background())
+
+// Handle shutdown signals
+go func() {
+    <-signalChannel
+    cancel() // This will cancel all running nodes
+}()
+
+flow.Run(ctx, store)
+```
+
+## Why Use Flyt?
+
+1. **Simple**: Break complex tasks into simple steps
+2. **Safe**: Thread-safe for concurrent operations  
+3. **Flexible**: Easy branching, retries, and error handling
+4. **Testable**: Each node can be tested independently
+5. **No Magic**: Just Go interfaces and structs
+
+## Complete Example - File Processing Pipeline
+
+```go
+// 1. Read files node
+type ReadFilesNode struct {
+    *flyt.BaseNode
+}
+
+func (n *ReadFilesNode) Exec(ctx context.Context, prep any) (any, error) {
+    return []string{"file1.txt", "file2.txt", "file3.txt"}, nil
+}
+
+func (n *ReadFilesNode) Post(ctx context.Context, store *flyt.SharedStore, prep, exec any) (flyt.Action, error) {
+    store.Set("files", exec)
+    return flyt.DefaultAction, nil
+}
+
+// 2. Process files in batch
+processFunc := func(ctx context.Context, file any) (any, error) {
+    filename := file.(string)
+    // Process the file
+    return fmt.Sprintf("processed_%s", filename), nil
+}
+
+// 3. Build the pipeline
+readNode := &ReadFilesNode{BaseNode: flyt.NewBaseNode()}
+processNode := flyt.NewBatchNode(processFunc, true) // parallel
+saveNode := &SaveResultsNode{BaseNode: flyt.NewBaseNode()}
+
+flow := flyt.NewFlow(readNode)
+flow.Connect(readNode, flyt.DefaultAction, processNode)
+flow.Connect(processNode, flyt.DefaultAction, saveNode)
+
+// 4. Run it
+store := flyt.NewSharedStore()
+ctx := context.Background()
+
+if err := flow.Run(ctx, store); err != nil {
     log.Fatal(err)
 }
 ```
-
-### Concurrent Processing with Goroutines
-
-```go
-type ConcurrentFetchNode struct {
-    *flyt.BaseNode
-}
-
-func (n *ConcurrentFetchNode) Prep(shared flyt.Shared) (any, error) {
-    return shared["urls"], nil
-}
-
-func (n *ConcurrentFetchNode) Exec(prepResult any) (any, error) {
-    urls := prepResult.([]string)
-    
-    // Use goroutines for concurrent fetching
-    type result struct {
-        url  string
-        data string
-        err  error
-    }
-    
-    results := make(chan result, len(urls))
-    
-    // Launch goroutines
-    for _, url := range urls {
-        go func(u string) {
-            // Fetch data (simulated)
-            data, err := fetchData(u)
-            results <- result{url: u, data: data, err: err}
-        }(url)
-    }
-    
-    // Collect results
-    var allResults []map[string]string
-    for i := 0; i < len(urls); i++ {
-        r := <-results
-        if r.err != nil {
-            return nil, r.err
-        }
-        allResults = append(allResults, map[string]string{
-            "url":  r.url,
-            "data": r.data,
-        })
-    }
-    
-    return allResults, nil
-}
-
-func (n *ConcurrentFetchNode) Post(shared flyt.Shared, prepResult, execResult any) (flyt.Action, error) {
-    shared["results"] = execResult
-    return flyt.DefaultAction, nil
-}
-```
-
-### Batch Processing
-
-```go
-type BatchProcessNode struct {
-    *flyt.BaseNode
-}
-
-func (n *BatchProcessNode) Prep(shared flyt.Shared) (any, error) {
-    return shared["items"], nil
-}
-
-func (n *BatchProcessNode) Exec(prepResult any) (any, error) {
-    items := prepResult.([]string)
-    results := make([]string, len(items))
-    
-    // Process items in parallel using goroutines
-    var wg sync.WaitGroup
-    for i, item := range items {
-        wg.Add(1)
-        go func(idx int, itm string) {
-            defer wg.Done()
-            results[idx] = processItem(itm)
-        }(i, item)
-    }
-    wg.Wait()
-    
-    return results, nil
-}
-
-func (n *BatchProcessNode) Post(shared flyt.Shared, prepResult, execResult any) (flyt.Action, error) {
-    shared["processed"] = execResult
-    return flyt.DefaultAction, nil
-}
-```
-
-## Core Concepts
-
-### Node
-
-A Node is the basic building block that implements a three-phase lifecycle:
-
-1. **Prep**: Read and preprocess data from shared store
-2. **Exec**: Execute the main logic (with optional retries)
-3. **Post**: Process results and decide the next action
-
-```go
-type Node interface {
-    Prep(shared Shared) (any, error)
-    Exec(prepResult any) (any, error)
-    Post(shared Shared, prepResult, execResult any) (Action, error)
-    SetParams(params Params)
-    GetParams() Params
-}
-```
-
-### Flow
-
-A Flow orchestrates nodes by:
-- Connecting nodes with action-based transitions
-- Managing the execution order
-- Propagating parameters to child nodes
-
-### Shared Store
-
-A map (`flyt.Shared`) for sharing data between nodes throughout the workflow execution.
-
-### Actions
-
-Nodes return actions that determine the next step in the workflow. Use `flyt.DefaultAction` for simple sequential flows or custom actions for branching.
-
-## Advanced Features
-
-### Batch Helpers
-
-Flyt provides convenient helper functions for common batch processing patterns:
-
-#### NewBatchNode
-
-Creates a node that automatically processes multiple items:
-
-```go
-// Sequential batch processing
-processItems := flyt.NewBatchNode(func(item any) (any, error) {
-    // Process each item
-    return processItem(item), nil
-}, false) // false = sequential
-
-// Concurrent batch processing  
-fetchURLs := flyt.NewBatchNode(func(item any) (any, error) {
-    url := item.(string)
-    return fetchData(url), nil
-}, true) // true = concurrent
-
-// Use in a flow
-flow := flyt.NewFlow(loadDataNode)
-flow.Connect(loadDataNode, flyt.DefaultAction, processItems)
-
-// The batch node automatically looks for data in shared["items"], shared["data"], or shared["batch"]
-shared := flyt.Shared{
-    "items": []string{"item1", "item2", "item3"},
-}
-flow.Run(shared)
-// Results are stored in shared["results"]
-```
-
-#### NewBatchFlow
-
-Creates a flow that runs another flow multiple times with different parameters:
-
-```go
-// Create a flow for processing a single file
-processFileFlow := flyt.NewFlow(readNode)
-processFileFlow.Connect(readNode, flyt.DefaultAction, transformNode)
-
-// Create batch flow that runs for each file
-batchFlow := flyt.NewBatchFlow(processFileFlow, func(shared flyt.Shared) ([]flyt.Params, error) {
-    files := shared["files"].([]string)
-    params := make([]flyt.Params, len(files))
-    for i, file := range files {
-        params[i] = flyt.Params{"filename": file}
-    }
-    return params, nil
-}, true) // true = process files concurrently
-
-// Run it
-shared := flyt.Shared{"files": []string{"file1.txt", "file2.txt", "file3.txt"}}
-batchFlow.Run(shared)
-// shared["batch_count"] contains the number of iterations
-```
-
-**Thread Safety Note**: When using concurrent batch processing:
-- `NewBatchNode` with `concurrent=true` is safe as each item is processed independently
-- `NewBatchFlow` with `concurrent=true` requires thread-safe nodes since the same flow instance is reused
-- If your nodes maintain state, consider using sequential processing or creating separate flow instances for each concurrent execution
-
-### Retry Mechanism
-
-```go
-node := &MyNode{
-    BaseNode: flyt.NewBaseNode(
-        flyt.WithMaxRetries(3),
-        flyt.WithWait(time.Second),
-    ),
-}
-```
-
-### Context and Cancellation
-
-Since Flyt embraces Go's idioms, you can use context for cancellation:
-
-```go
-type ContextAwareNode struct {
-    *flyt.BaseNode
-}
-
-func (n *ContextAwareNode) Exec(prepResult any) (any, error) {
-    // Get context from params or shared
-    ctx := n.GetParams()["ctx"].(context.Context)
-    
-    select {
-    case result := <-doWork():
-        return result, nil
-    case <-ctx.Done():
-        return nil, ctx.Err()
-    }
-}
-
-// Usage
-ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-defer cancel()
-
-node := &ContextAwareNode{BaseNode: flyt.NewBaseNode()}
-node.SetParams(flyt.Params{"ctx": ctx})
-```
-
-### Worker Pool Pattern
-
-```go
-func (n *WorkerPoolNode) Exec(prepResult any) (any, error) {
-    items := prepResult.([]Item)
-    
-    // Create channels for job distribution
-    jobs := make(chan Item, len(items))
-    results := make(chan Result, len(items))
-    
-    // Start worker pool
-    numWorkers := runtime.NumCPU()
-    var wg sync.WaitGroup
-    
-    for w := 0; w < numWorkers; w++ {
-        wg.Add(1)
-        go func() {
-            defer wg.Done()
-            for item := range jobs {
-                results <- processItem(item)
-            }
-        }()
-    }
-    
-    // Send jobs
-    for _, item := range items {
-        jobs <- item
-    }
-    close(jobs)
-    
-    // Wait and collect results
-    go func() {
-        wg.Wait()
-        close(results)
-    }()
-    
-    var allResults []Result
-    for result := range results {
-        allResults = append(allResults, result)
-    }
-    
-    return allResults, nil
-}
-```
-
-## Design Philosophy
-
-Flyt follows Go's philosophy of simplicity:
-
-1. **No Magic**: Just interfaces and structs - what you see is what you get
-2. **Use Go's Strengths**: Leverage goroutines, channels, and other concurrency primitives directly
-3. **Minimal API Surface**: Only the essential abstractions needed for workflow orchestration
-4. **Composable**: Nodes and flows can be easily combined and reused
-
-## Why Flyt?
-
-- **You already know how to use it**: If you know Go, you know Flyt
-- **No abstraction overhead**: Use goroutines and channels directly, not through layers of abstraction
-- **Tiny footprint**: ~250 lines of code you can read and understand in minutes
-- **Zero dependencies**: No external packages, just the Go standard library
 
 ## License
 
