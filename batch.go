@@ -94,7 +94,7 @@ func (n *batchNode) Prep(ctx context.Context, shared *SharedStore) (any, error) 
 	if n.config != nil && n.config.ItemsKey != "" {
 		keysToCheck = []string{n.config.ItemsKey}
 	} else {
-		keysToCheck = []string{KeyItems, KeyData, KeyBatch}
+		keysToCheck = []string{KeyItems, "data", "batch"}
 	}
 
 	for _, key := range keysToCheck {

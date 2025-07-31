@@ -97,10 +97,6 @@ const (
 
 	// KeyItems is the shared store key for items to be processed
 	KeyItems = "items"
-	// KeyData is the shared store key for generic data
-	KeyData = "data"
-	// KeyBatch is the shared store key for batch data
-	KeyBatch = "batch"
 	// KeyResults is the shared store key for processing results
 	KeyResults = "results"
 	// KeyBatchCount is the shared store key for batch count
@@ -307,45 +303,50 @@ func (f *Flow) Connect(from Node, action Action, to Node) {
 
 // Run executes the flow starting from the start node
 func (f *Flow) Run(ctx context.Context, shared *SharedStore) error {
-	if f.start == nil {
-		return fmt.Errorf("flow: run failed: no start node configured")
+	// Use the standard Run function to execute this flow as a node
+	_, err := Run(ctx, f, shared)
+	return err
+}
+
+// Prep implements Node interface for Flow
+func (f *Flow) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	// Pass the shared store to Exec
+	return shared, nil
+}
+
+// Exec orchestrates the flow execution by running nodes in sequence
+func (f *Flow) Exec(ctx context.Context, prepResult any) (any, error) {
+	// Extract shared store from prepResult
+	shared, ok := prepResult.(*SharedStore)
+	if !ok {
+		return nil, fmt.Errorf("flow: exec failed: invalid prepResult type %T, expected *SharedStore", prepResult)
 	}
+
+	if f.start == nil {
+		return nil, fmt.Errorf("flow: exec failed: no start node configured")
+	}
+
 	current := f.start
+	var lastAction Action
 
 	for current != nil {
 		// Check context
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("flow: run cancelled: %w", err)
+			return nil, fmt.Errorf("flow: exec cancelled: %w", err)
 		}
 
-		// Run the current node
-		var action Action
-		var err error
-
-		// Check if current is a Flow
-		if subFlow, ok := current.(*Flow); ok {
-			err = subFlow.Run(ctx, shared)
-			if err != nil {
-				return err
-			}
-			// Get action from flow's post
-			action, err = subFlow.Post(ctx, shared, nil, nil)
-			if err != nil {
-				return err
-			}
-		} else {
-			// Regular node
-			action, err = Run(ctx, current, shared)
-			if err != nil {
-				return err
-			}
+		// Run the current node using the standard Run function
+		action, err := Run(ctx, current, shared)
+		if err != nil {
+			return nil, err
 		}
+
+		lastAction = action
 
 		// Find next node based on action
 		if transitions, ok := f.transitions[current]; ok {
 			if next, ok := transitions[action]; ok {
 				current = next
-
 			} else {
 				// No transition for this action, flow ends
 				break
@@ -356,21 +357,16 @@ func (f *Flow) Run(ctx context.Context, shared *SharedStore) error {
 		}
 	}
 
-	return nil
-}
-
-// Prep implements Node interface for Flow
-func (f *Flow) Prep(ctx context.Context, shared *SharedStore) (any, error) {
-	return nil, nil
-}
-
-// Exec implements Node interface for Flow (not used)
-func (f *Flow) Exec(ctx context.Context, prepResult any) (any, error) {
-	return nil, nil
+	// Return the last action as the result
+	return lastAction, nil
 }
 
 // Post implements Node interface for Flow
 func (f *Flow) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	// Return the last action from the flow execution
+	if action, ok := execResult.(Action); ok {
+		return action, nil
+	}
 	return DefaultAction, nil
 }
 
