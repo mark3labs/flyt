@@ -195,11 +195,12 @@ func (n *batchNode) Post(ctx context.Context, shared *SharedStore, prepResult, e
 	return DefaultAction, nil
 }
 
-// BatchParams holds parameters for a batch iteration
-type BatchParams map[string]any
+// FlowInputs holds input parameters for a flow iteration in batch processing.
+// These parameters are merged into each flow's isolated SharedStore.
+type FlowInputs map[string]any
 
-// BatchFlowFunc returns parameters for each batch iteration
-type BatchFlowFunc func(ctx context.Context, shared *SharedStore) ([]BatchParams, error)
+// BatchFlowFunc returns input parameters for each flow iteration in batch processing
+type BatchFlowFunc func(ctx context.Context, shared *SharedStore) ([]FlowInputs, error)
 
 // NewBatchFlow creates a flow that runs multiple times with different parameters.
 // The flowFactory must create new flow instances for concurrent execution to avoid
@@ -271,7 +272,7 @@ func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
 		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid prepResult type %T, expected map[string]any", prepResult)
 	}
 
-	batchParams, ok := data["batchParams"].([]BatchParams)
+	batchParams, ok := data["batchParams"].([]FlowInputs)
 	if !ok {
 		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid batchParams type in prepResult")
 	}
@@ -352,10 +353,6 @@ func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
 		}
 	} else {
 		// Run flows sequentially
-		// Create a shared store for sequential execution
-		seqShared := NewSharedStore()
-		seqShared.Merge(sharedData)
-
 		for i, params := range batchParams {
 			// Check context
 			if err := ctx.Err(); err != nil {
@@ -365,10 +362,12 @@ func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
 			// Create a new flow instance for each iteration
 			flow := n.flowFactory()
 
-			// Merge params into shared for the flow execution
-			seqShared.Merge(params)
+			// Create isolated shared store for each iteration
+			iterShared := NewSharedStore()
+			iterShared.Merge(sharedData)
+			iterShared.Merge(params)
 
-			if err := flow.Run(ctx, seqShared); err != nil {
+			if err := flow.Run(ctx, iterShared); err != nil {
 				return nil, fmt.Errorf("batchFlowNode: flow %d failed: %w", i, err)
 			}
 		}
