@@ -6,13 +6,9 @@ import (
 )
 
 func CreateAgentFlow(apiKey string) *flyt.Flow {
-	decide := NewDecideActionNode()
+	decide := NewDecideActionNode(apiKey)
 	search := NewSearchWebNode()
-	answer := NewAnswerQuestionNode()
-
-	params := flyt.Params{"api_key": apiKey}
-	decide.SetParams(params)
-	answer.SetParams(params)
+	answer := NewAnswerQuestionNode(apiKey)
 
 	flow := flyt.NewFlow(decide)
 

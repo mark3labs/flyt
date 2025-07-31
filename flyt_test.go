@@ -268,44 +268,7 @@ func (n *TestNode) Post(ctx context.Context, shared *SharedStore, prepResult, ex
 	return n.action, nil
 }
 
-
 // TestBatchFlowCustomCountKey tests batch flow with custom count key
-// TestFlowParameterPropagation tests parameter propagation in flows
-func TestFlowParameterPropagation(t *testing.T) {
-	node := &ParamCheckNode{
-		BaseNode: NewBaseNode(),
-	}
-
-	flow := NewFlow(node)
-	flow.SetParams(Params{"flow_param": "value"})
-
-	shared := NewSharedStore()
-	ctx := context.Background()
-
-	err := flow.Run(ctx, shared)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	// Check that node received flow parameters
-	nodeParams := node.GetParams()
-	if nodeParams["flow_param"] != "value" {
-		t.Error("flow parameters not propagated to node")
-	}
-}
-
-// ParamCheckNode verifies it receives parameters
-type ParamCheckNode struct {
-	*BaseNode
-}
-
-func (n *ParamCheckNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	params := n.GetParams()
-	if params == nil || len(params) == 0 {
-		return nil, errors.New("no parameters received")
-	}
-	return nil, nil
-}
 
 // TestNestedFlowExecution tests flows within flows
 func TestNestedFlowExecution(t *testing.T) {

@@ -88,9 +88,6 @@ func (s *SharedStore) Merge(data map[string]any) {
 	}
 }
 
-// Params holds node-specific parameters
-type Params map[string]any
-
 // Action represents the next action to take after a node executes
 type Action string
 
@@ -123,18 +120,11 @@ type Node interface {
 
 	// Post processes results and writes back to shared store
 	Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error)
-
-	// SetParams sets node-specific parameters
-	SetParams(params Params)
-
-	// GetParams returns node-specific parameters
-	GetParams() Params
 }
 
 // BaseNode provides a base implementation of Node
 type BaseNode struct {
 	mu         sync.RWMutex
-	params     Params
 	maxRetries int
 	wait       time.Duration
 }
@@ -142,7 +132,6 @@ type BaseNode struct {
 // NewBaseNode creates a new BaseNode with options
 func NewBaseNode(opts ...NodeOption) *BaseNode {
 	n := &BaseNode{
-		params:     make(Params),
 		maxRetries: 1,
 		wait:       0,
 	}
@@ -169,25 +158,6 @@ func WithWait(wait time.Duration) NodeOption {
 	return func(n *BaseNode) {
 		n.wait = wait
 	}
-}
-
-// SetParams sets the node parameters
-func (n *BaseNode) SetParams(params Params) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.params = params
-}
-
-// GetParams returns the node parameters
-func (n *BaseNode) GetParams() Params {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-	// Return a copy to prevent external modification
-	copy := make(Params, len(n.params))
-	for k, v := range n.params {
-		copy[k] = v
-	}
-	return copy
 }
 
 // GetMaxRetries returns the maximum number of retries
@@ -342,11 +312,6 @@ func (f *Flow) Run(ctx context.Context, shared *SharedStore) error {
 	}
 	current := f.start
 
-	// Propagate flow params to start node
-	if params := f.GetParams(); len(params) > 0 {
-		current.SetParams(params)
-	}
-
 	for current != nil {
 		// Check context
 		if err := ctx.Err(); err != nil {
@@ -380,10 +345,7 @@ func (f *Flow) Run(ctx context.Context, shared *SharedStore) error {
 		if transitions, ok := f.transitions[current]; ok {
 			if next, ok := transitions[action]; ok {
 				current = next
-				// Propagate params to next node
-				if params := f.GetParams(); len(params) > 0 {
-					current.SetParams(params)
-				}
+
 			} else {
 				// No transition for this action, flow ends
 				break
@@ -523,3 +485,112 @@ func ToSlice(v any) []any {
 
 // FlowFactory creates new instances of a flow
 type FlowFactory func() *Flow
+
+// CustomNode is a node implementation that uses custom functions
+type CustomNode struct {
+	*BaseNode
+	prepFunc func(context.Context, *SharedStore) (any, error)
+	execFunc func(context.Context, any) (any, error)
+	postFunc func(context.Context, *SharedStore, any, any) (Action, error)
+}
+
+// Prep implements Node.Prep by calling the custom prepFunc if provided
+func (n *CustomNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	if n.prepFunc != nil {
+		return n.prepFunc(ctx, shared)
+	}
+	return n.BaseNode.Prep(ctx, shared)
+}
+
+// Exec implements Node.Exec by calling the custom execFunc if provided
+func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	if n.execFunc != nil {
+		return n.execFunc(ctx, prepResult)
+	}
+	return n.BaseNode.Exec(ctx, prepResult)
+}
+
+// Post implements Node.Post by calling the custom postFunc if provided
+func (n *CustomNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	if n.postFunc != nil {
+		return n.postFunc(ctx, shared, prepResult, execResult)
+	}
+	return n.BaseNode.Post(ctx, shared, prepResult, execResult)
+}
+
+// NewNode creates a new node with custom function implementations
+func NewNode(opts ...any) Node {
+	node := &CustomNode{
+		BaseNode: NewBaseNode(),
+	}
+
+	// Separate options by type
+	var customOpts []CustomNodeOption
+	var baseOpts []NodeOption
+
+	for _, opt := range opts {
+		switch o := opt.(type) {
+		case CustomNodeOption:
+			customOpts = append(customOpts, o)
+		case NodeOption:
+			baseOpts = append(baseOpts, o)
+		case func(*BaseNode):
+			baseOpts = append(baseOpts, NodeOption(o))
+		default:
+			// Ignore unknown option types
+		}
+	}
+
+	// Apply base node options first
+	for _, opt := range baseOpts {
+		opt(node.BaseNode)
+	}
+
+	// Apply custom node options
+	for _, opt := range customOpts {
+		opt.apply(node)
+	}
+
+	return node
+}
+
+// CustomNodeOption is an option for configuring a CustomNode
+type CustomNodeOption interface {
+	apply(*CustomNode)
+}
+
+// customNodeOption is the internal implementation of CustomNodeOption
+type customNodeOption struct {
+	f func(*CustomNode)
+}
+
+func (o *customNodeOption) apply(n *CustomNode) {
+	o.f(n)
+}
+
+// WithPrepFunc sets a custom Prep implementation
+func WithPrepFunc(fn func(context.Context, *SharedStore) (any, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.prepFunc = fn
+		},
+	}
+}
+
+// WithExecFunc sets a custom Exec implementation
+func WithExecFunc(fn func(context.Context, any) (any, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.execFunc = fn
+		},
+	}
+}
+
+// WithPostFunc sets a custom Post implementation
+func WithPostFunc(fn func(context.Context, *SharedStore, any, any) (Action, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.postFunc = fn
+		},
+	}
+}

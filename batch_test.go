@@ -198,10 +198,10 @@ func TestBatchFlowConcurrency(t *testing.T) {
 	}
 
 	// Batch function returns parameters for each iteration
-	batchFunc := func(ctx context.Context, shared *SharedStore) ([]Params, error) {
-		params := make([]Params, 5)
+	batchFunc := func(ctx context.Context, shared *SharedStore) ([]BatchParams, error) {
+		params := make([]BatchParams, 5)
 		for i := range params {
-			params[i] = Params{"index": i}
+			params[i] = BatchParams{"index": i}
 		}
 		return params, nil
 	}
@@ -247,8 +247,8 @@ func TestBatchFlowCustomCountKey(t *testing.T) {
 	}
 
 	// Batch function returns parameters
-	batchFunc := func(ctx context.Context, shared *SharedStore) ([]Params, error) {
-		return []Params{
+	batchFunc := func(ctx context.Context, shared *SharedStore) ([]BatchParams, error) {
+		return []BatchParams{
 			{"id": 1},
 			{"id": 2},
 			{"id": 3},
