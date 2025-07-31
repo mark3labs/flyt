@@ -283,7 +283,10 @@ mainFlow.Connect(validationFlow, flyt.DefaultAction, processNode)
 
 ## Examples
 
-Check out the [cookbook](cookbook/) directory for complete, real-world examples.
+Check out the [cookbook](cookbook/) directory for complete, real-world examples:
+
+- [Agent](cookbook/agent/) - AI agent with web search capabilities
+- [Chat](cookbook/chat/) - Interactive chat application with conversation history
 
 ## License
 
