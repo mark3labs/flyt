@@ -287,6 +287,7 @@ Check out the [cookbook](cookbook/) directory for complete, real-world examples:
 
 - [Agent](cookbook/agent/) - AI agent with web search capabilities
 - [Chat](cookbook/chat/) - Interactive chat application with conversation history
+- [Summarize](cookbook/summarize/) - Text summarization with error handling and retries
 
 ## License
 
