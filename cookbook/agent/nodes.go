@@ -201,7 +201,7 @@ func NewAnswerQuestionNode(apiKey string) flyt.Node {
 Question: %s
 Research: %s
 
-Provide a comprehensive answer using the research results.`, question, contextStr)
+Provide a short concise answer using the research results.`, question, contextStr)
 
 			// Call LLM with the captured API key
 			answer, err := CallLLM(apiKey, prompt)
