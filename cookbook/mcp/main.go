@@ -215,33 +215,46 @@ func (m *MCPClient) CallTool(ctx context.Context, toolName string, arguments map
 	return "", fmt.Errorf("unexpected result format")
 }
 
-// CallLLM calls OpenAI to process the prompt
-func CallLLM(apiKey, prompt string) (string, error) {
+// CallLLMWithFunctions calls OpenAI with function calling
+func CallLLMWithFunctions(apiKey, question string, tools []mcp.Tool) (map[string]interface{}, error) {
 	url := "https://api.openai.com/v1/chat/completions"
+
+	// Convert MCP tools to OpenAI function format
+	functions := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		function := map[string]interface{}{
+			"name":        tool.Name,
+			"description": tool.Description,
+			"parameters":  tool.InputSchema,
+		}
+		functions = append(functions, function)
+	}
 
 	requestBody := map[string]interface{}{
 		"model": "gpt-4o-mini",
 		"messages": []map[string]string{
 			{
 				"role":    "system",
-				"content": "You are a helpful assistant that analyzes questions and decides which mathematical tool to use. Always respond in the exact YAML format requested.",
+				"content": "You are a helpful assistant that performs mathematical calculations using the available functions.",
 			},
 			{
 				"role":    "user",
-				"content": prompt,
+				"content": question,
 			},
 		},
-		"temperature": 0.3,
+		"functions":     functions,
+		"function_call": "auto",
+		"temperature":   0.3,
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -250,36 +263,54 @@ func CallLLM(apiKey, prompt string) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
+		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var response struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content      string `json:"content"`
+				FunctionCall *struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function_call"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
 
 	if err := json.Unmarshal(body, &response); err != nil {
-		return "", fmt.Errorf("failed to unmarshal response: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	if len(response.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
+		return nil, fmt.Errorf("no choices in response")
 	}
 
-	return response.Choices[0].Message.Content, nil
+	choice := response.Choices[0]
+	if choice.Message.FunctionCall == nil {
+		return nil, fmt.Errorf("no function call in response")
+	}
+
+	// Parse the function arguments
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(choice.Message.FunctionCall.Arguments), &args); err != nil {
+		return nil, fmt.Errorf("failed to parse function arguments: %w", err)
+	}
+
+	return map[string]interface{}{
+		"tool_name":  choice.Message.FunctionCall.Name,
+		"parameters": args,
+	}, nil
 }
 
 // NewGetToolsNode creates a node that discovers available tools from the MCP server
@@ -335,53 +366,27 @@ func NewGetToolsNode(mcpClient *MCPClient) flyt.Node {
 	)
 }
 
-// NewDecideToolNode creates a node that uses LLM to analyze the question and select appropriate tool
+// NewDecideToolNode creates a node that uses LLM with function calling to select appropriate tool
 func NewDecideToolNode(question, apiKey string) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-			toolInfo, _ := shared.Get("tool_info")
-			return toolInfo.(string), nil
+			tools, _ := shared.Get("tools")
+			return tools.([]mcp.Tool), nil
 		}),
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-			toolInfo := prepResult.(string)
+			tools := prepResult.([]mcp.Tool)
 
-			prompt := fmt.Sprintf(`### CONTEXT
-You are an assistant that can use tools via Model Context Protocol (MCP).
-
-### ACTION SPACE
-%s
-
-### TASK
-Answer this question: "%s"
-
-## NEXT ACTION
-Analyze the question, extract any numbers or parameters, and decide which tool to use.
-Return your response in this format:
-
-thinking: |
-    <your step-by-step reasoning about what the question is asking and what numbers to extract>
-tool: <name of the tool to use>
-reason: <why you chose this tool>
-parameters:
-    <parameter_name>: <parameter_value>
-    <parameter_name>: <parameter_value>
-
-IMPORTANT: 
-1. Extract numbers from the question properly
-2. Use proper indentation (4 spaces) for multi-line fields
-3. Use the | character for multi-line text fields`, toolInfo, question)
-
-			fmt.Println("🤔 Analyzing question and deciding which tool to use...")
-			response, err := CallLLM(apiKey, prompt)
+			fmt.Println("🤔 Using OpenAI function calling to analyze question...")
+			result, err := CallLLMWithFunctions(apiKey, question, tools)
 			if err != nil {
-				return nil, fmt.Errorf("failed to call LLM: %w", err)
+				return nil, fmt.Errorf("failed to call LLM with functions: %w", err)
 			}
 
-			// Parse the response to extract tool and parameters
-			toolName, parameters := parseToolDecision(response)
+			toolName := result["tool_name"].(string)
+			parameters := result["parameters"].(map[string]interface{})
 
-			fmt.Printf("💡 Selected tool: %s\n", toolName)
-			fmt.Printf("🔢 Extracted parameters: %v\n", parameters)
+			fmt.Printf("💡 OpenAI selected tool: %s\n", toolName)
+			fmt.Printf("🔢 Function parameters: %v\n", parameters)
 
 			return map[string]interface{}{
 				"tool_name":  toolName,
@@ -423,46 +428,6 @@ func NewExecuteToolNode(mcpClient *MCPClient) flyt.Node {
 			return result, nil
 		}),
 	)
-}
-
-// parseToolDecision extracts tool name and parameters from LLM response
-func parseToolDecision(response string) (string, map[string]interface{}) {
-	var toolName string
-	parameters := make(map[string]interface{})
-
-	lines := strings.Split(response, "\n")
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		if strings.HasPrefix(line, "tool:") {
-			toolName = strings.TrimSpace(strings.TrimPrefix(line, "tool:"))
-		} else if strings.HasPrefix(line, "parameters:") {
-			// Parse parameters
-			i++
-			for i < len(lines) && strings.HasPrefix(lines[i], "    ") {
-				paramLine := strings.TrimSpace(lines[i])
-				if strings.Contains(paramLine, ":") {
-					parts := strings.SplitN(paramLine, ":", 2)
-					paramName := strings.TrimSpace(parts[0])
-					paramValue := strings.TrimSpace(parts[1])
-
-					// Try to parse as number
-					var value interface{}
-					// For very large numbers, we need to handle them as float64
-					var f float64
-					if _, err := fmt.Sscanf(paramValue, "%f", &f); err == nil {
-						value = f
-					} else {
-						value = paramValue
-					}
-					parameters[paramName] = value
-				}
-				i++
-			}
-			i-- // Back up one since the outer loop will increment
-		}
-	}
-
-	return toolName, parameters
 }
 
 func main() {

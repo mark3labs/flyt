@@ -7,14 +7,14 @@ This example demonstrates how to integrate Flyt with the Model Context Protocol 
 The example creates a math operations MCP server and a Flyt-based client that:
 
 1. **Discovers Tools** - Automatically discovers available math operations from the MCP server
-2. **Analyzes Questions** - Uses an LLM to analyze questions and select appropriate tools
+2. **Analyzes Questions** - Uses OpenAI's function calling to analyze questions and select appropriate tools
 3. **Executes Tools** - Calls the selected tool with extracted parameters via MCP
 
 ## Features
 
 - **In-Process Architecture**: Server and client run in the same process for simplicity
 - **Tool Discovery**: Automatically discovers available tools from the MCP server
-- **Dynamic Tool Selection**: Uses an LLM to analyze questions and select appropriate tools
+- **OpenAI Function Calling**: Uses OpenAI's native function calling feature for tool selection
 - **Math Operations**: Supports addition, subtraction, multiplication, and division
 - **Type-Safe Parameters**: MCP handles parameter validation and type conversion
 
@@ -30,7 +30,7 @@ flowchart LR
 The flow consists of three nodes:
 
 1. **Get Tools Node**: Connects to the MCP server and retrieves available tools
-2. **Decide Node**: Uses an LLM to analyze the question and select the appropriate tool
+2. **Decide Node**: Uses OpenAI's function calling API to analyze the question and select the appropriate tool
 3. **Execute Node**: Calls the selected tool with extracted parameters
 
 ## How to Run
@@ -67,7 +67,7 @@ The example is contained in a single file (`main.go`) that includes:
 - **MCP Server Creation** (`createMathServer`): Defines math operation tools
 - **MCP Client** (`MCPClient`): Wraps the MCP client for easier use
 - **Flyt Nodes**: Three nodes that implement the workflow
-- **LLM Integration**: Simulated LLM for demo purposes
+- **OpenAI Integration**: Uses OpenAI's function calling API for tool selection
 
 ## Key Concepts
 
@@ -129,8 +129,9 @@ s.AddTool(powerTool, func(ctx context.Context, request mcp.CallToolRequest) (*mc
 
 ## Notes
 
-- The example uses OpenAI's GPT-4o-mini model for tool selection
+- The example uses OpenAI's GPT-4o-mini model with function calling for tool selection
 - The InProcess transport is ideal for single-application scenarios
 - For distributed systems, use stdio or HTTP transports
 - Error handling is simplified for clarity. Production code should be more robust
 - The MCP server and client run in the same process, simplifying deployment
+- OpenAI's function calling automatically handles parameter extraction and validation
