@@ -1,6 +1,6 @@
-# Flyt
+# Flyt (Norwegian for "flow". Pronounced "fleet")
 
-A minimalist workflow framework for Go with zero dependencies.
+A minimalist workflow framework for Go with zero dependencies inspired by [Pocket Flow](https://github.com/The-Pocket/PocketFlow).
 
 ## Installation
 
