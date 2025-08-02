@@ -37,20 +37,36 @@ import (
 	"time"
 )
 
-// SharedStore provides thread-safe access to shared data
+// SharedStore provides thread-safe access to shared data across nodes in a flow.
+// It acts as a key-value store that can be safely accessed by multiple goroutines
+// during concurrent batch processing.
+//
+// Example:
+//
+//	shared := flyt.NewSharedStore()
+//	shared.Set("user_id", 123)
+//	shared.Set("config", map[string]any{"timeout": 30})
+//
+//	if val, ok := shared.Get("user_id"); ok {
+//	    userID := val.(int)
+//	    // Use userID
+//	}
 type SharedStore struct {
 	mu   sync.RWMutex
 	data map[string]any
 }
 
-// NewSharedStore creates a new thread-safe shared store
+// NewSharedStore creates a new thread-safe shared store.
+// The store is initialized empty and ready for use.
 func NewSharedStore() *SharedStore {
 	return &SharedStore{
 		data: make(map[string]any),
 	}
 }
 
-// Get retrieves a value from the store
+// Get retrieves a value from the store by key.
+// Returns the value and true if the key exists, or nil and false if not found.
+// This method is safe for concurrent access.
 func (s *SharedStore) Get(key string) (any, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -58,14 +74,19 @@ func (s *SharedStore) Get(key string) (any, bool) {
 	return val, ok
 }
 
-// Set stores a value in the store
+// Set stores a value in the store with the given key.
+// If the key already exists, its value is overwritten.
+// This method is safe for concurrent access.
 func (s *SharedStore) Set(key string, value any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data[key] = value
 }
 
-// GetAll returns a copy of all data
+// GetAll returns a copy of all data in the store.
+// The returned map is a shallow copy and can be safely modified
+// without affecting the store's internal data.
+// This method is safe for concurrent access.
 func (s *SharedStore) GetAll() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -76,7 +97,10 @@ func (s *SharedStore) GetAll() map[string]any {
 	return copy
 }
 
-// Merge merges another map into the store
+// Merge merges another map into the store.
+// Existing keys are overwritten with values from the provided map.
+// If the provided map is nil, this method does nothing.
+// This method is safe for concurrent access.
 func (s *SharedStore) Merge(data map[string]any) {
 	if data == nil {
 		return
@@ -88,18 +112,34 @@ func (s *SharedStore) Merge(data map[string]any) {
 	}
 }
 
-// Action represents the next action to take after a node executes
+// Action represents the next action to take after a node executes.
+// Actions are used to determine flow control in workflows, allowing
+// nodes to direct execution to different paths based on their results.
+//
+// Example:
+//
+//	const (
+//	    ActionSuccess Action = "success"
+//	    ActionRetry   Action = "retry"
+//	    ActionFail    Action = "fail"
+//	)
 type Action string
 
 const (
-	// DefaultAction is the default action if none is specified
+	// DefaultAction is the default action if none is specified.
+	// Flows use this when a node doesn't explicitly return an action.
 	DefaultAction Action = "default"
 
-	// KeyItems is the shared store key for items to be processed
+	// KeyItems is the shared store key for items to be processed.
+	// Batch nodes look for items under this key by default.
 	KeyItems = "items"
-	// KeyResults is the shared store key for processing results
+
+	// KeyResults is the shared store key for processing results.
+	// Batch nodes store their results under this key by default.
 	KeyResults = "results"
-	// KeyBatchCount is the shared store key for batch count
+
+	// KeyBatchCount is the shared store key for batch count.
+	// Batch flows store the number of iterations under this key.
 	KeyBatchCount = "batch_count"
 )
 
@@ -118,14 +158,35 @@ type Node interface {
 	Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error)
 }
 
-// BaseNode provides a base implementation of Node
+// BaseNode provides a base implementation of the Node interface.
+// It includes common functionality like retry configuration and default
+// implementations of Prep, Exec, and Post methods that can be overridden.
+//
+// BaseNode is designed to be embedded in custom node implementations:
+//
+//	type MyNode struct {
+//	    *flyt.BaseNode
+//	    // custom fields
+//	}
+//
+//	func (n *MyNode) Exec(ctx context.Context, prepResult any) (any, error) {
+//	    // custom implementation
+//	}
 type BaseNode struct {
 	mu         sync.RWMutex
 	maxRetries int
 	wait       time.Duration
 }
 
-// NewBaseNode creates a new BaseNode with options
+// NewBaseNode creates a new BaseNode with the provided options.
+// By default, maxRetries is set to 1 (no retries) and wait is 0.
+//
+// Example:
+//
+//	node := flyt.NewBaseNode(
+//	    flyt.WithMaxRetries(3),
+//	    flyt.WithWait(time.Second),
+//	)
 func NewBaseNode(opts ...NodeOption) *BaseNode {
 	n := &BaseNode{
 		maxRetries: 1,
@@ -139,70 +200,132 @@ func NewBaseNode(opts ...NodeOption) *BaseNode {
 	return n
 }
 
-// NodeOption is a function that configures a BaseNode
+// NodeOption is a function that configures a BaseNode.
+// Options can be passed to NewBaseNode to customize its behavior.
 type NodeOption func(*BaseNode)
 
-// WithMaxRetries sets the maximum number of retries
+// WithMaxRetries sets the maximum number of retries for the Exec phase.
+// The default is 1 (no retries). Setting this to a value greater than 1
+// enables automatic retry on Exec failures.
+//
+// Example:
+//
+//	node := flyt.NewBaseNode(flyt.WithMaxRetries(3))
 func WithMaxRetries(retries int) NodeOption {
 	return func(n *BaseNode) {
 		n.maxRetries = retries
 	}
 }
 
-// WithWait sets the wait duration between retries
+// WithWait sets the wait duration between retries.
+// This only applies when maxRetries is greater than 1.
+// The default is 0 (no wait between retries).
+//
+// Example:
+//
+//	node := flyt.NewBaseNode(
+//	    flyt.WithMaxRetries(3),
+//	    flyt.WithWait(time.Second * 2),
+//	)
 func WithWait(wait time.Duration) NodeOption {
 	return func(n *BaseNode) {
 		n.wait = wait
 	}
 }
 
-// GetMaxRetries returns the maximum number of retries
+// GetMaxRetries returns the maximum number of retries configured for this node.
+// This method is thread-safe.
 func (n *BaseNode) GetMaxRetries() int {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.maxRetries
 }
 
-// GetWait returns the wait duration between retries
+// GetWait returns the wait duration between retries configured for this node.
+// This method is thread-safe.
 func (n *BaseNode) GetWait() time.Duration {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.wait
 }
 
-// Prep is the default prep implementation (can be overridden)
+// Prep is the default prep implementation that returns nil.
+// Override this method in your node implementation to read and preprocess
+// data from the SharedStore before execution.
 func (n *BaseNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
 	return nil, nil
 }
 
-// Exec is the default exec implementation (must be overridden)
+// Exec is the default exec implementation that returns nil.
+// This method should be overridden in your node implementation to provide
+// the main processing logic.
 func (n *BaseNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	return nil, nil
 }
 
-// Post is the default post implementation (can be overridden)
+// Post is the default post implementation that returns DefaultAction.
+// Override this method in your node implementation to process results
+// and determine the next action in the flow.
 func (n *BaseNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
 	return DefaultAction, nil
 }
 
-// ExecFallback handles errors after all retries are exhausted
+// ExecFallback handles errors after all retries are exhausted.
+// The default implementation simply returns the error.
+// Override this method to provide custom fallback behavior.
 func (n *BaseNode) ExecFallback(prepResult any, err error) (any, error) {
 	return nil, err
 }
 
-// RetryableNode is a node that supports retries
+// RetryableNode is a node that supports automatic retries on Exec failures.
+// Nodes implementing this interface can specify retry behavior through
+// GetMaxRetries and GetWait methods.
 type RetryableNode interface {
 	Node
 	GetMaxRetries() int
 	GetWait() time.Duration
 }
 
-// FallbackNode is a node that supports fallback on error
+// FallbackNode is a node that supports custom fallback behavior on error.
+// When all retries are exhausted, the ExecFallback method is called to
+// provide an alternative result or handle the error gracefully.
 type FallbackNode interface {
 	ExecFallback(prepResult any, err error) (any, error)
 }
 
-// Run executes the node with the prep->exec->post lifecycle
+// Run executes a node with the standard prep->exec->post lifecycle.
+// This is the main entry point for executing individual nodes.
+//
+// The execution flow is:
+//  1. Prep: Read and preprocess data from SharedStore
+//  2. Exec: Execute main logic with automatic retries if configured
+//  3. Post: Process results and write back to SharedStore
+//
+// If the node implements RetryableNode, the Exec phase will automatically
+// retry on failure according to the configured settings.
+//
+// If the node implements FallbackNode and all retries fail, ExecFallback
+// is called to provide alternative handling.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//   - node: The node to execute
+//   - shared: SharedStore for data exchange
+//
+// Returns:
+//   - Action: The next action to take in the flow
+//   - error: Any error that occurred during execution
+//
+// Example:
+//
+//	node := &MyNode{BaseNode: flyt.NewBaseNode()}
+//	shared := flyt.NewSharedStore()
+//	shared.Set("input", "data")
+//
+//	action, err := flyt.Run(ctx, node, shared)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
 	// Check context before each phase
 	if err := ctx.Err(); err != nil {
@@ -277,14 +400,40 @@ func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
 	return action, nil
 }
 
-// Flow represents a workflow of connected nodes
+// Flow represents a workflow of connected nodes.
+// A Flow is itself a Node, allowing flows to be nested within other flows.
+// Nodes are connected via actions, creating a directed graph of execution.
+//
+// Example:
+//
+//	// Create nodes
+//	validateNode := &ValidateNode{BaseNode: flyt.NewBaseNode()}
+//	processNode := &ProcessNode{BaseNode: flyt.NewBaseNode()}
+//	errorNode := &ErrorNode{BaseNode: flyt.NewBaseNode()}
+//
+//	// Create flow
+//	flow := flyt.NewFlow(validateNode)
+//	flow.Connect(validateNode, ActionSuccess, processNode)
+//	flow.Connect(validateNode, ActionFail, errorNode)
+//
+//	// Run flow
+//	err := flow.Run(ctx, shared)
 type Flow struct {
 	*BaseNode
 	start       Node
 	transitions map[Node]map[Action]Node
 }
 
-// NewFlow creates a new Flow with a start node
+// NewFlow creates a new Flow with a start node.
+// The flow begins execution at the start node and follows
+// transitions based on the actions returned by each node.
+//
+// Parameters:
+//   - start: The first node to execute in the flow
+//
+// Example:
+//
+//	flow := flyt.NewFlow(startNode)
 func NewFlow(start Node) *Flow {
 	return &Flow{
 		BaseNode:    NewBaseNode(),
@@ -293,7 +442,20 @@ func NewFlow(start Node) *Flow {
 	}
 }
 
-// Connect adds a transition from one node to another based on an action
+// Connect adds a transition from one node to another based on an action.
+// When the 'from' node returns the specified action, execution continues
+// with the 'to' node. Multiple actions can be connected from a single node.
+//
+// Parameters:
+//   - from: The source node
+//   - action: The action that triggers this transition
+//   - to: The destination node
+//
+// Example:
+//
+//	flow.Connect(nodeA, "success", nodeB)
+//	flow.Connect(nodeA, "retry", nodeA)  // Self-loop for retry
+//	flow.Connect(nodeA, "fail", errorNode)
 func (f *Flow) Connect(from Node, action Action, to Node) {
 	if f.transitions[from] == nil {
 		f.transitions[from] = make(map[Action]Node)
@@ -301,7 +463,17 @@ func (f *Flow) Connect(from Node, action Action, to Node) {
 	f.transitions[from][action] = to
 }
 
-// Run executes the flow starting from the start node
+// Run executes the flow starting from the start node.
+// This is a convenience method that wraps the standard Run function.
+// The flow executes nodes in sequence based on their action transitions
+// until no more transitions are available or an error occurs.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//   - shared: SharedStore for data exchange between nodes
+//
+// Returns:
+//   - error: Any error that occurred during flow execution
 func (f *Flow) Run(ctx context.Context, shared *SharedStore) error {
 	// Use the standard Run function to execute this flow as a node
 	_, err := Run(ctx, f, shared)
@@ -370,7 +542,24 @@ func (f *Flow) Post(ctx context.Context, shared *SharedStore, prepResult, execRe
 	return DefaultAction, nil
 }
 
-// WorkerPool manages concurrent task execution
+// WorkerPool manages concurrent task execution with a fixed number of workers.
+// It provides a simple way to limit concurrency and execute tasks in parallel.
+// WorkerPool is used internally by batch processing nodes but can also be
+// used directly for custom concurrent operations.
+//
+// Example:
+//
+//	pool := flyt.NewWorkerPool(5)
+//	defer pool.Close()
+//
+//	for _, item := range items {
+//	    item := item // capture loop variable
+//	    pool.Submit(func() {
+//	        // Process item
+//	    })
+//	}
+//
+//	pool.Wait()
 type WorkerPool struct {
 	workers int
 	tasks   chan func()
@@ -378,7 +567,17 @@ type WorkerPool struct {
 	done    chan struct{}
 }
 
-// NewWorkerPool creates a new worker pool
+// NewWorkerPool creates a new worker pool with the specified number of workers.
+// If workers is less than or equal to 0, it defaults to 1.
+// The pool starts workers immediately and is ready to accept tasks.
+//
+// Parameters:
+//   - workers: Number of concurrent workers
+//
+// Returns:
+//   - *WorkerPool: A new worker pool ready for use
+//
+// Remember to call Close() when done to clean up resources.
 func NewWorkerPool(workers int) *WorkerPool {
 	if workers <= 0 {
 		workers = 1
@@ -412,7 +611,12 @@ func (p *WorkerPool) worker() {
 	}
 }
 
-// Submit submits a task to the pool
+// Submit submits a task to the pool for execution.
+// The task will be executed by one of the available workers.
+// This method blocks if all workers are busy and the task buffer is full.
+//
+// Parameters:
+//   - task: Function to execute
 func (p *WorkerPool) Submit(task func()) {
 	p.wg.Add(1)
 	p.tasks <- func() {
@@ -421,18 +625,38 @@ func (p *WorkerPool) Submit(task func()) {
 	}
 }
 
-// Wait waits for all tasks to complete
+// Wait waits for all submitted tasks to complete.
+// This method blocks until all tasks have finished executing.
 func (p *WorkerPool) Wait() {
 	p.wg.Wait()
 }
 
-// Close closes the worker pool and waits for all workers to finish
+// Close closes the worker pool and waits for all workers to finish.
+// After calling Close, no new tasks can be submitted.
+// This method should be called when the pool is no longer needed
+// to properly clean up resources.
 func (p *WorkerPool) Close() {
 	close(p.done)
 	close(p.tasks)
 }
 
-// ToSlice converts various types to []any (exported for testing)
+// ToSlice converts various types to []any for batch processing.
+// This utility function handles common slice types and single values,
+// making it easier to work with batch operations.
+//
+// Supported types:
+//   - []any: returned as-is
+//   - []string, []int, []float64: converted to []any
+//   - []map[string]any: converted to []any
+//   - Other slice types: converted using reflection
+//   - Single values: wrapped in a slice
+//   - nil: returns empty slice
+//
+// Example:
+//
+//	items1 := flyt.ToSlice([]string{"a", "b", "c"})  // []any{"a", "b", "c"}
+//	items2 := flyt.ToSlice("single")                 // []any{"single"}
+//	items3 := flyt.ToSlice(nil)                      // []any{}
 func ToSlice(v any) []any {
 	if v == nil {
 		return []any{}
@@ -479,10 +703,36 @@ func ToSlice(v any) []any {
 	}
 }
 
-// FlowFactory creates new instances of a flow
+// FlowFactory creates new instances of a flow.
+// This is used by batch flow operations to create isolated flow instances
+// for concurrent execution. Each call should return a new flow instance
+// to avoid race conditions.
+//
+// Example:
+//
+//	factory := func() *flyt.Flow {
+//	    node1 := &ProcessNode{BaseNode: flyt.NewBaseNode()}
+//	    node2 := &SaveNode{BaseNode: flyt.NewBaseNode()}
+//
+//	    flow := flyt.NewFlow(node1)
+//	    flow.Connect(node1, flyt.DefaultAction, node2)
+//	    return flow
+//	}
 type FlowFactory func() *Flow
 
 // CustomNode is a node implementation that uses custom functions
+// for Prep, Exec, and Post phases. This allows creating nodes
+// without defining new types, useful for simple operations.
+//
+// Example:
+//
+//	node := &flyt.CustomNode{
+//	    BaseNode: flyt.NewBaseNode(),
+//	    execFunc: func(ctx context.Context, prepResult any) (any, error) {
+//	        // Process data
+//	        return result, nil
+//	    },
+//	}
 type CustomNode struct {
 	*BaseNode
 	prepFunc func(context.Context, *SharedStore) (any, error)
@@ -514,7 +764,27 @@ func (n *CustomNode) Post(ctx context.Context, shared *SharedStore, prepResult, 
 	return n.BaseNode.Post(ctx, shared, prepResult, execResult)
 }
 
-// NewNode creates a new node with custom function implementations
+// NewNode creates a new node with custom function implementations.
+// This is a convenience function for creating nodes without defining new types.
+// It accepts both NodeOption (for BaseNode configuration) and CustomNodeOption
+// (for custom function implementations).
+//
+// Parameters:
+//   - opts: Mix of NodeOption and CustomNodeOption values
+//
+// Example:
+//
+//	node := flyt.NewNode(
+//	    flyt.WithMaxRetries(3),
+//	    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+//	        // Process data
+//	        return processedData, nil
+//	    }),
+//	    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+//	        shared.Set("result", execResult)
+//	        return flyt.DefaultAction, nil
+//	    }),
+//	)
 func NewNode(opts ...any) Node {
 	node := &CustomNode{
 		BaseNode: NewBaseNode(),
@@ -550,7 +820,8 @@ func NewNode(opts ...any) Node {
 	return node
 }
 
-// CustomNodeOption is an option for configuring a CustomNode
+// CustomNodeOption is an option for configuring a CustomNode.
+// It allows setting custom implementations for Prep, Exec, and Post methods.
 type CustomNodeOption interface {
 	apply(*CustomNode)
 }
@@ -564,7 +835,17 @@ func (o *customNodeOption) apply(n *CustomNode) {
 	o.f(n)
 }
 
-// WithPrepFunc sets a custom Prep implementation
+// WithPrepFunc sets a custom Prep implementation for a CustomNode.
+// The provided function will be called during the Prep phase to read
+// and preprocess data from the SharedStore.
+//
+// Example:
+//
+//	flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+//	    data, _ := shared.Get("input")
+//	    // Preprocess data
+//	    return preprocessedData, nil
+//	})
 func WithPrepFunc(fn func(context.Context, *SharedStore) (any, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {
@@ -573,7 +854,16 @@ func WithPrepFunc(fn func(context.Context, *SharedStore) (any, error)) CustomNod
 	}
 }
 
-// WithExecFunc sets a custom Exec implementation
+// WithExecFunc sets a custom Exec implementation for a CustomNode.
+// The provided function will be called during the Exec phase with
+// the result from Prep as input.
+//
+// Example:
+//
+//	flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+//	    // Process the data
+//	    return processedResult, nil
+//	})
 func WithExecFunc(fn func(context.Context, any) (any, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {
@@ -582,7 +872,19 @@ func WithExecFunc(fn func(context.Context, any) (any, error)) CustomNodeOption {
 	}
 }
 
-// WithPostFunc sets a custom Post implementation
+// WithPostFunc sets a custom Post implementation for a CustomNode.
+// The provided function will be called during the Post phase to process
+// results and determine the next action.
+//
+// Example:
+//
+//	flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+//	    shared.Set("output", execResult)
+//	    if success {
+//	        return "success", nil
+//	    }
+//	    return "retry", nil
+//	})
 func WithPostFunc(fn func(context.Context, *SharedStore, any, any) (Action, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {

@@ -8,7 +8,31 @@ A minimalist workflow framework for Go with zero dependencies inspired by [Pocke
 go get github.com/mark3labs/flyt
 ```
 
-## Quick Start
+## Getting Started
+
+### Using the Project Template (Recommended)
+
+The fastest way to start a new Flyt project is using the official template:
+
+```bash
+# Create a new project from the template
+git clone https://github.com/mark3labs/flyt-project-template my-flyt-project
+cd my-flyt-project
+
+# Remove the template git history and start fresh
+rm -rf .git
+git init
+
+# Install dependencies
+go mod tidy
+
+# Run the example
+go run main.go
+```
+
+The template provides a starting point for your Flyt project with a basic structure and example code.
+
+### Manual Setup
 
 ```go
 package main
