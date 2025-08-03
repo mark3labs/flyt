@@ -8,6 +8,12 @@ import (
 	"net/http"
 )
 
+// Message represents a chat message
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 // OpenAIMessage represents a message in OpenAI format
 type OpenAIMessage struct {
 	Role    string `json:"role"`
@@ -27,8 +33,22 @@ type OpenAIResponse struct {
 	} `json:"choices"`
 }
 
-// CallLLM calls the OpenAI API with the conversation history
-func CallLLM(apiKey string, messages []Message) (string, error) {
+// LLM handles all LLM interactions
+type LLM struct {
+	apiKey string
+	model  string
+}
+
+// NewLLM creates a new LLM instance
+func NewLLM(apiKey string) *LLM {
+	return &LLM{
+		apiKey: apiKey,
+		model:  "gpt-3.5-turbo",
+	}
+}
+
+// Chat calls the OpenAI API with the conversation history
+func (l *LLM) Chat(messages []Message) (string, error) {
 	// Convert messages to OpenAI format
 	openAIMessages := make([]OpenAIMessage, len(messages))
 	for i, msg := range messages {
@@ -40,7 +60,7 @@ func CallLLM(apiKey string, messages []Message) (string, error) {
 
 	// Create request
 	reqBody := OpenAIRequest{
-		Model:    "gpt-3.5-turbo",
+		Model:    l.model,
 		Messages: openAIMessages,
 	}
 
@@ -56,7 +76,7 @@ func CallLLM(apiKey string, messages []Message) (string, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+l.apiKey)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)

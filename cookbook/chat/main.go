@@ -11,14 +11,8 @@ import (
 	"github.com/mark3labs/flyt"
 )
 
-// Message represents a chat message
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
 // CreateChatNode creates an interactive chat node using the NewNode helper
-func CreateChatNode(apiKey string) flyt.Node {
+func CreateChatNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			// Initialize messages if this is the first run
@@ -61,7 +55,7 @@ func CreateChatNode(apiKey string) flyt.Node {
 			messages := prepResult.([]Message)
 
 			// Call LLM with the entire conversation history
-			response, err := CallLLM(apiKey, messages)
+			response, err := llm.Chat(messages)
 			if err != nil {
 				return nil, fmt.Errorf("LLM call failed: %w", err)
 			}
@@ -98,8 +92,11 @@ func main() {
 		log.Fatal("Please set OPENAI_API_KEY environment variable")
 	}
 
+	// Create LLM instance
+	llm := NewLLM(apiKey)
+
 	// Create chat node
-	chatNode := CreateChatNode(apiKey)
+	chatNode := CreateChatNode(llm)
 
 	// Create the flow with self-loop
 	flow := flyt.NewFlow(chatNode)
