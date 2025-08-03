@@ -14,58 +14,67 @@ import (
 func CreateGreetingNode(tracer *Tracer) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-			// Start prep span
-			span := tracer.StartSpan("GreetingNode.prep", map[string]any{
-				"node":  "GreetingNode",
-				"phase": "prep",
-			})
-			defer span.End(nil)
-
 			name, ok := shared.Get("name")
 			if !ok {
 				name = "World"
 			}
 
-			span.AddMetadata(map[string]any{
-				"input_name": name,
+			// Start prep span with input
+			span := tracer.StartSpan("GreetingNode.prep", map[string]any{
+				"node":  "GreetingNode",
+				"phase": "prep",
+			}, map[string]any{
+				"name_from_store": name,
 			})
+
+			// End with output
+			defer span.EndWithOutput(map[string]any{
+				"prepared_name": name,
+			}, nil)
 
 			return name, nil
 		}),
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-			// Start exec span
+			name := prepResult.(string)
+
+			// Start exec span with input
 			span := tracer.StartSpan("GreetingNode.exec", map[string]any{
 				"node":  "GreetingNode",
 				"phase": "exec",
+			}, map[string]any{
+				"input_name": name,
 			})
-			defer span.End(nil)
 
-			name := prepResult.(string)
 			greeting := fmt.Sprintf("Hello, %s!", name)
-
-			span.AddMetadata(map[string]any{
-				"greeting": greeting,
-			})
 
 			// Simulate some work
 			time.Sleep(100 * time.Millisecond)
 
+			// End with output
+			defer span.EndWithOutput(map[string]any{
+				"greeting": greeting,
+			}, nil)
+
 			return greeting, nil
 		}),
 		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-			// Start post span
+			greeting := execResult.(string)
+
+			// Start post span with input
 			span := tracer.StartSpan("GreetingNode.post", map[string]any{
 				"node":  "GreetingNode",
 				"phase": "post",
+			}, map[string]any{
+				"greeting_to_store": greeting,
 			})
-			defer span.End(nil)
 
-			greeting := execResult.(string)
 			shared.Set("greeting", greeting)
 
-			span.AddMetadata(map[string]any{
-				"stored_greeting": greeting,
-			})
+			// End with output
+			defer span.EndWithOutput(map[string]any{
+				"next_action":  "uppercase",
+				"stored_value": greeting,
+			}, nil)
 
 			return "uppercase", nil
 		}),
@@ -76,33 +85,37 @@ func CreateGreetingNode(tracer *Tracer) flyt.Node {
 func CreateUppercaseNode(tracer *Tracer) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-			// Start prep span
-			span := tracer.StartSpan("UppercaseNode.prep", map[string]any{
-				"node":  "UppercaseNode",
-				"phase": "prep",
-			})
-			defer span.End(nil)
-
 			greeting, ok := shared.Get("greeting")
 			if !ok {
 				return "", fmt.Errorf("greeting not found")
 			}
 
-			span.AddMetadata(map[string]any{
-				"input_greeting": greeting,
+			// Start prep span with input
+			span := tracer.StartSpan("UppercaseNode.prep", map[string]any{
+				"node":  "UppercaseNode",
+				"phase": "prep",
+			}, map[string]any{
+				"greeting_from_store": greeting,
 			})
+
+			// End with output
+			defer span.EndWithOutput(map[string]any{
+				"prepared_greeting": greeting,
+			}, nil)
 
 			return greeting, nil
 		}),
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-			// Start exec span
+			greeting := prepResult.(string)
+
+			// Start exec span with input
 			span := tracer.StartSpan("UppercaseNode.exec", map[string]any{
 				"node":  "UppercaseNode",
 				"phase": "exec",
+			}, map[string]any{
+				"input_greeting": greeting,
 			})
-			defer span.End(nil)
 
-			greeting := prepResult.(string)
 			uppercase := ""
 
 			// Simulate character-by-character processing
@@ -119,26 +132,31 @@ func CreateUppercaseNode(tracer *Tracer) flyt.Node {
 				}
 			}
 
-			span.AddMetadata(map[string]any{
+			// End with output
+			defer span.EndWithOutput(map[string]any{
 				"uppercase_result": uppercase,
-			})
+			}, nil)
 
 			return uppercase, nil
 		}),
 		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-			// Start post span
+			uppercase := execResult.(string)
+
+			// Start post span with input
 			span := tracer.StartSpan("UppercaseNode.post", map[string]any{
 				"node":  "UppercaseNode",
 				"phase": "post",
+			}, map[string]any{
+				"uppercase_to_store": uppercase,
 			})
-			defer span.End(nil)
 
-			uppercase := execResult.(string)
 			shared.Set("uppercase_greeting", uppercase)
 
-			span.AddMetadata(map[string]any{
-				"final_result": uppercase,
-			})
+			// End with output
+			defer span.EndWithOutput(map[string]any{
+				"next_action":  "reverse",
+				"stored_value": uppercase,
+			}, nil)
 
 			return "reverse", nil
 		}),
@@ -149,33 +167,37 @@ func CreateUppercaseNode(tracer *Tracer) flyt.Node {
 func CreateReverseNode(tracer *Tracer) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-			// Start prep span
-			span := tracer.StartSpan("ReverseNode.prep", map[string]any{
-				"node":  "ReverseNode",
-				"phase": "prep",
-			})
-			defer span.End(nil)
-
 			uppercase, ok := shared.Get("uppercase_greeting")
 			if !ok {
 				return "", fmt.Errorf("uppercase_greeting not found")
 			}
 
-			span.AddMetadata(map[string]any{
-				"input_text": uppercase,
+			// Start prep span with input
+			span := tracer.StartSpan("ReverseNode.prep", map[string]any{
+				"node":  "ReverseNode",
+				"phase": "prep",
+			}, map[string]any{
+				"uppercase_from_store": uppercase,
 			})
+
+			// End with output
+			defer span.EndWithOutput(map[string]any{
+				"prepared_text": uppercase,
+			}, nil)
 
 			return uppercase, nil
 		}),
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-			// Start exec span
+			text := prepResult.(string)
+
+			// Start exec span with input
 			span := tracer.StartSpan("ReverseNode.exec", map[string]any{
 				"node":  "ReverseNode",
 				"phase": "exec",
+			}, map[string]any{
+				"input_text": text,
 			})
-			defer span.End(nil)
 
-			text := prepResult.(string)
 			runes := []rune(text)
 
 			// Reverse the runes
@@ -186,26 +208,31 @@ func CreateReverseNode(tracer *Tracer) flyt.Node {
 
 			reversed := string(runes)
 
-			span.AddMetadata(map[string]any{
+			// End with output
+			defer span.EndWithOutput(map[string]any{
 				"reversed_result": reversed,
-			})
+			}, nil)
 
 			return reversed, nil
 		}),
 		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-			// Start post span
+			reversed := execResult.(string)
+
+			// Start post span with input
 			span := tracer.StartSpan("ReverseNode.post", map[string]any{
 				"node":  "ReverseNode",
 				"phase": "post",
+			}, map[string]any{
+				"reversed_to_store": reversed,
 			})
-			defer span.End(nil)
 
-			reversed := execResult.(string)
 			shared.Set("reversed_greeting", reversed)
 
-			span.AddMetadata(map[string]any{
-				"final_reversed": reversed,
-			})
+			// End with output
+			defer span.EndWithOutput(map[string]any{
+				"final_result": reversed,
+				"action":       "default",
+			}, nil)
 
 			return flyt.DefaultAction, nil
 		}),

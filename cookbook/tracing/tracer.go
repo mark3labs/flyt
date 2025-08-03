@@ -31,6 +31,7 @@ type Span struct {
 	spanID    string
 	traceID   string
 	parentID  string
+	input     any
 }
 
 // Trace represents the main trace
@@ -140,8 +141,8 @@ func (tr *Trace) AddMetadata(metadata map[string]any) {
 	}
 }
 
-// StartSpan starts a new span
-func (t *Tracer) StartSpan(name string, metadata map[string]any) *Span {
+// StartSpan starts a new span with input tracking
+func (t *Tracer) StartSpan(name string, metadata map[string]any, input any) *Span {
 	span := &Span{
 		tracer:    t,
 		name:      name,
@@ -149,6 +150,7 @@ func (t *Tracer) StartSpan(name string, metadata map[string]any) *Span {
 		metadata:  metadata,
 		spanID:    uuid.New().String(),
 		traceID:   t.traceID,
+		input:     input,
 	}
 
 	if t.currentSpan != nil {
@@ -166,6 +168,7 @@ func (t *Tracer) StartSpan(name string, metadata map[string]any) *Span {
 			TraceID:   t.traceID,
 			Name:      name,
 			Metadata:  convertToModelM(metadata),
+			Input:     input,
 			StartTime: &now,
 		}
 
@@ -182,14 +185,14 @@ func (t *Tracer) StartSpan(name string, metadata map[string]any) *Span {
 			log.Printf("Failed to create span: %v", err)
 		}
 	} else {
-		log.Printf("  📍 [SPAN START] %s - %v", name, metadata)
+		log.Printf("  📍 [SPAN START] %s - metadata: %v, input: %v", name, metadata, input)
 	}
 
 	return span
 }
 
-// End ends the span
-func (s *Span) End(err error) {
+// EndWithOutput ends the span with output tracking
+func (s *Span) EndWithOutput(output any, err error) {
 	duration := time.Since(s.startTime)
 
 	if s.tracer.enabled && s.tracer.client != nil {
@@ -209,6 +212,7 @@ func (s *Span) End(err error) {
 			TraceID:  s.traceID,
 			EndTime:  &now,
 			Metadata: convertToModelM(metadata),
+			Output:   output,
 		})
 		if endErr != nil {
 			log.Printf("Failed to end span: %v", endErr)
@@ -218,7 +222,7 @@ func (s *Span) End(err error) {
 		if err != nil {
 			status = fmt.Sprintf("ERROR: %v", err)
 		}
-		log.Printf("  📍 [SPAN END] %s - Duration: %v - Status: %s", s.name, duration, status)
+		log.Printf("  📍 [SPAN END] %s - Duration: %v - Status: %s - Output: %v", s.name, duration, status, output)
 	}
 
 	// Reset current span to parent if this was the current span
@@ -233,6 +237,11 @@ func (s *Span) End(err error) {
 		}
 		s.tracer.currentSpan = parent
 	}
+}
+
+// End ends the span (calls EndWithOutput with nil output)
+func (s *Span) End(err error) {
+	s.EndWithOutput(nil, err)
 }
 
 // AddMetadata adds metadata to the span
