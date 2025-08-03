@@ -309,10 +309,12 @@ mainFlow.Connect(validationFlow, flyt.DefaultAction, processNode)
 
 Check out the [cookbook](cookbook/) directory for complete, real-world examples:
 
-- [Agent](cookbook/agent/) - AI agent with web search capabilities
+- [Agent](cookbook/agent/) - AI agent with web search capabilities using LLM and search providers
 - [Chat](cookbook/chat/) - Interactive chat application with conversation history
+- [LLM Streaming](cookbook/llm-streaming/) - Real-time streaming of LLM responses with OpenAI SSE
 - [MCP](cookbook/mcp/) - Model Context Protocol integration with OpenAI function calling
 - [Summarize](cookbook/summarize/) - Text summarization with error handling and retries
+- [Tracing](cookbook/tracing/) - Distributed tracing with Langfuse for observability
 
 ## License
 
