@@ -36,9 +36,12 @@ func main() {
 		log.Fatalf("Failed to create MCP client: %v", err)
 	}
 
+	// Create LLM instance
+	llm := NewLLM(apiKey)
+
 	// Create nodes
 	getToolsNode := NewGetToolsNode(mcpClient)
-	decideNode := NewDecideToolNode(apiKey)
+	decideNode := NewDecideToolNode(llm)
 	executeNode := NewExecuteToolNode(mcpClient)
 
 	// Create flow

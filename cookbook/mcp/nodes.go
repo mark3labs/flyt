@@ -37,7 +37,7 @@ func NewGetToolsNode(mcpClient *MCPClient) flyt.Node {
 }
 
 // NewDecideToolNode creates a node that uses LLM with function calling to select appropriate tool
-func NewDecideToolNode(apiKey string) flyt.Node {
+func NewDecideToolNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			tools, _ := shared.Get("tools")
@@ -57,7 +57,7 @@ func NewDecideToolNode(apiKey string) flyt.Node {
 			messages := data["messages"].([]map[string]interface{})
 
 			fmt.Println("🤔 Calling OpenAI with function calling...")
-			result, err := CallLLMWithFunctions(apiKey, messages, tools)
+			result, err := llm.CallWithFunctions(messages, tools)
 			if err != nil {
 				return nil, fmt.Errorf("failed to call LLM with functions: %w", err)
 			}

@@ -5,10 +5,10 @@ import (
 	"github.com/mark3labs/flyt"
 )
 
-func CreateAgentFlow(apiKey string) *flyt.Flow {
-	decide := NewDecideActionNode(apiKey)
-	search := NewSearchWebNode()
-	answer := NewAnswerQuestionNode(apiKey)
+func CreateAgentFlow(llm *LLM, searcher Searcher) *flyt.Flow {
+	decide := NewDecideActionNode(llm)
+	search := NewSearchWebNode(searcher)
+	answer := NewAnswerQuestionNode(llm)
 
 	flow := flyt.NewFlow(decide)
 

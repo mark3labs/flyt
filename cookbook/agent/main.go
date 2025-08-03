@@ -31,14 +31,12 @@ func main() {
 		brave = os.Getenv("BRAVE_API_KEY")
 	}
 
-	agentFlow := CreateAgentFlow(key)
+	llm := NewLLM(key)
+	searcher := NewWebSearcher(brave)
+	agentFlow := CreateAgentFlow(llm, searcher)
 
 	shared := NewSharedState()
 	shared.Set("question", *question)
-	shared.Set("api_key", key)
-	if brave != "" {
-		shared.Set("brave_api_key", brave)
-	}
 
 	fmt.Printf("🤔 Processing question: %s\n", *question)
 

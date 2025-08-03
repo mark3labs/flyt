@@ -11,7 +11,7 @@ import (
 
 // NewDecideActionNode creates a node that decides whether to search for more information or provide an answer.
 // It uses an LLM to analyze the question and context to make this decision.
-func NewDecideActionNode(apiKey string) flyt.Node {
+func NewDecideActionNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			question, _ := shared.Get("question")
@@ -66,8 +66,8 @@ Example responses:
 - "search:Need current information about Nobel Prize winners:Nobel Prize Physics 2024 winners"
 - "answer:I have enough information to answer the question"%s`, question, searchCount, contextStr, forceAnswer)
 
-			// Call LLM with the captured API key
-			response, err := CallLLM(apiKey, prompt)
+			// Call LLM
+			response, err := llm.Call(prompt)
 			if err != nil {
 				return nil, fmt.Errorf("LLM call failed: %w", err)
 			}
@@ -109,15 +109,13 @@ Example responses:
 }
 
 // NewSearchWebNode creates a node that searches the web for information
-func NewSearchWebNode() flyt.Node {
+func NewSearchWebNode(searcher Searcher) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			query, _ := shared.Get("search_query")
-			braveKey, _ := shared.Get("brave_api_key")
 
 			return map[string]any{
-				"query":     query,
-				"brave_key": braveKey,
+				"query": query,
 			}, nil
 		}),
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
@@ -126,27 +124,10 @@ func NewSearchWebNode() flyt.Node {
 
 			fmt.Printf("🌐 Searching the web for: %s\n", query)
 
-			// Use real web search APIs
-			var results string
-			var err error
-
-			// Try Brave first if API key is available
-			if braveKey, ok := data["brave_key"].(string); ok && braveKey != "" {
-				results, err = SearchWebBrave(query, braveKey)
-				if err != nil {
-					fmt.Printf("⚠️  Brave search failed: %v, falling back to DuckDuckGo\n", err)
-					// Fall back to DuckDuckGo
-					results, err = SearchWeb(query)
-					if err != nil {
-						return "", fmt.Errorf("all search methods failed: %w", err)
-					}
-				}
-			} else {
-				// Use default search (DuckDuckGo)
-				results, err = SearchWeb(query)
-				if err != nil {
-					return "", fmt.Errorf("search failed: %w", err)
-				}
+			// Use the injected searcher
+			results, err := searcher.Search(query)
+			if err != nil {
+				return "", fmt.Errorf("search failed: %w", err)
 			}
 
 			return map[string]any{
@@ -176,7 +157,7 @@ func NewSearchWebNode() flyt.Node {
 }
 
 // NewAnswerQuestionNode creates a node that generates the final answer
-func NewAnswerQuestionNode(apiKey string) flyt.Node {
+func NewAnswerQuestionNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			question, _ := shared.Get("question")
@@ -203,8 +184,8 @@ Research: %s
 
 Provide a short concise answer using the research results.`, question, contextStr)
 
-			// Call LLM with the captured API key
-			answer, err := CallLLM(apiKey, prompt)
+			// Call LLM
+			answer, err := llm.Call(prompt)
 			if err != nil {
 				return nil, fmt.Errorf("failed to generate answer: %w", err)
 			}
