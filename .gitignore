@@ -1,3 +1,8 @@
 cookbook/agent/agent
 cookbook/chat/chat
 cookbook/summarize/summarize
+
+# Node/Bun
+www/node_modules/
+www/docs/dist/
+www/.vocs/
