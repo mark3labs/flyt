@@ -184,6 +184,30 @@ shared.Merge(map[string]any{
 })
 ```
 
+## Intermediate Patterns
+
+### Configuration via Closures
+
+Pass configuration to nodes using closures:
+
+```go
+func createAPINode(apiKey string, baseURL string) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            // apiKey and baseURL are captured in the closure
+            url := fmt.Sprintf("%s/data", baseURL)
+            req, _ := http.NewRequest("GET", url, nil)
+            req.Header.Set("Authorization", apiKey)
+            // ... make request
+            return data, nil
+        }),
+    )
+}
+
+// Usage
+node := createAPINode("secret-key", "https://api.example.com")
+```
+
 ### Error Handling & Retries
 
 Add retry logic to handle transient failures:
