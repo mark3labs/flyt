@@ -1,6 +1,32 @@
+![Flyt Logo](flyt-logo.png)
+
 # Flyt (Norwegian for "flow". Pronounced "fleet")
 
 A minimalist workflow framework for Go with zero dependencies inspired by [Pocket Flow](https://github.com/The-Pocket/PocketFlow).
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Getting Started](#getting-started)
+  - [Using the Project Template (Recommended)](#using-the-project-template-recommended)
+  - [Manual Setup](#manual-setup)
+- [Core Concepts](#core-concepts)
+  - [Nodes](#nodes)
+  - [Actions](#actions)
+  - [Flows](#flows)
+  - [Shared Store](#shared-store)
+- [Intermediate Patterns](#intermediate-patterns)
+  - [Configuration via Closures](#configuration-via-closures)
+  - [Error Handling & Retries](#error-handling--retries)
+  - [Conditional Branching](#conditional-branching)
+- [Advanced Usage](#advanced-usage)
+  - [Custom Node Types](#custom-node-types)
+  - [Batch Processing](#batch-processing)
+  - [Batch Flows](#batch-flows)
+  - [Nested Flows](#nested-flows)
+- [Best Practices](#best-practices)
+- [Examples](#examples)
+- [License](#license)
 
 ## Installation
 
