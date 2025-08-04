@@ -1,0 +1,1 @@
+{"version":3,"file":"prerender.d.ts","sourceRoot":"","sources":["../../vite/prerender.tsx"],"names":[],"mappings":"AAGA,OAAO,KAAK,EAAE,MAAM,EAAE,MAAM,MAAM,CAAA;AAKlC,KAAK,mBAAmB,GAAG;IAAE,MAAM,CAAC,EAAE,MAAM,CAAC;IAAC,MAAM,CAAC,EAAE,MAAM,CAAA;CAAE,CAAA;AAE/D,wBAAsB,SAAS,CAAC,EAAE,MAAM,EAAE,MAAM,EAAE,EAAE,mBAAmB,iBA6CtE"}

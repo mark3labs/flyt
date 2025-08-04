@@ -1,0 +1,1 @@
+{"version":3,"file":"useActiveNavIds.d.ts","sourceRoot":"","sources":["../../../app/hooks/useActiveNavIds.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,iBAAiB,CAAA;AAkBvD,wBAAgB,eAAe,CAAC,EAC9B,KAAK,EACL,QAAQ,GACT,EAAE;IAAE,KAAK,EAAE,gBAAgB,EAAE,CAAC;IAAC,QAAQ,EAAE,MAAM,CAAA;CAAE,GAAG,MAAM,EAAE,CAE5D"}

@@ -1,0 +1,449 @@
+# Worker Pool
+
+Manage concurrent task execution with fine-grained control using the WorkerPool utility.
+
+## Basic Worker Pool
+
+Create and use a worker pool:
+
+```go
+// Create a pool with 10 workers
+pool := flyt.NewWorkerPool(10)
+
+// Submit tasks
+for i := 0; i < 100; i++ {
+    taskID := i
+    pool.Submit(func() {
+        // Process task
+        result := processTask(taskID)
+        fmt.Printf("Task %d completed: %v\n", taskID, result)
+    })
+}
+
+// Wait for all tasks to complete
+pool.Wait()
+
+// Clean up
+pool.Close()
+```
+
+## Worker Pool with Results
+
+Collect results from worker pool:
+
+```go
+type ResultCollector struct {
+    mu      sync.Mutex
+    results []Result
+}
+
+func processWithWorkerPool(items []Item) []Result {
+    pool := flyt.NewWorkerPool(5)
+    collector := &ResultCollector{
+        results: make([]Result, len(items)),
+    }
+    
+    for i, item := range items {
+        index := i
+        data := item
+        
+        pool.Submit(func() {
+            result := processItem(data)
+            
+            collector.mu.Lock()
+            collector.results[index] = result
+            collector.mu.Unlock()
+        })
+    }
+    
+    pool.Wait()
+    pool.Close()
+    
+    return collector.results
+}
+```
+
+## Dynamic Worker Scaling
+
+Adjust worker count based on load:
+
+```go
+type DynamicWorkerPool struct {
+    minWorkers int
+    maxWorkers int
+    pool       *flyt.WorkerPool
+    load       int32
+    mu         sync.RWMutex
+}
+
+func NewDynamicWorkerPool(min, max int) *DynamicWorkerPool {
+    return &DynamicWorkerPool{
+        minWorkers: min,
+        maxWorkers: max,
+        pool:       flyt.NewWorkerPool(min),
+    }
+}
+
+func (p *DynamicWorkerPool) Submit(task func()) {
+    currentLoad := atomic.AddInt32(&p.load, 1)
+    
+    // Scale up if needed
+    if currentLoad > int32(p.getCurrentWorkers()*2) {
+        p.scaleUp()
+    }
+    
+    p.pool.Submit(func() {
+        task()
+        
+        newLoad := atomic.AddInt32(&p.load, -1)
+        
+        // Scale down if idle
+        if newLoad < int32(p.getCurrentWorkers()/2) {
+            p.scaleDown()
+        }
+    })
+}
+
+func (p *DynamicWorkerPool) scaleUp() {
+    p.mu.Lock()
+    defer p.mu.Unlock()
+    
+    current := p.getCurrentWorkers()
+    if current < p.maxWorkers {
+        // Create new pool with more workers
+        newPool := flyt.NewWorkerPool(min(current*2, p.maxWorkers))
+        p.pool.Close()
+        p.pool = newPool
+    }
+}
+```
+
+## Rate-Limited Worker Pool
+
+Control processing rate:
+
+```go
+func createRateLimitedPool(workers int, rps int) *RateLimitedPool {
+    limiter := rate.NewLimiter(rate.Limit(rps), 1)
+    pool := flyt.NewWorkerPool(workers)
+    
+    return &RateLimitedPool{
+        pool:    pool,
+        limiter: limiter,
+    }
+}
+
+type RateLimitedPool struct {
+    pool    *flyt.WorkerPool
+    limiter *rate.Limiter
+}
+
+func (p *RateLimitedPool) Submit(ctx context.Context, task func()) error {
+    // Wait for rate limit
+    if err := p.limiter.Wait(ctx); err != nil {
+        return err
+    }
+    
+    p.pool.Submit(task)
+    return nil
+}
+```
+
+## Priority Queue Worker Pool
+
+Process tasks by priority:
+
+```go
+type PriorityTask struct {
+    Priority int
+    Task     func()
+    ID       string
+}
+
+type PriorityWorkerPool struct {
+    workers int
+    queue   *PriorityQueue
+    pool    *flyt.WorkerPool
+    running bool
+    mu      sync.Mutex
+}
+
+func NewPriorityWorkerPool(workers int) *PriorityWorkerPool {
+    p := &PriorityWorkerPool{
+        workers: workers,
+        queue:   NewPriorityQueue(),
+        pool:    flyt.NewWorkerPool(workers),
+        running: true,
+    }
+    
+    // Start dispatcher
+    go p.dispatch()
+    
+    return p
+}
+
+func (p *PriorityWorkerPool) Submit(priority int, task func()) {
+    p.queue.Push(PriorityTask{
+        Priority: priority,
+        Task:     task,
+        ID:       generateID(),
+    })
+}
+
+func (p *PriorityWorkerPool) dispatch() {
+    for p.running {
+        task := p.queue.Pop() // Blocks until task available
+        if task != nil {
+            p.pool.Submit(task.Task)
+        }
+    }
+}
+```
+
+## Worker Pool with Timeout
+
+Handle task timeouts:
+
+```go
+func createTimeoutPool(workers int, timeout time.Duration) *TimeoutPool {
+    return &TimeoutPool{
+        pool:    flyt.NewWorkerPool(workers),
+        timeout: timeout,
+    }
+}
+
+type TimeoutPool struct {
+    pool    *flyt.WorkerPool
+    timeout time.Duration
+}
+
+func (p *TimeoutPool) Submit(task func() error) error {
+    errChan := make(chan error, 1)
+    
+    p.pool.Submit(func() {
+        done := make(chan error, 1)
+        
+        go func() {
+            done <- task()
+        }()
+        
+        select {
+        case err := <-done:
+            errChan <- err
+        case <-time.After(p.timeout):
+            errChan <- fmt.Errorf("task timeout after %v", p.timeout)
+        }
+    })
+    
+    return <-errChan
+}
+```
+
+## Worker Pool in Nodes
+
+Use worker pools within nodes:
+
+```go
+type ParallelProcessingNode struct {
+    *flyt.BaseNode
+    pool *flyt.WorkerPool
+}
+
+func NewParallelProcessingNode(workers int) *ParallelProcessingNode {
+    return &ParallelProcessingNode{
+        BaseNode: flyt.NewBaseNode(),
+        pool:     flyt.NewWorkerPool(workers),
+    }
+}
+
+func (n *ParallelProcessingNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    items := prepResult.([]Item)
+    results := make([]Result, len(items))
+    errors := make([]error, len(items))
+    
+    var wg sync.WaitGroup
+    
+    for i, item := range items {
+        wg.Add(1)
+        index := i
+        data := item
+        
+        n.pool.Submit(func() {
+            defer wg.Done()
+            
+            result, err := processItem(data)
+            results[index] = result
+            errors[index] = err
+        })
+    }
+    
+    // Wait with context
+    done := make(chan struct{})
+    go func() {
+        wg.Wait()
+        close(done)
+    }()
+    
+    select {
+    case <-ctx.Done():
+        return nil, ctx.Err()
+    case <-done:
+        // Check for errors
+        for _, err := range errors {
+            if err != nil {
+                return results, fmt.Errorf("processing failed: %w", err)
+            }
+        }
+        return results, nil
+    }
+}
+
+func (n *ParallelProcessingNode) Close() {
+    n.pool.Close()
+}
+```
+
+## Batch Processing with Worker Pool
+
+Process batches efficiently:
+
+```go
+func processBatchesWithPool(items []Item, batchSize int, workers int) []Result {
+    pool := flyt.NewWorkerPool(workers)
+    results := make([]Result, len(items))
+    
+    // Process in batches
+    for i := 0; i < len(items); i += batchSize {
+        end := min(i+batchSize, len(items))
+        batch := items[i:end]
+        batchStart := i
+        
+        pool.Submit(func() {
+            batchResults := processBatch(batch)
+            
+            // Store results
+            for j, result := range batchResults {
+                results[batchStart+j] = result
+            }
+        })
+    }
+    
+    pool.Wait()
+    pool.Close()
+    
+    return results
+}
+```
+
+## Monitoring Worker Pool
+
+Track pool performance:
+
+```go
+type MonitoredPool struct {
+    pool      *flyt.WorkerPool
+    submitted int64
+    completed int64
+    failed    int64
+    totalTime int64
+}
+
+func (p *MonitoredPool) Submit(task func() error) {
+    atomic.AddInt64(&p.submitted, 1)
+    
+    p.pool.Submit(func() {
+        start := time.Now()
+        
+        err := task()
+        
+        duration := time.Since(start)
+        atomic.AddInt64(&p.totalTime, int64(duration))
+        
+        if err != nil {
+            atomic.AddInt64(&p.failed, 1)
+        } else {
+            atomic.AddInt64(&p.completed, 1)
+        }
+    })
+}
+
+func (p *MonitoredPool) GetStats() map[string]int64 {
+    return map[string]int64{
+        "submitted":     atomic.LoadInt64(&p.submitted),
+        "completed":     atomic.LoadInt64(&p.completed),
+        "failed":        atomic.LoadInt64(&p.failed),
+        "avg_time_ms":   p.getAverageTime(),
+        "pending":       p.getPendingCount(),
+    }
+}
+```
+
+## Circuit Breaker Pool
+
+Prevent overload with circuit breaker:
+
+```go
+type CircuitBreakerPool struct {
+    pool        *flyt.WorkerPool
+    failures    int32
+    threshold   int32
+    resetTime   time.Duration
+    lastFailure time.Time
+    mu          sync.RWMutex
+}
+
+func (p *CircuitBreakerPool) Submit(task func() error) error {
+    if p.isOpen() {
+        return fmt.Errorf("circuit breaker open")
+    }
+    
+    p.pool.Submit(func() {
+        err := task()
+        
+        if err != nil {
+            failures := atomic.AddInt32(&p.failures, 1)
+            
+            if failures >= p.threshold {
+                p.mu.Lock()
+                p.lastFailure = time.Now()
+                p.mu.Unlock()
+            }
+        } else {
+            // Reset on success
+            atomic.StoreInt32(&p.failures, 0)
+        }
+    })
+    
+    return nil
+}
+
+func (p *CircuitBreakerPool) isOpen() bool {
+    p.mu.RLock()
+    defer p.mu.RUnlock()
+    
+    if atomic.LoadInt32(&p.failures) >= p.threshold {
+        if time.Since(p.lastFailure) < p.resetTime {
+            return true
+        }
+        // Reset after timeout
+        atomic.StoreInt32(&p.failures, 0)
+    }
+    
+    return false
+}
+```
+
+## Best Practices
+
+1. **Size Appropriately**: Set worker count based on workload and resources
+2. **Handle Panics**: Recover from panics in worker goroutines
+3. **Clean Up**: Always close pools when done
+4. **Monitor Performance**: Track metrics for optimization
+5. **Avoid Blocking**: Don't block workers with long waits
+6. **Test Concurrency**: Test with various worker counts and loads
+
+## Next Steps
+
+- [Batch Processing](/advanced/batch-processing) - High-level batch operations
+- [Custom Nodes](/advanced/custom-nodes) - Build nodes with worker pools
+- [Best Practices](/best-practices) - General guidelines

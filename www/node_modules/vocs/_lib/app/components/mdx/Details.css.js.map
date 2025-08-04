@@ -1,0 +1,1 @@
+{"version":3,"file":"Details.css.js","sourceRoot":"","sources":["../../../../app/components/mdx/Details.css.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,KAAK,EAAE,MAAM,sBAAsB,CAAA;AAE5C,OAAO,EAAE,OAAO,IAAI,OAAO,EAAE,MAAM,mBAAmB,CAAA;AAEtD,MAAM,CAAC,MAAM,IAAI,GAAG,KAAK,CAAC;IACxB,SAAS,EAAE;QACT,CAAC,GAAG,OAAO,UAAU,CAAC,EAAE;YACtB,SAAS,EAAE,MAAM;SAClB;KACF;CACF,CAAC,CAAA"}

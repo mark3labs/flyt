@@ -1,0 +1,5 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+export function ArrowDiagonal() {
+    return (_jsxs("svg", { width: "100%", height: "100%", viewBox: "0 0 29 29", fill: "none", xmlns: "http://www.w3.org/2000/svg", children: [_jsx("title", { children: "Arrow Diagonal" }), _jsx("path", { d: "M29 2C29 0.895431 28.1046 4.68474e-07 27 4.68474e-07L9 4.68474e-07C7.89543 4.68474e-07 7 0.895431 7 2C7 3.10457 7.89543 4 9 4H25V20C25 21.1046 25.8954 22 27 22C28.1046 22 29 21.1046 29 20L29 2ZM3.41421 28.4142L28.4142 3.41421L25.5858 0.585787L0.585786 25.5858L3.41421 28.4142Z", fill: "currentColor" })] }));
+}
+//# sourceMappingURL=ArrowDiagonal.js.map

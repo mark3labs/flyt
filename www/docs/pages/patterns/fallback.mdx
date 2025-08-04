@@ -1,0 +1,335 @@
+# Fallback on Failure
+
+Implement graceful degradation when operations fail, ensuring your workflows remain resilient and provide the best possible user experience even during failures.
+
+## FallbackNode Interface
+
+The `FallbackNode` interface allows custom fallback behavior:
+
+```go
+type FallbackNode interface {
+    Node
+    ExecFallback(prepResult any, err error) (any, error)
+}
+```
+
+## Basic Fallback
+
+Return default values on failure:
+
+```go
+type DefaultValueNode struct {
+    *flyt.BaseNode
+}
+
+func (n *DefaultValueNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Try primary operation
+    result, err := fetchFromPrimarySource()
+    if err != nil {
+        return nil, err // Will trigger fallback
+    }
+    return result, nil
+}
+
+func (n *DefaultValueNode) ExecFallback(prepResult any, err error) (any, error) {
+    log.Printf("Primary source failed: %v, returning default", err)
+    
+    // Return safe default value
+    return map[string]any{
+        "status": "degraded",
+        "data": "default_value",
+        "error": err.Error(),
+    }, nil
+}
+```
+
+## Cached Fallback
+
+Use cached data when fresh data is unavailable:
+
+```go
+type CachedAPINode struct {
+    *flyt.BaseNode
+    cache map[string]CacheEntry
+    mu    sync.RWMutex
+}
+
+type CacheEntry struct {
+    Data      any
+    Timestamp time.Time
+}
+
+func (n *CachedAPINode) Exec(ctx context.Context, prepResult any) (any, error) {
+    key := prepResult.(string)
+    
+    // Try to fetch fresh data
+    data, err := fetchFromAPI(key)
+    if err == nil {
+        // Update cache on success
+        n.mu.Lock()
+        n.cache[key] = CacheEntry{
+            Data:      data,
+            Timestamp: time.Now(),
+        }
+        n.mu.Unlock()
+        return data, nil
+    }
+    
+    return nil, err
+}
+
+func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
+    key := prepResult.(string)
+    
+    n.mu.RLock()
+    entry, exists := n.cache[key]
+    n.mu.RUnlock()
+    
+    if exists {
+        age := time.Since(entry.Timestamp)
+        log.Printf("Returning cached data (age: %v) due to error: %v", age, err)
+        
+        // Add metadata about cache usage
+        return map[string]any{
+            "data":       entry.Data,
+            "cached":     true,
+            "cache_age":  age.Seconds(),
+            "error":      err.Error(),
+        }, nil
+    }
+    
+    // No cache available
+    return nil, fmt.Errorf("no fallback available: %w", err)
+}
+```
+
+## Multi-Level Fallback
+
+Try multiple fallback strategies:
+
+```go
+type MultiLevelFallbackNode struct {
+    *flyt.BaseNode
+    primaryURL   string
+    secondaryURL string
+    cache        sync.Map
+}
+
+func (n *MultiLevelFallbackNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Try primary source
+    data, err := fetchFromURL(n.primaryURL)
+    if err == nil {
+        n.cache.Store("last_good", data)
+        return data, nil
+    }
+    
+    return nil, err
+}
+
+func (n *MultiLevelFallbackNode) ExecFallback(prepResult any, primaryErr error) (any, error) {
+    // Level 1: Try secondary source
+    data, err := fetchFromURL(n.secondaryURL)
+    if err == nil {
+        log.Printf("Using secondary source due to primary error: %v", primaryErr)
+        return data, nil
+    }
+    
+    // Level 2: Try cache
+    if cached, ok := n.cache.Load("last_good"); ok {
+        log.Printf("Using cached data due to all sources failing")
+        return cached, nil
+    }
+    
+    // Level 3: Return minimal default
+    log.Printf("All fallbacks exhausted, returning minimal response")
+    return map[string]any{
+        "status": "unavailable",
+        "message": "Service temporarily unavailable",
+    }, nil
+}
+```
+
+## Partial Fallback
+
+Return partial results when complete processing fails:
+
+```go
+type BatchProcessorNode struct {
+    *flyt.BaseNode
+    results []Result
+    errors  []error
+}
+
+func (n *BatchProcessorNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    items := prepResult.([]Item)
+    n.results = make([]Result, 0, len(items))
+    n.errors = make([]error, 0)
+    
+    for _, item := range items {
+        result, err := processItem(item)
+        if err != nil {
+            n.errors = append(n.errors, err)
+            continue
+        }
+        n.results = append(n.results, result)
+    }
+    
+    if len(n.errors) > 0 {
+        return nil, fmt.Errorf("processing failed: %d errors", len(n.errors))
+    }
+    
+    return n.results, nil
+}
+
+func (n *BatchProcessorNode) ExecFallback(prepResult any, err error) (any, error) {
+    // Return partial results
+    return map[string]any{
+        "partial_results": n.results,
+        "success_count":   len(n.results),
+        "error_count":     len(n.errors),
+        "errors":          n.errors,
+        "status":          "partial_success",
+    }, nil
+}
+```
+
+## Circuit Breaker Fallback
+
+Prevent cascading failures:
+
+```go
+type CircuitBreakerNode struct {
+    *flyt.BaseNode
+    failures    int
+    lastFailure time.Time
+    threshold   int
+    timeout     time.Duration
+    fallbackMsg string
+}
+
+func (n *CircuitBreakerNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Check if circuit is open
+    if n.isCircuitOpen() {
+        return nil, fmt.Errorf("circuit breaker open")
+    }
+    
+    result, err := callService(prepResult)
+    if err != nil {
+        n.recordFailure()
+        return nil, err
+    }
+    
+    n.reset()
+    return result, nil
+}
+
+func (n *CircuitBreakerNode) ExecFallback(prepResult any, err error) (any, error) {
+    if n.isCircuitOpen() {
+        // Return cached or default response immediately
+        return map[string]any{
+            "status": "circuit_open",
+            "message": n.fallbackMsg,
+            "retry_after": n.timeout - time.Since(n.lastFailure),
+        }, nil
+    }
+    
+    // Circuit not open, but request failed
+    return map[string]any{
+        "status": "degraded",
+        "message": "Service temporarily unavailable",
+    }, nil
+}
+
+func (n *CircuitBreakerNode) isCircuitOpen() bool {
+    return n.failures >= n.threshold && 
+           time.Since(n.lastFailure) < n.timeout
+}
+
+func (n *CircuitBreakerNode) recordFailure() {
+    n.failures++
+    n.lastFailure = time.Now()
+}
+
+func (n *CircuitBreakerNode) reset() {
+    n.failures = 0
+}
+```
+
+## Fallback with Metrics
+
+Track fallback usage:
+
+```go
+type MetricsFallbackNode struct {
+    *flyt.BaseNode
+    primaryCalls   int64
+    fallbackCalls  int64
+    lastFallback   time.Time
+}
+
+func (n *MetricsFallbackNode) ExecFallback(prepResult any, err error) (any, error) {
+    atomic.AddInt64(&n.fallbackCalls, 1)
+    n.lastFallback = time.Now()
+    
+    // Log metrics
+    total := atomic.LoadInt64(&n.primaryCalls) + atomic.LoadInt64(&n.fallbackCalls)
+    fallbackRate := float64(n.fallbackCalls) / float64(total) * 100
+    
+    log.Printf("Fallback metrics - Rate: %.2f%%, Total fallbacks: %d", 
+        fallbackRate, n.fallbackCalls)
+    
+    // Return fallback data
+    return getDefaultResponse(), nil
+}
+```
+
+## Conditional Fallback
+
+Different fallbacks based on error type:
+
+```go
+func (n *ConditionalFallbackNode) ExecFallback(prepResult any, err error) (any, error) {
+    switch {
+    case errors.Is(err, ErrTimeout):
+        // For timeouts, return cached data
+        return n.getCachedResponse(), nil
+        
+    case errors.Is(err, ErrRateLimit):
+        // For rate limits, return throttled message
+        return map[string]any{
+            "error": "rate_limited",
+            "retry_after": 60,
+        }, nil
+        
+    case errors.Is(err, ErrNotFound):
+        // For not found, return empty result
+        return map[string]any{
+            "found": false,
+            "data": nil,
+        }, nil
+        
+    default:
+        // Generic fallback
+        return map[string]any{
+            "status": "error",
+            "message": "Service unavailable",
+        }, nil
+    }
+}
+```
+
+## Best Practices
+
+1. **Log Fallback Usage**: Track when and why fallbacks are triggered
+2. **Monitor Fallback Rates**: High rates indicate system issues
+3. **Set Appropriate Timeouts**: Don't wait too long before falling back
+4. **Provide Meaningful Defaults**: Fallback data should be useful
+5. **Document Fallback Behavior**: Make it clear what happens during failures
+6. **Test Fallback Paths**: Ensure fallbacks work correctly
+7. **Consider User Experience**: Degraded service is better than no service
+
+## Next Steps
+
+- [Error Handling](/patterns/error-handling) - Comprehensive error strategies
+- [Conditional Branching](/patterns/branching) - Dynamic flow control
+- [Circuit Breaker Pattern](/patterns/error-handling#circuit-breaker-pattern) - Prevent cascading failures

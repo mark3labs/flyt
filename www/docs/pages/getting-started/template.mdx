@@ -1,0 +1,167 @@
+# Project Template
+
+The fastest way to start a new Flyt project is using the official template.
+
+## Quick Setup
+
+```bash
+# Clone the template
+git clone https://github.com/mark3labs/flyt-project-template my-flyt-project
+cd my-flyt-project
+
+# Remove template git history
+rm -rf .git
+git init
+
+# Install dependencies
+go mod tidy
+
+# Run the example
+go run main.go
+```
+
+## What's Included
+
+The template provides:
+
+### Project Structure
+
+```
+my-flyt-project/
+├── main.go           # Entry point with example workflow
+├── nodes/            # Custom node implementations
+│   ├── fetch.go      # Example fetch node
+│   ├── process.go    # Example processing node
+│   └── validate.go   # Example validation node
+├── flows/            # Reusable flow definitions
+│   └── example.go    # Example flow composition
+├── go.mod            # Go module file
+└── README.md         # Project documentation
+```
+
+### Example Code
+
+The template includes a working example that demonstrates:
+
+- Creating custom nodes
+- Building flows
+- Using the SharedStore
+- Error handling with retries
+- Action-based routing
+
+### main.go
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    
+    "github.com/mark3labs/flyt"
+    "myproject/flows"
+)
+
+func main() {
+    // Create shared store with initial data
+    shared := flyt.NewSharedStore()
+    shared.Set("api_key", "your-api-key")
+    shared.Set("base_url", "https://api.example.com")
+    
+    // Create and run the example flow
+    flow := flows.CreateExampleFlow()
+    
+    ctx := context.Background()
+    if err := flow.Run(ctx, shared); err != nil {
+        log.Fatal(err)
+    }
+    
+    // Get results
+    if result, ok := shared.Get("final_result"); ok {
+        log.Printf("Success! Result: %v\n", result)
+    }
+}
+```
+
+## Customizing the Template
+
+### Adding New Nodes
+
+Create a new file in the `nodes/` directory:
+
+```go
+// nodes/custom.go
+package nodes
+
+import (
+    "context"
+    "github.com/mark3labs/flyt"
+)
+
+func CreateCustomNode() flyt.Node {
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            // Your custom logic here
+            return "custom result", nil
+        }),
+    )
+}
+```
+
+### Creating New Flows
+
+Add flows to the `flows/` directory:
+
+```go
+// flows/custom.go
+package flows
+
+import (
+    "github.com/mark3labs/flyt"
+    "myproject/nodes"
+)
+
+func CreateCustomFlow() *flyt.Flow {
+    // Create nodes
+    startNode := nodes.CreateCustomNode()
+    processNode := nodes.CreateProcessNode()
+    
+    // Build flow
+    flow := flyt.NewFlow(startNode)
+    flow.Connect(startNode, flyt.DefaultAction, processNode)
+    
+    return flow
+}
+```
+
+## Best Practices
+
+When using the template:
+
+1. **Organize by Feature**: Group related nodes and flows together
+2. **Use Configuration**: Store config in SharedStore or environment variables
+3. **Add Tests**: Create `*_test.go` files for your nodes and flows
+4. **Document Your Nodes**: Add comments explaining what each node does
+5. **Version Control**: Initialize git and commit regularly
+
+## Deployment
+
+The template is ready for deployment:
+
+```bash
+# Build the binary
+go build -o myapp
+
+# Run in production
+./myapp
+
+# Or use Docker
+docker build -t myapp .
+docker run myapp
+```
+
+## Next Steps
+
+- [Core Concepts](/concepts/nodes) - Understand Flyt fundamentals
+- [Patterns](/patterns/closures) - Learn common patterns
+- [Examples](/examples/agent) - See real-world implementations

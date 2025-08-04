@@ -1,0 +1,24 @@
+export declare const root: string;
+export declare const backLink: string;
+export declare const divider: string;
+export declare const navigation: string;
+export declare const group: string;
+export declare const logo: string;
+export declare const logoWrapper: string;
+export declare const section: string;
+export declare const level: string;
+export declare const levelCollapsed: string;
+export declare const levelInset: string;
+export declare const footer: string;
+export declare const footerContent: string;
+export declare const footerCurtain: string;
+export declare const items: string;
+export declare const item: string;
+export declare const disabledItem: string;
+export declare const sectionHeader: string;
+export declare const sectionHeaderActive: string;
+export declare const sectionTitle: string;
+export declare const sectionTitleLink: string;
+export declare const sectionCollapse: string;
+export declare const sectionCollapseActive: string;
+//# sourceMappingURL=Sidebar.css.d.js.map

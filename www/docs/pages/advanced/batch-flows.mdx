@@ -1,0 +1,327 @@
+# Batch Flows
+
+Run the same flow multiple times with different parameters, perfect for processing multiple entities or parallel workflows.
+
+## Basic Batch Flow
+
+Run a flow for each set of inputs:
+
+```go
+// Create a flow factory - returns a new flow instance for each iteration
+flowFactory := func() *flyt.Flow {
+    validateNode := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            // Each flow has its own SharedStore with merged FlowInputs
+            userID, _ := shared.Get("user_id")
+            email, _ := shared.Get("email")
+            return map[string]any{"user_id": userID, "email": email}, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            data := prepResult.(map[string]any)
+            // Process user data
+            return processUser(data), nil
+        }),
+    )
+    return flyt.NewFlow(validateNode)
+}
+
+// Define input parameters for each flow iteration
+batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+    // Could fetch from database, API, etc.
+    return []flyt.FlowInputs{
+        {"user_id": 1, "email": "user1@example.com"},
+        {"user_id": 2, "email": "user2@example.com"},
+        {"user_id": 3, "email": "user3@example.com"},
+    }, nil
+}
+
+// Create and run batch flow
+batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true) // true for concurrent
+shared := flyt.NewSharedStore()
+err := batchFlow.Run(ctx, shared)
+```
+
+## Sequential vs Concurrent Execution
+
+Control how flows are executed:
+
+```go
+// Sequential - one flow at a time
+sequentialBatch := flyt.NewBatchFlow(flowFactory, batchFunc, false)
+
+// Concurrent - multiple flows in parallel
+concurrentBatch := flyt.NewBatchFlow(flowFactory, batchFunc, true)
+```
+
+## Dynamic Input Generation
+
+Generate inputs based on runtime data:
+
+```go
+batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+    // Get configuration from parent shared store
+    config, _ := shared.Get("batch_config")
+    batchSize := config.(map[string]any)["size"].(int)
+    
+    // Fetch data from database
+    users, err := fetchUsers(batchSize)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Convert to FlowInputs
+    inputs := make([]flyt.FlowInputs, len(users))
+    for i, user := range users {
+        inputs[i] = flyt.FlowInputs{
+            "user_id":   user.ID,
+            "user_name": user.Name,
+            "user_data": user,
+        }
+    }
+    
+    return inputs, nil
+}
+```
+
+## Complex Flow Factory
+
+Create sophisticated flows for each batch:
+
+```go
+flowFactory := func() *flyt.Flow {
+    // Create nodes
+    fetchNode := createFetchNode()
+    validateNode := createValidateNode()
+    processNode := createProcessNode()
+    saveNode := createSaveNode()
+    errorNode := createErrorNode()
+    
+    // Build flow with error handling
+    flow := flyt.NewFlow(fetchNode)
+    flow.Connect(fetchNode, flyt.DefaultAction, validateNode)
+    flow.Connect(validateNode, "valid", processNode)
+    flow.Connect(validateNode, "invalid", errorNode)
+    flow.Connect(processNode, flyt.DefaultAction, saveNode)
+    flow.Connect(processNode, "error", errorNode)
+    
+    return flow
+}
+```
+
+## Batch Flow with Configuration
+
+Pass configuration to batch flows:
+
+```go
+func createConfiguredBatchFlow(config Config) *flyt.Flow {
+    flowFactory := func() *flyt.Flow {
+        // Each flow gets the same configuration
+        node := flyt.NewNode(
+            flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+                // Use config in processing
+                return processWithConfig(prepResult, config), nil
+            }),
+        )
+        return flyt.NewFlow(node)
+    }
+    
+    batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+        items, _ := shared.Get("items")
+        
+        inputs := make([]flyt.FlowInputs, 0)
+        for _, item := range items.([]any) {
+            inputs = append(inputs, flyt.FlowInputs{
+                "item": item,
+                "config": config,
+            })
+        }
+        
+        return inputs, nil
+    }
+    
+    return flyt.NewBatchFlow(flowFactory, batchFunc, true)
+}
+```
+
+## Result Aggregation
+
+Collect results from all flows:
+
+```go
+type ResultCollector struct {
+    mu      sync.Mutex
+    results []any
+    errors  []error
+}
+
+func createAggregatingBatchFlow(collector *ResultCollector) *flyt.Flow {
+    flowFactory := func() *flyt.Flow {
+        node := flyt.NewNode(
+            flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+                result, err := process(prepResult)
+                
+                collector.mu.Lock()
+                if err != nil {
+                    collector.errors = append(collector.errors, err)
+                } else {
+                    collector.results = append(collector.results, result)
+                }
+                collector.mu.Unlock()
+                
+                return result, err
+            }),
+        )
+        return flyt.NewFlow(node)
+    }
+    
+    // ... rest of batch flow setup
+}
+```
+
+## Batch Flow with Progress
+
+Track progress across batch execution:
+
+```go
+type ProgressTracker struct {
+    total     int
+    completed int32
+    failed    int32
+}
+
+func createProgressBatchFlow(tracker *ProgressTracker) *flyt.Flow {
+    flowFactory := func() *flyt.Flow {
+        node := flyt.NewNode(
+            flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+                if execResult != nil {
+                    atomic.AddInt32(&tracker.completed, 1)
+                } else {
+                    atomic.AddInt32(&tracker.failed, 1)
+                }
+                
+                progress := atomic.LoadInt32(&tracker.completed) + atomic.LoadInt32(&tracker.failed)
+                percentage := float64(progress) / float64(tracker.total) * 100
+                
+                log.Printf("Batch progress: %.1f%% (%d/%d)", percentage, progress, tracker.total)
+                
+                return flyt.DefaultAction, nil
+            }),
+        )
+        return flyt.NewFlow(node)
+    }
+    
+    batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+        inputs := generateInputs()
+        tracker.total = len(inputs)
+        return inputs, nil
+    }
+    
+    return flyt.NewBatchFlow(flowFactory, batchFunc, true)
+}
+```
+
+## Conditional Batch Processing
+
+Process batches based on conditions:
+
+```go
+batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+    mode, _ := shared.Get("processing_mode")
+    
+    var inputs []flyt.FlowInputs
+    
+    switch mode.(string) {
+    case "all":
+        inputs = getAllInputs()
+    case "pending":
+        inputs = getPendingInputs()
+    case "failed":
+        inputs = getFailedInputs()
+    default:
+        return nil, fmt.Errorf("unknown mode: %s", mode)
+    }
+    
+    // Filter based on additional criteria
+    filtered := make([]flyt.FlowInputs, 0)
+    for _, input := range inputs {
+        if shouldProcess(input) {
+            filtered = append(filtered, input)
+        }
+    }
+    
+    return filtered, nil
+}
+```
+
+## Nested Batch Flows
+
+Batch flows within batch flows:
+
+```go
+outerFlowFactory := func() *flyt.Flow {
+    // Inner batch flow for processing items
+    innerBatchFlow := flyt.NewBatchFlow(
+        innerFlowFactory,
+        innerBatchFunc,
+        true,
+    )
+    
+    // Outer flow that includes the batch
+    fetchNode := createFetchNode()
+    
+    flow := flyt.NewFlow(fetchNode)
+    flow.Connect(fetchNode, flyt.DefaultAction, innerBatchFlow)
+    flow.Connect(innerBatchFlow, flyt.DefaultAction, aggregateNode)
+    
+    return flow
+}
+
+// Create outer batch flow
+outerBatchFlow := flyt.NewBatchFlow(outerFlowFactory, outerBatchFunc, false)
+```
+
+## Error Recovery
+
+Handle failures in batch flows:
+
+```go
+flowFactory := func() *flyt.Flow {
+    node := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            result, err := riskyOperation(prepResult)
+            if err != nil {
+                // Store error for later analysis
+                errorData := map[string]any{
+                    "input": prepResult,
+                    "error": err.Error(),
+                    "time":  time.Now(),
+                }
+                storeError(errorData)
+                
+                // Return partial result
+                return map[string]any{
+                    "status": "failed",
+                    "error":  err.Error(),
+                }, nil  // Don't fail the entire batch
+            }
+            return result, nil
+        }),
+    )
+    return flyt.NewFlow(node)
+}
+```
+
+## Best Practices
+
+1. **Isolate Flows**: Each flow instance should be independent
+2. **Manage Resources**: Be mindful of resource usage with concurrent flows
+3. **Handle Failures**: Decide whether one failure should stop the batch
+4. **Track Progress**: Implement progress tracking for long-running batches
+5. **Limit Concurrency**: Set reasonable concurrency limits
+6. **Test Thoroughly**: Test with various batch sizes and failure scenarios
+
+## Next Steps
+
+- [Batch Processing](/advanced/batch-processing) - Process items within a single node
+- [Nested Flows](/advanced/nested-flows) - Compose complex workflows
+- [Worker Pool](/advanced/worker-pool) - Fine-grained concurrency control

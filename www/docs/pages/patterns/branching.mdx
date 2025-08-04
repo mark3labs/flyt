@@ -1,0 +1,401 @@
+# Conditional Branching
+
+Control flow execution dynamically based on runtime conditions using action-based routing.
+
+## Simple Binary Branching
+
+Make yes/no decisions:
+
+```go
+validationNode := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        data := prepResult.(string)
+        isValid := len(data) > 0 && len(data) < 100
+        return isValid, nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        if execResult.(bool) {
+            return "valid", nil
+        }
+        return "invalid", nil
+    }),
+)
+
+flow := flyt.NewFlow(validationNode)
+flow.Connect(validationNode, "valid", processNode)
+flow.Connect(validationNode, "invalid", errorNode)
+```
+
+## Multi-Way Branching
+
+Route to multiple paths:
+
+```go
+categoryNode := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        value := prepResult.(float64)
+        
+        switch {
+        case value < 10:
+            return "small", nil
+        case value < 100:
+            return "medium", nil
+        case value < 1000:
+            return "large", nil
+        default:
+            return "xlarge", nil
+        }
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        return flyt.Action(execResult.(string)), nil
+    }),
+)
+
+flow := flyt.NewFlow(categoryNode)
+flow.Connect(categoryNode, "small", smallHandler)
+flow.Connect(categoryNode, "medium", mediumHandler)
+flow.Connect(categoryNode, "large", largeHandler)
+flow.Connect(categoryNode, "xlarge", xlargeHandler)
+```
+
+## State Machine Pattern
+
+Implement state transitions:
+
+```go
+type StateMachine struct {
+    *flyt.BaseNode
+}
+
+func (n *StateMachine) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    currentState, _ := shared.Get("state")
+    if currentState == nil {
+        currentState = "init"
+    }
+    
+    state := currentState.(string)
+    event := execResult.(string)
+    
+    // State transition logic
+    nextState := n.transition(state, event)
+    shared.Set("state", nextState)
+    
+    // Return action based on new state
+    return flyt.Action(nextState), nil
+}
+
+func (n *StateMachine) transition(state, event string) string {
+    transitions := map[string]map[string]string{
+        "init": {
+            "start": "processing",
+            "cancel": "cancelled",
+        },
+        "processing": {
+            "complete": "done",
+            "error": "failed",
+            "pause": "paused",
+        },
+        "paused": {
+            "resume": "processing",
+            "cancel": "cancelled",
+        },
+    }
+    
+    if stateTransitions, ok := transitions[state]; ok {
+        if nextState, ok := stateTransitions[event]; ok {
+            return nextState
+        }
+    }
+    
+    return state // No transition
+}
+```
+
+## Dynamic Routing
+
+Route based on external configuration:
+
+```go
+type DynamicRouter struct {
+    *flyt.BaseNode
+    routes map[string]string
+}
+
+func NewDynamicRouter(configPath string) *DynamicRouter {
+    // Load routing configuration
+    data, _ := os.ReadFile(configPath)
+    var routes map[string]string
+    json.Unmarshal(data, &routes)
+    
+    return &DynamicRouter{
+        BaseNode: flyt.NewBaseNode(),
+        routes:   routes,
+    }
+}
+
+func (n *DynamicRouter) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    result := execResult.(string)
+    
+    // Look up route in configuration
+    if action, ok := n.routes[result]; ok {
+        return flyt.Action(action), nil
+    }
+    
+    // Default route
+    return flyt.DefaultAction, nil
+}
+```
+
+## Weighted Routing
+
+Distribute load across paths:
+
+```go
+type LoadBalancer struct {
+    *flyt.BaseNode
+    weights  map[string]int
+    counter  int
+    mu       sync.Mutex
+}
+
+func NewLoadBalancer(weights map[string]int) *LoadBalancer {
+    return &LoadBalancer{
+        BaseNode: flyt.NewBaseNode(),
+        weights:  weights,
+    }
+}
+
+func (n *LoadBalancer) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    n.mu.Lock()
+    defer n.mu.Unlock()
+    
+    n.counter++
+    
+    // Calculate total weight
+    totalWeight := 0
+    for _, weight := range n.weights {
+        totalWeight += weight
+    }
+    
+    // Determine which path based on counter
+    position := n.counter % totalWeight
+    currentWeight := 0
+    
+    for action, weight := range n.weights {
+        currentWeight += weight
+        if position < currentWeight {
+            return flyt.Action(action), nil
+        }
+    }
+    
+    return flyt.DefaultAction, nil
+}
+
+// Usage
+balancer := NewLoadBalancer(map[string]int{
+    "server1": 3,  // 30% of traffic
+    "server2": 5,  // 50% of traffic
+    "server3": 2,  // 20% of traffic
+})
+```
+
+## Conditional Loops
+
+Create loops with exit conditions:
+
+```go
+retryNode := flyt.NewNode(
+    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        attempts, _ := shared.Get("attempts")
+        if attempts == nil {
+            attempts = 0
+        }
+        return attempts.(int), nil
+    }),
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        attempts := prepResult.(int)
+        
+        // Try operation
+        result, err := performOperation()
+        if err != nil {
+            return map[string]any{
+                "success": false,
+                "attempts": attempts + 1,
+                "error": err.Error(),
+            }, nil
+        }
+        
+        return map[string]any{
+            "success": true,
+            "result": result,
+        }, nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        result := execResult.(map[string]any)
+        
+        if result["success"].(bool) {
+            return "success", nil
+        }
+        
+        attempts := result["attempts"].(int)
+        shared.Set("attempts", attempts)
+        
+        if attempts < 3 {
+            return "retry", nil  // Loop back
+        }
+        
+        return "failed", nil  // Exit loop
+    }),
+)
+
+flow := flyt.NewFlow(retryNode)
+flow.Connect(retryNode, "retry", retryNode)  // Loop back to self
+flow.Connect(retryNode, "success", successNode)
+flow.Connect(retryNode, "failed", failureNode)
+```
+
+## Pipeline Branching
+
+Branch and merge pipelines:
+
+```go
+// Split node decides which pipeline(s) to execute
+splitNode := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        data := prepResult.(map[string]any)
+        
+        needsValidation := data["validate"].(bool)
+        needsEnrichment := data["enrich"].(bool)
+        
+        if needsValidation && needsEnrichment {
+            return "both", nil
+        } else if needsValidation {
+            return "validate_only", nil
+        } else if needsEnrichment {
+            return "enrich_only", nil
+        }
+        return "skip", nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        return flyt.Action(execResult.(string)), nil
+    }),
+)
+
+// Build flow with different pipelines
+flow := flyt.NewFlow(splitNode)
+
+// Both pipelines
+flow.Connect(splitNode, "both", validateNode)
+flow.Connect(validateNode, flyt.DefaultAction, enrichNode)
+flow.Connect(enrichNode, flyt.DefaultAction, mergeNode)
+
+// Validation only
+flow.Connect(splitNode, "validate_only", validateNode)
+flow.Connect(validateNode, "skip_enrich", mergeNode)
+
+// Enrichment only
+flow.Connect(splitNode, "enrich_only", enrichNode)
+flow.Connect(enrichNode, "skip_validate", mergeNode)
+
+// Skip both
+flow.Connect(splitNode, "skip", mergeNode)
+```
+
+## Feature Flags
+
+Control flow with feature toggles:
+
+```go
+type FeatureFlagNode struct {
+    *flyt.BaseNode
+    flags map[string]bool
+}
+
+func (n *FeatureFlagNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    feature := execResult.(string)
+    
+    // Check if feature is enabled
+    if enabled, ok := n.flags[feature]; ok && enabled {
+        return flyt.Action(feature + "_enabled"), nil
+    }
+    
+    return flyt.Action(feature + "_disabled"), nil
+}
+
+// Usage
+flagNode := &FeatureFlagNode{
+    BaseNode: flyt.NewBaseNode(),
+    flags: map[string]bool{
+        "new_algorithm": true,
+        "beta_feature": false,
+        "experimental": true,
+    },
+}
+
+flow := flyt.NewFlow(flagNode)
+flow.Connect(flagNode, "new_algorithm_enabled", newAlgorithmNode)
+flow.Connect(flagNode, "new_algorithm_disabled", oldAlgorithmNode)
+```
+
+## A/B Testing
+
+Route based on experiment groups:
+
+```go
+func createABTestNode(testName string, distribution map[string]int) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            userID, _ := shared.Get("user_id")
+            return userID, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            userID := prepResult.(string)
+            
+            // Hash user ID for consistent assignment
+            h := fnv.New32a()
+            h.Write([]byte(userID + testName))
+            hash := h.Sum32()
+            
+            // Determine variant based on distribution
+            bucket := int(hash % 100)
+            cumulative := 0
+            
+            for variant, percentage := range distribution {
+                cumulative += percentage
+                if bucket < cumulative {
+                    return variant, nil
+                }
+            }
+            
+            return "control", nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+            variant := execResult.(string)
+            shared.Set("ab_variant", variant)
+            return flyt.Action(variant), nil
+        }),
+    )
+}
+
+// Usage
+abNode := createABTestNode("checkout_flow", map[string]int{
+    "variant_a": 33,  // 33% of users
+    "variant_b": 33,  // 33% of users
+    "control":   34,  // 34% of users
+})
+```
+
+## Best Practices
+
+1. **Clear Action Names**: Use descriptive action names that indicate the path
+2. **Document Branches**: Comment all possible branches and their conditions
+3. **Handle All Cases**: Ensure all possible actions have connections
+4. **Avoid Deep Nesting**: Keep branching logic simple and readable
+5. **Test All Paths**: Write tests for each branch condition
+6. **Monitor Branch Usage**: Track which paths are taken most frequently
+
+## Next Steps
+
+- [Actions](/concepts/actions) - Deep dive into action system
+- [Flows](/concepts/flows) - Building complex workflows
+- [State Machines](/patterns/branching#state-machine-pattern) - Advanced state management

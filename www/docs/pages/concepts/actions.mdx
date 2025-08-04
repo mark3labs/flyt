@@ -1,0 +1,181 @@
+# Actions
+
+Actions are strings returned by a node's Post phase that determine the next step in a workflow. They provide dynamic, runtime control over flow execution.
+
+## How Actions Work
+
+When a node completes, its Post phase returns an action:
+
+```go
+func (n *MyNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    if success {
+        return "continue", nil
+    }
+    return "retry", nil
+}
+```
+
+The flow then routes to the node connected with that action:
+
+```go
+flow := flyt.NewFlow(startNode)
+flow.Connect(startNode, "continue", processNode)
+flow.Connect(startNode, "retry", retryNode)
+```
+
+## Default Action
+
+The most common action is `flyt.DefaultAction`:
+
+```go
+// Using the constant
+return flyt.DefaultAction, nil  // Returns "default"
+
+// In flow connections
+flow.Connect(node1, flyt.DefaultAction, node2)
+```
+
+## Action-Based Routing
+
+### Simple Branching
+
+```go
+validationNode := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        data := prepResult.(string)
+        return len(data) > 0, nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        if execResult.(bool) {
+            return "valid", nil
+        }
+        return "invalid", nil
+    }),
+)
+
+flow := flyt.NewFlow(validationNode)
+flow.Connect(validationNode, "valid", processNode)
+flow.Connect(validationNode, "invalid", errorNode)
+```
+
+### Multi-Way Branching
+
+```go
+categoryNode := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        value := prepResult.(int)
+        if value < 10 {
+            return "small", nil
+        } else if value < 100 {
+            return "medium", nil
+        }
+        return "large", nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        return flyt.Action(execResult.(string)), nil
+    }),
+)
+
+flow := flyt.NewFlow(categoryNode)
+flow.Connect(categoryNode, "small", smallHandler)
+flow.Connect(categoryNode, "medium", mediumHandler)
+flow.Connect(categoryNode, "large", largeHandler)
+```
+
+## Flow Termination
+
+If no connection exists for an action, the flow terminates:
+
+```go
+flow := flyt.NewFlow(node1)
+flow.Connect(node1, "continue", node2)
+// If node1 returns "stop", flow ends (no connection for "stop")
+```
+
+Explicitly terminate by connecting to nil:
+
+```go
+flow.Connect(finalNode, "done", nil)
+```
+
+## Common Patterns
+
+### Success/Failure Pattern
+
+```go
+func makeDecisionPost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    if err := execResult.(error); err != nil {
+        return "failure", nil
+    }
+    return "success", nil
+}
+```
+
+### Retry Pattern
+
+```go
+func retryablePost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    attempts, _ := shared.Get("attempts")
+    count := attempts.(int)
+    
+    if execResult == nil && count < 3 {
+        shared.Set("attempts", count + 1)
+        return "retry", nil
+    }
+    return "continue", nil
+}
+```
+
+### State Machine Pattern
+
+```go
+func statePost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    currentState, _ := shared.Get("state")
+    
+    switch currentState.(string) {
+    case "init":
+        shared.Set("state", "processing")
+        return "process", nil
+    case "processing":
+        shared.Set("state", "complete")
+        return "finalize", nil
+    default:
+        return "done", nil
+    }
+}
+```
+
+## Dynamic Actions
+
+Actions can be computed at runtime:
+
+```go
+func dynamicPost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    result := execResult.(map[string]any)
+    nextAction := result["next_action"].(string)
+    return flyt.Action(nextAction), nil
+}
+```
+
+## Best Practices
+
+1. **Use Descriptive Names**: Actions should clearly indicate their purpose
+2. **Document Actions**: List all possible actions a node can return
+3. **Handle All Cases**: Ensure all possible actions have connections or intentionally terminate
+4. **Consistent Naming**: Use a consistent naming scheme across your application
+5. **Avoid Magic Strings**: Define action constants for reusability
+
+```go
+const (
+    ActionValidate = flyt.Action("validate")
+    ActionProcess  = flyt.Action("process")
+    ActionComplete = flyt.Action("complete")
+    ActionError    = flyt.Action("error")
+)
+```
+
+## Next Steps
+
+- [Flows](/concepts/flows) - Connect nodes with actions
+- [Conditional Branching](/patterns/branching) - Advanced routing patterns
+- [Nested Flows](/advanced/nested-flows) - Compose complex workflows

@@ -1,0 +1,467 @@
+# Custom Node Types
+
+Create sophisticated nodes with custom behavior, state management, and advanced features.
+
+## Basic Custom Node
+
+Extend BaseNode for custom functionality:
+
+```go
+type CustomNode struct {
+    *flyt.BaseNode
+    config Config
+    state  State
+}
+
+func NewCustomNode(config Config) *CustomNode {
+    return &CustomNode{
+        BaseNode: flyt.NewBaseNode(),
+        config:   config,
+        state:    NewState(),
+    }
+}
+
+func (n *CustomNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Custom preparation logic
+    input, _ := shared.Get("input")
+    n.state.Prepare(input)
+    return input, nil
+}
+
+func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Custom execution logic
+    result := n.processWithConfig(prepResult, n.config)
+    n.state.Update(result)
+    return result, nil
+}
+
+func (n *CustomNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    // Custom post-processing
+    shared.Set("state", n.state)
+    
+    if n.state.IsComplete() {
+        return "complete", nil
+    }
+    return "continue", nil
+}
+```
+
+## Stateful Nodes
+
+Maintain state across executions:
+
+```go
+type AccumulatorNode struct {
+    *flyt.BaseNode
+    mu       sync.Mutex
+    values   []any
+    maxSize  int
+}
+
+func NewAccumulatorNode(maxSize int) *AccumulatorNode {
+    return &AccumulatorNode{
+        BaseNode: flyt.NewBaseNode(),
+        values:   make([]any, 0, maxSize),
+        maxSize:  maxSize,
+    }
+}
+
+func (n *AccumulatorNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    n.mu.Lock()
+    defer n.mu.Unlock()
+    
+    // Add to accumulator
+    n.values = append(n.values, prepResult)
+    
+    // Check if buffer is full
+    if len(n.values) >= n.maxSize {
+        // Process batch
+        result := n.processBatch(n.values)
+        n.values = n.values[:0] // Clear buffer
+        return result, nil
+    }
+    
+    return nil, nil
+}
+
+func (n *AccumulatorNode) processBatch(values []any) any {
+    // Process accumulated values
+    return map[string]any{
+        "count": len(values),
+        "data":  values,
+    }
+}
+```
+
+## Resource-Managing Nodes
+
+Handle external resources:
+
+```go
+type DatabaseNode struct {
+    *flyt.BaseNode
+    pool     *sql.DB
+    prepared map[string]*sql.Stmt
+    mu       sync.RWMutex
+}
+
+func NewDatabaseNode(dsn string) (*DatabaseNode, error) {
+    db, err := sql.Open("postgres", dsn)
+    if err != nil {
+        return nil, err
+    }
+    
+    db.SetMaxOpenConns(25)
+    db.SetMaxIdleConns(5)
+    
+    return &DatabaseNode{
+        BaseNode: flyt.NewBaseNode(),
+        pool:     db,
+        prepared: make(map[string]*sql.Stmt),
+    }, nil
+}
+
+func (n *DatabaseNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    query := prepResult.(QueryRequest)
+    
+    // Use prepared statement if available
+    stmt, err := n.getOrPrepare(query.SQL)
+    if err != nil {
+        return nil, err
+    }
+    
+    rows, err := stmt.QueryContext(ctx, query.Args...)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    
+    return n.scanResults(rows)
+}
+
+func (n *DatabaseNode) getOrPrepare(sql string) (*sql.Stmt, error) {
+    n.mu.RLock()
+    stmt, exists := n.prepared[sql]
+    n.mu.RUnlock()
+    
+    if exists {
+        return stmt, nil
+    }
+    
+    n.mu.Lock()
+    defer n.mu.Unlock()
+    
+    // Double-check after acquiring write lock
+    if stmt, exists := n.prepared[sql]; exists {
+        return stmt, nil
+    }
+    
+    stmt, err := n.pool.Prepare(sql)
+    if err != nil {
+        return nil, err
+    }
+    
+    n.prepared[sql] = stmt
+    return stmt, nil
+}
+
+func (n *DatabaseNode) Close() error {
+    n.mu.Lock()
+    defer n.mu.Unlock()
+    
+    for _, stmt := range n.prepared {
+        stmt.Close()
+    }
+    
+    return n.pool.Close()
+}
+```
+
+## RetryableNode Implementation
+
+Custom retry logic:
+
+```go
+type SmartRetryNode struct {
+    *flyt.BaseNode
+    attempts      int
+    lastError     error
+    backoffFactor float64
+}
+
+func NewSmartRetryNode() *SmartRetryNode {
+    return &SmartRetryNode{
+        BaseNode:      flyt.NewBaseNode(),
+        backoffFactor: 1.5,
+    }
+}
+
+func (n *SmartRetryNode) GetMaxRetries() int {
+    // Dynamic retry count based on error type
+    if n.lastError != nil {
+        switch {
+        case isNetworkError(n.lastError):
+            return 5  // More retries for network issues
+        case isRateLimitError(n.lastError):
+            return 3  // Fewer retries for rate limits
+        case isAuthError(n.lastError):
+            return 0  // No retries for auth errors
+        default:
+            return 2
+        }
+    }
+    return 3
+}
+
+func (n *SmartRetryNode) GetWait() time.Duration {
+    if n.lastError != nil && isRateLimitError(n.lastError) {
+        // Extract retry-after from error if available
+        if retryAfter := extractRetryAfter(n.lastError); retryAfter > 0 {
+            return retryAfter
+        }
+    }
+    
+    // Exponential backoff with jitter
+    base := math.Pow(n.backoffFactor, float64(n.attempts))
+    jitter := rand.Float64() * 0.3 * base  // 30% jitter
+    return time.Duration((base + jitter) * float64(time.Second))
+}
+
+func (n *SmartRetryNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    n.attempts++
+    
+    result, err := n.performOperation(ctx, prepResult)
+    if err != nil {
+        n.lastError = err
+        return nil, err
+    }
+    
+    // Reset on success
+    n.attempts = 0
+    n.lastError = nil
+    return result, nil
+}
+```
+
+## Composite Nodes
+
+Combine multiple operations:
+
+```go
+type PipelineNode struct {
+    *flyt.BaseNode
+    stages []func(context.Context, any) (any, error)
+}
+
+func NewPipelineNode(stages ...func(context.Context, any) (any, error)) *PipelineNode {
+    return &PipelineNode{
+        BaseNode: flyt.NewBaseNode(),
+        stages:   stages,
+    }
+}
+
+func (n *PipelineNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    result := prepResult
+    
+    for i, stage := range n.stages {
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        default:
+        }
+        
+        var err error
+        result, err = stage(ctx, result)
+        if err != nil {
+            return nil, fmt.Errorf("stage %d failed: %w", i, err)
+        }
+    }
+    
+    return result, nil
+}
+```
+
+## Monitoring Nodes
+
+Add observability:
+
+```go
+type MonitoredNode struct {
+    *flyt.BaseNode
+    name    string
+    metrics *Metrics
+}
+
+type Metrics struct {
+    executions   int64
+    successes    int64
+    failures     int64
+    totalLatency int64
+}
+
+func NewMonitoredNode(name string, baseNode flyt.Node) *MonitoredNode {
+    return &MonitoredNode{
+        BaseNode: baseNode.(*flyt.BaseNode),
+        name:     name,
+        metrics:  &Metrics{},
+    }
+}
+
+func (n *MonitoredNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    start := time.Now()
+    atomic.AddInt64(&n.metrics.executions, 1)
+    
+    result, err := n.BaseNode.Exec(ctx, prepResult)
+    
+    latency := time.Since(start).Milliseconds()
+    atomic.AddInt64(&n.metrics.totalLatency, latency)
+    
+    if err != nil {
+        atomic.AddInt64(&n.metrics.failures, 1)
+        log.Printf("[%s] Execution failed: %v (latency: %dms)", n.name, err, latency)
+    } else {
+        atomic.AddInt64(&n.metrics.successes, 1)
+        log.Printf("[%s] Execution succeeded (latency: %dms)", n.name, latency)
+    }
+    
+    return result, err
+}
+
+func (n *MonitoredNode) GetMetrics() map[string]any {
+    return map[string]any{
+        "executions":    atomic.LoadInt64(&n.metrics.executions),
+        "successes":     atomic.LoadInt64(&n.metrics.successes),
+        "failures":      atomic.LoadInt64(&n.metrics.failures),
+        "avg_latency":   n.getAverageLatency(),
+        "success_rate":  n.getSuccessRate(),
+    }
+}
+```
+
+## Async Nodes
+
+Handle asynchronous operations:
+
+```go
+type AsyncNode struct {
+    *flyt.BaseNode
+    workers int
+    queue   chan Task
+    wg      sync.WaitGroup
+}
+
+func NewAsyncNode(workers int) *AsyncNode {
+    n := &AsyncNode{
+        BaseNode: flyt.NewBaseNode(),
+        workers:  workers,
+        queue:    make(chan Task, workers*2),
+    }
+    
+    // Start workers
+    for i := 0; i < workers; i++ {
+        go n.worker()
+    }
+    
+    return n
+}
+
+func (n *AsyncNode) worker() {
+    for task := range n.queue {
+        n.processTask(task)
+        n.wg.Done()
+    }
+}
+
+func (n *AsyncNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    tasks := prepResult.([]Task)
+    results := make([]Result, len(tasks))
+    
+    // Submit all tasks
+    for i, task := range tasks {
+        n.wg.Add(1)
+        task.Index = i
+        task.Results = &results
+        n.queue <- task
+    }
+    
+    // Wait for completion
+    done := make(chan struct{})
+    go func() {
+        n.wg.Wait()
+        close(done)
+    }()
+    
+    select {
+    case <-ctx.Done():
+        return nil, ctx.Err()
+    case <-done:
+        return results, nil
+    }
+}
+
+func (n *AsyncNode) Close() {
+    close(n.queue)
+}
+```
+
+## Validation Nodes
+
+Ensure data integrity:
+
+```go
+type ValidationNode struct {
+    *flyt.BaseNode
+    rules []ValidationRule
+}
+
+type ValidationRule interface {
+    Validate(any) error
+    Name() string
+}
+
+func NewValidationNode(rules ...ValidationRule) *ValidationNode {
+    return &ValidationNode{
+        BaseNode: flyt.NewBaseNode(),
+        rules:    rules,
+    }
+}
+
+func (n *ValidationNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    var errors []string
+    
+    for _, rule := range n.rules {
+        if err := rule.Validate(prepResult); err != nil {
+            errors = append(errors, fmt.Sprintf("%s: %v", rule.Name(), err))
+        }
+    }
+    
+    if len(errors) > 0 {
+        return nil, fmt.Errorf("validation failed: %s", strings.Join(errors, "; "))
+    }
+    
+    return prepResult, nil
+}
+
+func (n *ValidationNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    if execResult == nil {
+        return "invalid", nil
+    }
+    return "valid", nil
+}
+```
+
+## Best Practices
+
+1. **Clear Interfaces**: Define clear interfaces for custom nodes
+2. **Thread Safety**: Ensure nodes are thread-safe for concurrent use
+3. **Resource Management**: Properly manage external resources
+4. **Error Handling**: Provide detailed error information
+5. **Testing**: Write comprehensive tests for custom logic
+6. **Documentation**: Document node behavior and requirements
+7. **Monitoring**: Add metrics and logging for observability
+
+## Next Steps
+
+- [RetryableNode Interface](/concepts/nodes#retryablenode-interface) - Custom retry logic
+- [FallbackNode Interface](/patterns/fallback) - Graceful degradation
+- [Worker Pool](/advanced/worker-pool) - Concurrent task management

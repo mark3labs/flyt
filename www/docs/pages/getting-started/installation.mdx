@@ -1,0 +1,54 @@
+# Installation
+
+Flyt requires Go 1.21 or later.
+
+## Install with go get
+
+```bash
+go get github.com/mark3labs/flyt
+```
+
+## Import in your code
+
+```go
+import "github.com/mark3labs/flyt"
+```
+
+## Verify installation
+
+Create a simple test file to verify the installation:
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/mark3labs/flyt"
+)
+
+func main() {
+    shared := flyt.NewSharedStore()
+    shared.Set("test", "success")
+    
+    if val, ok := shared.Get("test"); ok {
+        fmt.Printf("Flyt installed successfully! Value: %v\n", val)
+    }
+}
+```
+
+Run it:
+
+```bash
+go run main.go
+```
+
+You should see:
+```
+Flyt installed successfully! Value: success
+```
+
+## Next Steps
+
+- [Quick Start Guide](/getting-started/quick-start) - Build your first workflow
+- [Project Template](/getting-started/template) - Start with a pre-configured project
+- [Core Concepts](/concepts/nodes) - Understand the fundamentals

@@ -1,0 +1,1 @@
+{"version":3,"file":"usePageData.d.ts","sourceRoot":"","sources":["../../../app/hooks/usePageData.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAE,MAAM,EAAE,MAAM,aAAa,CAAA;AAEzC,wBAAgB,WAAW;cAQX,MAAM;eACL,MAAM;iBACJ,MAAM,CAAC,aAAa,CAAC;oBAClB,MAAM;mBACP,MAAM;EAR1B;AAED,eAAO,MAAM,eAAe;cAEZ,MAAM;eACL,MAAM;iBACJ,MAAM,CAAC,aAAa,CAAC;oBAClB,MAAM;mBACP,MAAM;cAGf,CAAA"}

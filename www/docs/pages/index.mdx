@@ -1,0 +1,214 @@
+---
+layout: landing
+---
+
+import { HomePage } from 'vocs/components'
+
+<HomePage.Root>
+  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '1rem' }}>
+    <img src="/flyt-logo.png" alt="Flyt Logo" style={{ width: '280px', height: 'auto' }} />
+    <p style={{ fontStyle: 'italic', color: 'var(--vocs-color_text2)', marginTop: '0.5rem', fontSize: '0.95rem' }}>
+      Norwegian for "flow" • Pronounced "fleet"
+    </p>
+  </div>
+  <HomePage.Tagline>A minimalist workflow framework for Go</HomePage.Tagline>
+  
+  ```bash
+  go get github.com/mark3labs/flyt
+  ```
+  
+  <HomePage.Description>
+    Build powerful, composable workflows with zero dependencies. Flyt provides a simple yet flexible 
+    graph-based abstraction for orchestrating tasks in Go.
+  </HomePage.Description>
+  
+  <HomePage.Buttons>
+    <HomePage.Button href="/getting-started/quick-start" variant="accent">Get Started</HomePage.Button>
+    <HomePage.Button href="https://github.com/mark3labs/flyt">GitHub</HomePage.Button>
+  </HomePage.Buttons>
+</HomePage.Root>
+
+<div style={{ marginTop: '4rem' }}>
+
+## Features
+
+<div style={{ 
+  display: 'grid', 
+  gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+  gap: '1.5rem',
+  marginTop: '2rem'
+}}>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🚀 Zero Dependencies</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Pure Go standard library - no external dependencies required</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🔄 Composable Workflows</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Build complex flows from simple, reusable nodes</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🎯 Action-Based Routing</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Dynamic flow control based on runtime results</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🔁 Built-in Retry Logic</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Handle transient failures with configurable retries</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🔒 Thread-Safe</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Concurrent batch processing with safe shared state</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>📦 Batch Processing</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Process collections efficiently with built-in patterns</p>
+  </div>
+</div>
+
+</div>
+
+<div style={{ marginTop: '3rem' }}>
+
+## Quick Example
+
+<div style={{ marginTop: '1.5rem' }}>
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/mark3labs/flyt"
+)
+
+func main() {
+    // Create nodes that share data via SharedStore
+    fetchNode := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, _ any) (any, error) {
+            fmt.Println("Fetching data...")
+            return map[string]int{"value": 42}, nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
+            shared.Set("data", execResult)
+            return flyt.DefaultAction, nil
+        }),
+    )
+    
+    processNode := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            data, _ := shared.Get("data")
+            return data, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, data any) (any, error) {
+            val := data.(map[string]int)["value"]
+            fmt.Printf("Processing: %d\n", val)
+            return val * 2, nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
+            shared.Set("result", execResult)
+            return flyt.DefaultAction, nil
+        }),
+    )
+    
+    saveNode := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            result, _ := shared.Get("result")
+            return result, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, result any) (any, error) {
+            fmt.Printf("Saving result: %d\n", result)
+            return nil, nil
+        }),
+    )
+    
+    // Build and run flow
+    flow := flyt.NewFlow(fetchNode)
+    flow.Connect(fetchNode, flyt.DefaultAction, processNode)
+    flow.Connect(processNode, flyt.DefaultAction, saveNode)
+    
+    err := flow.Run(context.Background(), flyt.NewSharedStore())
+    if err != nil {
+        panic(err)
+    }
+}
+```
+
+</div>
+</div>
+
+<div style={{ marginTop: '3rem' }}>
+
+## Why Flyt?
+
+<p style={{ fontSize: '1.05rem', lineHeight: '1.7', color: 'var(--vocs-color_text2)', marginTop: '1rem' }}>
+Flyt was inspired by <a href="https://github.com/The-Pocket/PocketFlow" style={{ color: 'var(--vocs-color_link)' }}>Pocket Flow</a> and 
+designed to provide a simple, dependency-free solution for workflow orchestration in Go. Whether you're building 
+data pipelines, API orchestration, or complex business logic, Flyt gives you the tools to create maintainable, 
+testable workflows.
+</p>
+
+<h3 style={{ marginTop: '2rem', marginBottom: '1.5rem' }}>Perfect for</h3>
+
+<div style={{ 
+  display: 'grid', 
+  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+  gap: '1rem'
+}}>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>Data Processing Pipelines</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      ETL workflows with built-in error handling
+    </p>
+  </div>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>API Orchestration</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      Chain multiple API calls with automatic retries
+    </p>
+  </div>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>Business Logic Flows</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      Complex decision trees and state machines
+    </p>
+  </div>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>Batch Operations</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      Process large datasets concurrently
+    </p>
+  </div>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>AI/LLM Workflows</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      Build agent systems and conversation flows
+    </p>
+  </div>
+</div>
+
+</div>

@@ -1,0 +1,1 @@
+{"version":3,"file":"useSidebar.d.ts","sourceRoot":"","sources":["../../../app/hooks/useSidebar.ts"],"names":[],"mappings":"AAGA,OAAO,KAAK,EAAE,WAAW,EAAE,MAAM,iBAAiB,CAAA;AAGlD,KAAK,oBAAoB,GAAG;IAAE,QAAQ,CAAC,EAAE,OAAO,CAAC;IAAC,KAAK,EAAE,WAAW,EAAE,CAAC;IAAC,GAAG,CAAC,EAAE,MAAM,CAAA;CAAE,CAAA;AAEtF,wBAAgB,UAAU,IAAI,oBAAoB,CAiBjD"}

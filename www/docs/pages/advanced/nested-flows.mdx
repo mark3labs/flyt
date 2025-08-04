@@ -1,0 +1,342 @@
+# Nested Flows
+
+Compose complex workflows by nesting flows within flows, creating modular and reusable workflow components.
+
+## Basic Nested Flow
+
+Use a flow as a node in another flow:
+
+```go
+// Create a sub-flow for validation
+validationFlow := func() *flyt.Flow {
+    schemaCheck := createSchemaCheckNode()
+    businessRules := createBusinessRulesNode()
+    
+    flow := flyt.NewFlow(schemaCheck)
+    flow.Connect(schemaCheck, "valid", businessRules)
+    flow.Connect(schemaCheck, "invalid", nil)
+    
+    return flow
+}()
+
+// Use in main flow
+mainFlow := flyt.NewFlow(fetchNode)
+mainFlow.Connect(fetchNode, flyt.DefaultAction, validationFlow)
+mainFlow.Connect(validationFlow, flyt.DefaultAction, processNode)
+```
+
+## Reusable Flow Components
+
+Create modular flow components:
+
+```go
+// Reusable authentication flow
+func createAuthFlow() *flyt.Flow {
+    checkToken := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            token := prepResult.(string)
+            return validateToken(token)
+        }),
+    )
+    
+    refreshToken := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            return refreshAuthToken()
+        }),
+    )
+    
+    flow := flyt.NewFlow(checkToken)
+    flow.Connect(checkToken, "expired", refreshToken)
+    flow.Connect(checkToken, "valid", nil)
+    flow.Connect(refreshToken, flyt.DefaultAction, nil)
+    
+    return flow
+}
+
+// Use in multiple places
+apiFlow := flyt.NewFlow(startNode)
+apiFlow.Connect(startNode, flyt.DefaultAction, createAuthFlow())
+
+adminFlow := flyt.NewFlow(adminNode)
+adminFlow.Connect(adminNode, flyt.DefaultAction, createAuthFlow())
+```
+
+## Hierarchical Workflows
+
+Build multi-level workflow hierarchies:
+
+```go
+// Level 3: Atomic operations
+func createDatabaseOperation() *flyt.Flow {
+    connect := createConnectNode()
+    query := createQueryNode()
+    disconnect := createDisconnectNode()
+    
+    flow := flyt.NewFlow(connect)
+    flow.Connect(connect, flyt.DefaultAction, query)
+    flow.Connect(query, flyt.DefaultAction, disconnect)
+    
+    return flow
+}
+
+// Level 2: Business operations
+func createUserOperation() *flyt.Flow {
+    validate := createValidateUserNode()
+    dbOp := createDatabaseOperation()
+    notify := createNotificationNode()
+    
+    flow := flyt.NewFlow(validate)
+    flow.Connect(validate, "valid", dbOp)
+    flow.Connect(dbOp, flyt.DefaultAction, notify)
+    
+    return flow
+}
+
+// Level 1: Application flow
+func createApplicationFlow() *flyt.Flow {
+    auth := createAuthFlow()
+    userOp := createUserOperation()
+    audit := createAuditFlow()
+    
+    flow := flyt.NewFlow(auth)
+    flow.Connect(auth, flyt.DefaultAction, userOp)
+    flow.Connect(userOp, flyt.DefaultAction, audit)
+    
+    return flow
+}
+```
+
+## Conditional Nesting
+
+Dynamically choose nested flows:
+
+```go
+routerNode := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        request := prepResult.(Request)
+        return request.Type, nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        return flyt.Action(execResult.(string)), nil
+    }),
+)
+
+mainFlow := flyt.NewFlow(routerNode)
+mainFlow.Connect(routerNode, "user", createUserFlow())
+mainFlow.Connect(routerNode, "admin", createAdminFlow())
+mainFlow.Connect(routerNode, "api", createAPIFlow())
+```
+
+## Shared Context in Nested Flows
+
+Pass context through nested flows:
+
+```go
+func createNestedFlowWithContext(parentContext map[string]any) *flyt.Flow {
+    node := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            // Access parent context
+            for k, v := range parentContext {
+                shared.Set(k, v)
+            }
+            
+            // Get data from parent flow
+            parentData, _ := shared.Get("parent_data")
+            return parentData, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            // Process with parent context
+            return processWithContext(prepResult, parentContext), nil
+        }),
+    )
+    
+    return flyt.NewFlow(node)
+}
+```
+
+## Error Propagation
+
+Handle errors across nested flows:
+
+```go
+func createErrorHandlingFlow() *flyt.Flow {
+    subFlow := createSubFlow()
+    errorHandler := createErrorHandlerNode()
+    
+    mainFlow := flyt.NewFlow(startNode)
+    mainFlow.Connect(startNode, flyt.DefaultAction, subFlow)
+    mainFlow.Connect(subFlow, "error", errorHandler)
+    mainFlow.Connect(subFlow, flyt.DefaultAction, successNode)
+    
+    // Error handler can retry or recover
+    mainFlow.Connect(errorHandler, "retry", subFlow)
+    mainFlow.Connect(errorHandler, "abort", nil)
+    
+    return mainFlow
+}
+```
+
+## Recursive Flows
+
+Create recursive workflow patterns:
+
+```go
+func createRecursiveFlow(maxDepth int) *flyt.Flow {
+    checkDepth := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            depth, _ := shared.Get("depth")
+            if depth == nil {
+                depth = 0
+            }
+            return depth.(int), nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            depth := prepResult.(int)
+            if depth >= maxDepth {
+                return "max_depth", nil
+            }
+            return "continue", nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+            if execResult.(string) == "continue" {
+                depth := prepResult.(int)
+                shared.Set("depth", depth+1)
+            }
+            return flyt.Action(execResult.(string)), nil
+        }),
+    )
+    
+    processNode := createProcessNode()
+    
+    flow := flyt.NewFlow(checkDepth)
+    flow.Connect(checkDepth, "continue", processNode)
+    flow.Connect(processNode, flyt.DefaultAction, flow) // Recursive connection
+    flow.Connect(checkDepth, "max_depth", nil)
+    
+    return flow
+}
+```
+
+## Parallel Nested Flows
+
+Execute nested flows in parallel:
+
+```go
+func createParallelNestedFlow() *flyt.Flow {
+    splitNode := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            // Split data for parallel processing
+            data := prepResult.(Data)
+            shared.Set("part1", data.Part1)
+            shared.Set("part2", data.Part2)
+            return nil, nil
+        }),
+    )
+    
+    // Create parallel sub-flows
+    flow1 := createProcessingFlow1()
+    flow2 := createProcessingFlow2()
+    
+    // Merge results
+    mergeNode := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            result1, _ := shared.Get("result1")
+            result2, _ := shared.Get("result2")
+            return map[string]any{
+                "result1": result1,
+                "result2": result2,
+            }, nil
+        }),
+    )
+    
+    // Connect with parallel execution
+    mainFlow := flyt.NewFlow(splitNode)
+    
+    // Both flows execute after split
+    mainFlow.Connect(splitNode, "flow1", flow1)
+    mainFlow.Connect(splitNode, "flow2", flow2)
+    
+    // Both must complete before merge
+    mainFlow.Connect(flow1, flyt.DefaultAction, mergeNode)
+    mainFlow.Connect(flow2, flyt.DefaultAction, mergeNode)
+    
+    return mainFlow
+}
+```
+
+## Dynamic Flow Composition
+
+Build flows at runtime:
+
+```go
+func createDynamicFlow(config FlowConfig) *flyt.Flow {
+    startNode := createStartNode()
+    flow := flyt.NewFlow(startNode)
+    
+    previousNode := flyt.Node(startNode)
+    
+    for _, step := range config.Steps {
+        var stepFlow *flyt.Flow
+        
+        switch step.Type {
+        case "validate":
+            stepFlow = createValidationFlow(step.Config)
+        case "process":
+            stepFlow = createProcessingFlow(step.Config)
+        case "save":
+            stepFlow = createSaveFlow(step.Config)
+        }
+        
+        if stepFlow != nil {
+            flow.Connect(previousNode, flyt.DefaultAction, stepFlow)
+            previousNode = stepFlow
+        }
+    }
+    
+    return flow
+}
+```
+
+## Testing Nested Flows
+
+Test nested flows in isolation:
+
+```go
+func TestNestedFlow(t *testing.T) {
+    // Test sub-flow independently
+    subFlow := createSubFlow()
+    subShared := flyt.NewSharedStore()
+    subShared.Set("test_input", "data")
+    
+    err := subFlow.Run(context.Background(), subShared)
+    assert.NoError(t, err)
+    
+    // Test main flow with mocked sub-flow
+    mockSubFlow := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            return "mocked_result", nil
+        }),
+    )
+    
+    mainFlow := flyt.NewFlow(startNode)
+    mainFlow.Connect(startNode, flyt.DefaultAction, mockSubFlow)
+    
+    err = mainFlow.Run(context.Background(), flyt.NewSharedStore())
+    assert.NoError(t, err)
+}
+```
+
+## Best Practices
+
+1. **Keep Flows Focused**: Each flow should have a single, clear purpose
+2. **Minimize Coupling**: Flows should communicate through well-defined interfaces
+3. **Document Dependencies**: Clearly document what each nested flow expects
+4. **Test in Isolation**: Test nested flows independently
+5. **Avoid Deep Nesting**: Too many levels make debugging difficult
+6. **Use Meaningful Names**: Name flows based on their business function
+
+## Next Steps
+
+- [Flow as Node](/advanced/flow-as-node) - Flows implementing Node interface
+- [Batch Flows](/advanced/batch-flows) - Running flows in batches
+- [Flows](/concepts/flows) - Flow fundamentals

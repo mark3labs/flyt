@@ -1,0 +1,216 @@
+# Flows
+
+Flows connect nodes together to create workflows. They define the execution path based on actions returned by nodes.
+
+## Creating Flows
+
+Start with a single node and build connections:
+
+```go
+// Create nodes
+startNode := createStartNode()
+processNode := createProcessNode()
+endNode := createEndNode()
+
+// Build flow
+flow := flyt.NewFlow(startNode)
+flow.Connect(startNode, flyt.DefaultAction, processNode)
+flow.Connect(processNode, flyt.DefaultAction, endNode)
+```
+
+## Running Flows
+
+Execute a flow with a context and SharedStore:
+
+```go
+ctx := context.Background()
+shared := flyt.NewSharedStore()
+
+// Add initial data
+shared.Set("input", "data to process")
+
+// Run the flow
+err := flow.Run(ctx, shared)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Get results
+result, _ := shared.Get("output")
+```
+
+## Flow Connections
+
+### Linear Flow
+
+Simple sequential execution:
+
+```go
+flow := flyt.NewFlow(node1)
+flow.Connect(node1, flyt.DefaultAction, node2)
+flow.Connect(node2, flyt.DefaultAction, node3)
+flow.Connect(node3, flyt.DefaultAction, nil) // Terminate
+```
+
+### Branching Flow
+
+Multiple paths based on actions:
+
+```go
+flow := flyt.NewFlow(decisionNode)
+flow.Connect(decisionNode, "path_a", nodeA)
+flow.Connect(decisionNode, "path_b", nodeB)
+flow.Connect(nodeA, flyt.DefaultAction, mergeNode)
+flow.Connect(nodeB, flyt.DefaultAction, mergeNode)
+```
+
+### Loop Flow
+
+Create cycles for retry or iteration:
+
+```go
+flow := flyt.NewFlow(startNode)
+flow.Connect(startNode, flyt.DefaultAction, processNode)
+flow.Connect(processNode, "retry", startNode)    // Loop back
+flow.Connect(processNode, "success", endNode)
+```
+
+## Flow as Node
+
+Flows implement the Node interface and can be used as nodes:
+
+```go
+// Create a sub-flow
+subFlow := flyt.NewFlow(validateNode)
+subFlow.Connect(validateNode, flyt.DefaultAction, transformNode)
+
+// Use sub-flow in main flow
+mainFlow := flyt.NewFlow(fetchNode)
+mainFlow.Connect(fetchNode, flyt.DefaultAction, subFlow)
+mainFlow.Connect(subFlow, flyt.DefaultAction, saveNode)
+```
+
+## Complex Flow Patterns
+
+### Diamond Pattern
+
+Split and merge execution paths:
+
+```go
+flow := flyt.NewFlow(splitNode)
+flow.Connect(splitNode, "path1", process1)
+flow.Connect(splitNode, "path2", process2)
+flow.Connect(process1, flyt.DefaultAction, mergeNode)
+flow.Connect(process2, flyt.DefaultAction, mergeNode)
+```
+
+### Error Handling Flow
+
+Centralized error handling:
+
+```go
+flow := flyt.NewFlow(startNode)
+flow.Connect(startNode, "error", errorHandler)
+flow.Connect(startNode, flyt.DefaultAction, processNode)
+flow.Connect(processNode, "error", errorHandler)
+flow.Connect(processNode, flyt.DefaultAction, saveNode)
+flow.Connect(saveNode, "error", errorHandler)
+```
+
+### Pipeline Pattern
+
+Data transformation pipeline:
+
+```go
+flow := flyt.NewFlow(fetchNode)
+flow.Connect(fetchNode, flyt.DefaultAction, validateNode)
+flow.Connect(validateNode, "valid", transformNode)
+flow.Connect(validateNode, "invalid", rejectNode)
+flow.Connect(transformNode, flyt.DefaultAction, enrichNode)
+flow.Connect(enrichNode, flyt.DefaultAction, saveNode)
+```
+
+## Flow Composition
+
+Build complex flows from simpler ones:
+
+```go
+func createValidationFlow() *flyt.Flow {
+    checkFormat := createFormatChecker()
+    checkBusiness := createBusinessRules()
+    
+    flow := flyt.NewFlow(checkFormat)
+    flow.Connect(checkFormat, "valid", checkBusiness)
+    return flow
+}
+
+func createMainFlow() *flyt.Flow {
+    fetch := createFetchNode()
+    validation := createValidationFlow()
+    process := createProcessNode()
+    
+    flow := flyt.NewFlow(fetch)
+    flow.Connect(fetch, flyt.DefaultAction, validation)
+    flow.Connect(validation, flyt.DefaultAction, process)
+    return flow
+}
+```
+
+## Debugging Flows
+
+Add logging nodes for debugging:
+
+```go
+func createLoggingNode(name string) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            log.Printf("[%s] Prep: SharedStore keys: %v", name, shared.GetAll())
+            return nil, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            log.Printf("[%s] Exec", name)
+            return prepResult, nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+            log.Printf("[%s] Post: Result: %v", name, execResult)
+            return flyt.DefaultAction, nil
+        }),
+    )
+}
+
+// Insert between nodes for debugging
+flow.Connect(node1, flyt.DefaultAction, createLoggingNode("debug"))
+flow.Connect(createLoggingNode("debug"), flyt.DefaultAction, node2)
+```
+
+## Best Practices
+
+1. **Start Simple**: Build flows incrementally, testing as you go
+2. **Name Nodes**: Give nodes descriptive names for easier debugging
+3. **Document Flows**: Create diagrams or comments explaining flow logic
+4. **Reuse Flows**: Extract common patterns into reusable sub-flows
+5. **Test Flows**: Write tests for different execution paths
+
+## Visualizing Flows
+
+Document your flows with diagrams:
+
+```mermaid
+graph TD
+    Start([Start])
+    Validate[Validate]
+    Process[Process]
+    Save[Save]
+    Error[Error]
+    
+    Start -->|default| Validate
+    Validate -->|valid| Process
+    Validate -->|invalid| Error
+    Process -->|default| Save
+```
+
+## Next Steps
+
+- [Shared Store](/concepts/shared-store) - Share data between nodes
+- [Nested Flows](/advanced/nested-flows) - Advanced composition
+- [Batch Flows](/advanced/batch-flows) - Process multiple inputs

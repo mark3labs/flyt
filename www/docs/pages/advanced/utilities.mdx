@@ -1,0 +1,433 @@
+# Utilities
+
+Helper functions and utilities to simplify common tasks in Flyt workflows.
+
+## ToSlice
+
+Convert various types to slices for batch processing:
+
+```go
+// Convert different types to []any
+stringSlice := flyt.ToSlice([]string{"a", "b", "c"})
+intSlice := flyt.ToSlice([]int{1, 2, 3})
+singleItem := flyt.ToSlice("single item") // Returns []any{"single item"}
+nilValue := flyt.ToSlice(nil) // Returns empty []any{}
+
+// Useful for batch processing
+shared.Set("items", flyt.ToSlice(data))
+```
+
+### Implementation Details
+
+```go
+func ToSlice(v any) []any {
+    if v == nil {
+        return []any{}
+    }
+    
+    rv := reflect.ValueOf(v)
+    if rv.Kind() == reflect.Slice {
+        result := make([]any, rv.Len())
+        for i := 0; i < rv.Len(); i++ {
+            result[i] = rv.Index(i).Interface()
+        }
+        return result
+    }
+    
+    // Single item
+    return []any{v}
+}
+```
+
+## Custom Utility Functions
+
+Create your own utilities:
+
+### Retry Helper
+
+```go
+func RetryOperation(operation func() error, maxRetries int, backoff time.Duration) error {
+    var lastErr error
+    
+    for i := 0; i < maxRetries; i++ {
+        if err := operation(); err == nil {
+            return nil
+        } else {
+            lastErr = err
+            if i < maxRetries-1 {
+                time.Sleep(backoff * time.Duration(i+1))
+            }
+        }
+    }
+    
+    return fmt.Errorf("operation failed after %d retries: %w", maxRetries, lastErr)
+}
+
+// Usage in node
+func (n *MyNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    var result any
+    
+    err := RetryOperation(func() error {
+        var err error
+        result, err = callAPI(prepResult)
+        return err
+    }, 3, time.Second)
+    
+    return result, err
+}
+```
+
+### Parallel Map
+
+```go
+func ParallelMap[T any, R any](items []T, fn func(T) R, workers int) []R {
+    results := make([]R, len(items))
+    
+    var wg sync.WaitGroup
+    semaphore := make(chan struct{}, workers)
+    
+    for i, item := range items {
+        wg.Add(1)
+        go func(index int, data T) {
+            defer wg.Done()
+            
+            semaphore <- struct{}{}
+            defer func() { <-semaphore }()
+            
+            results[index] = fn(data)
+        }(i, item)
+    }
+    
+    wg.Wait()
+    return results
+}
+
+// Usage
+results := ParallelMap(items, processItem, 10)
+```
+
+### Safe Type Assertion
+
+```go
+func SafeGet[T any](shared *flyt.SharedStore, key string) (T, bool) {
+    var zero T
+    
+    value, exists := shared.Get(key)
+    if !exists {
+        return zero, false
+    }
+    
+    typed, ok := value.(T)
+    if !ok {
+        return zero, false
+    }
+    
+    return typed, true
+}
+
+// Usage
+if userID, ok := SafeGet[int](shared, "user_id"); ok {
+    // Use userID safely
+}
+```
+
+### Chunk Slice
+
+```go
+func ChunkSlice[T any](slice []T, chunkSize int) [][]T {
+    var chunks [][]T
+    
+    for i := 0; i < len(slice); i += chunkSize {
+        end := i + chunkSize
+        if end > len(slice) {
+            end = len(slice)
+        }
+        chunks = append(chunks, slice[i:end])
+    }
+    
+    return chunks
+}
+
+// Usage in batch processing
+chunks := ChunkSlice(items, 100)
+for _, chunk := range chunks {
+    processChunk(chunk)
+}
+```
+
+### Merge Maps
+
+```go
+func MergeMaps(maps ...map[string]any) map[string]any {
+    result := make(map[string]any)
+    
+    for _, m := range maps {
+        for k, v := range m {
+            result[k] = v
+        }
+    }
+    
+    return result
+}
+
+// Usage
+config := MergeMaps(defaultConfig, userConfig, overrides)
+```
+
+### Filter Slice
+
+```go
+func FilterSlice[T any](slice []T, predicate func(T) bool) []T {
+    result := make([]T, 0)
+    
+    for _, item := range slice {
+        if predicate(item) {
+            result = append(result, item)
+        }
+    }
+    
+    return result
+}
+
+// Usage
+validItems := FilterSlice(items, func(item Item) bool {
+    return item.IsValid()
+})
+```
+
+### Timeout Wrapper
+
+```go
+func WithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {
+    ctx, cancel := context.WithTimeout(ctx, timeout)
+    defer cancel()
+    
+    type result struct {
+        value T
+        err   error
+    }
+    
+    done := make(chan result, 1)
+    
+    go func() {
+        value, err := fn(ctx)
+        done <- result{value, err}
+    }()
+    
+    select {
+    case res := <-done:
+        return res.value, res.err
+    case <-ctx.Done():
+        var zero T
+        return zero, ctx.Err()
+    }
+}
+
+// Usage
+result, err := WithTimeout(ctx, 5*time.Second, func(ctx context.Context) (string, error) {
+    return fetchData(ctx)
+})
+```
+
+### Pipeline Builder
+
+```go
+type Pipeline[T any] struct {
+    stages []func(T) T
+}
+
+func NewPipeline[T any]() *Pipeline[T] {
+    return &Pipeline[T]{
+        stages: make([]func(T) T, 0),
+    }
+}
+
+func (p *Pipeline[T]) Add(stage func(T) T) *Pipeline[T] {
+    p.stages = append(p.stages, stage)
+    return p
+}
+
+func (p *Pipeline[T]) Execute(input T) T {
+    result := input
+    for _, stage := range p.stages {
+        result = stage(result)
+    }
+    return result
+}
+
+// Usage
+pipeline := NewPipeline[string]().
+    Add(strings.TrimSpace).
+    Add(strings.ToLower).
+    Add(func(s string) string {
+        return strings.ReplaceAll(s, " ", "_")
+    })
+
+result := pipeline.Execute("  Hello World  ")
+// Result: "hello_world"
+```
+
+### Error Aggregator
+
+```go
+type ErrorAggregator struct {
+    errors []error
+    mu     sync.Mutex
+}
+
+func (e *ErrorAggregator) Add(err error) {
+    if err == nil {
+        return
+    }
+    
+    e.mu.Lock()
+    e.errors = append(e.errors, err)
+    e.mu.Unlock()
+}
+
+func (e *ErrorAggregator) Error() error {
+    e.mu.Lock()
+    defer e.mu.Unlock()
+    
+    if len(e.errors) == 0 {
+        return nil
+    }
+    
+    if len(e.errors) == 1 {
+        return e.errors[0]
+    }
+    
+    return fmt.Errorf("multiple errors (%d): %v", len(e.errors), e.errors)
+}
+
+// Usage
+aggregator := &ErrorAggregator{}
+
+for _, item := range items {
+    if err := processItem(item); err != nil {
+        aggregator.Add(err)
+    }
+}
+
+if err := aggregator.Error(); err != nil {
+    return nil, err
+}
+```
+
+### Context Values Helper
+
+```go
+type ContextKey string
+
+const (
+    RequestIDKey ContextKey = "request_id"
+    UserIDKey    ContextKey = "user_id"
+)
+
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+    return context.WithValue(ctx, RequestIDKey, requestID)
+}
+
+func GetRequestID(ctx context.Context) (string, bool) {
+    id, ok := ctx.Value(RequestIDKey).(string)
+    return id, ok
+}
+
+// Usage in nodes
+func (n *LoggingNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    requestID, _ := GetRequestID(ctx)
+    log.Printf("[%s] Processing: %v", requestID, prepResult)
+    
+    return process(prepResult)
+}
+```
+
+### Debounce Function
+
+```go
+func Debounce(fn func(), delay time.Duration) func() {
+    var timer *time.Timer
+    var mu sync.Mutex
+    
+    return func() {
+        mu.Lock()
+        defer mu.Unlock()
+        
+        if timer != nil {
+            timer.Stop()
+        }
+        
+        timer = time.AfterFunc(delay, fn)
+    }
+}
+
+// Usage
+saveDebounced := Debounce(func() {
+    saveToDatabase()
+}, 5*time.Second)
+
+// Call multiple times, only last one executes
+saveDebounced()
+saveDebounced()
+saveDebounced()
+```
+
+## Testing Utilities
+
+### Mock SharedStore
+
+```go
+type MockSharedStore struct {
+    data map[string]any
+    mu   sync.RWMutex
+}
+
+func NewMockSharedStore(initial map[string]any) *MockSharedStore {
+    return &MockSharedStore{
+        data: initial,
+    }
+}
+
+func (m *MockSharedStore) Get(key string) (any, bool) {
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    val, ok := m.data[key]
+    return val, ok
+}
+
+func (m *MockSharedStore) Set(key string, value any) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    m.data[key] = value
+}
+```
+
+### Test Node Builder
+
+```go
+func TestNode(execFn func(context.Context, any) (any, error)) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithExecFunc(execFn),
+    )
+}
+
+// Usage in tests
+node := TestNode(func(ctx context.Context, input any) (any, error) {
+    return "test_result", nil
+})
+```
+
+## Best Practices
+
+1. **Keep Utilities Generic**: Make them reusable across projects
+2. **Document Usage**: Provide clear examples
+3. **Test Thoroughly**: Utilities should be well-tested
+4. **Handle Edge Cases**: Consider nil values and empty inputs
+5. **Use Type Parameters**: Leverage Go generics where appropriate
+6. **Thread Safety**: Ensure utilities are safe for concurrent use
+
+## Next Steps
+
+- [Custom Nodes](/advanced/custom-nodes) - Build sophisticated nodes
+- [Best Practices](/best-practices) - General guidelines
+- [Examples](/examples/agent) - See utilities in action

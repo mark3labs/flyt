@@ -1,0 +1,301 @@
+# Configuration via Closures
+
+Use closures to create configurable, reusable nodes with encapsulated state and configuration.
+
+## Basic Closure Pattern
+
+Pass configuration to nodes using closures:
+
+```go
+func createAPINode(apiKey string, baseURL string) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            // apiKey and baseURL are captured in the closure
+            url := fmt.Sprintf("%s/data", baseURL)
+            req, _ := http.NewRequest("GET", url, nil)
+            req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
+            
+            client := &http.Client{Timeout: 30 * time.Second}
+            resp, err := client.Do(req)
+            if err != nil {
+                return nil, err
+            }
+            defer resp.Body.Close()
+            
+            var data map[string]any
+            json.NewDecoder(resp.Body).Decode(&data)
+            return data, nil
+        }),
+    )
+}
+
+// Usage
+apiNode := createAPINode("secret-key-123", "https://api.example.com")
+```
+
+## Stateful Nodes
+
+Maintain state across executions:
+
+```go
+func createCounterNode() flyt.Node {
+    count := 0
+    mu := &sync.Mutex{}
+    
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            mu.Lock()
+            count++
+            current := count
+            mu.Unlock()
+            
+            return fmt.Sprintf("Execution #%d", current), nil
+        }),
+    )
+}
+```
+
+## Configuration Objects
+
+Use structs for complex configuration:
+
+```go
+type DatabaseConfig struct {
+    Host     string
+    Port     int
+    User     string
+    Password string
+    Database string
+    MaxConns int
+}
+
+func createDatabaseNode(config DatabaseConfig) flyt.Node {
+    // Create connection pool once
+    dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
+        config.User, config.Password, config.Host, config.Port, config.Database)
+    
+    db, _ := sql.Open("mysql", dsn)
+    db.SetMaxOpenConns(config.MaxConns)
+    
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            query := prepResult.(string)
+            rows, err := db.QueryContext(ctx, query)
+            if err != nil {
+                return nil, err
+            }
+            defer rows.Close()
+            
+            var results []map[string]any
+            // Process rows...
+            return results, nil
+        }),
+    )
+}
+
+// Usage
+dbNode := createDatabaseNode(DatabaseConfig{
+    Host:     "localhost",
+    Port:     3306,
+    User:     "app",
+    Password: "secret",
+    Database: "myapp",
+    MaxConns: 10,
+})
+```
+
+## Factory Functions
+
+Create specialized node variants:
+
+```go
+func createHTTPNode(method string, headers map[string]string) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            url, _ := shared.Get("url")
+            body, _ := shared.Get("body")
+            return map[string]any{"url": url, "body": body}, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            data := prepResult.(map[string]any)
+            url := data["url"].(string)
+            
+            var bodyReader io.Reader
+            if body, ok := data["body"]; ok {
+                bodyBytes, _ := json.Marshal(body)
+                bodyReader = bytes.NewReader(bodyBytes)
+            }
+            
+            req, _ := http.NewRequest(method, url, bodyReader)
+            
+            // Apply configured headers
+            for key, value := range headers {
+                req.Header.Set(key, value)
+            }
+            
+            client := &http.Client{}
+            resp, err := client.Do(req)
+            if err != nil {
+                return nil, err
+            }
+            defer resp.Body.Close()
+            
+            var result map[string]any
+            json.NewDecoder(resp.Body).Decode(&result)
+            return result, nil
+        }),
+    )
+}
+
+// Create specialized nodes
+getNode := createHTTPNode("GET", map[string]string{
+    "Accept": "application/json",
+})
+
+postNode := createHTTPNode("POST", map[string]string{
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+})
+```
+
+## Resource Management
+
+Manage shared resources:
+
+```go
+func createFileProcessorNode(bufferSize int) flyt.Node {
+    // Pre-allocate buffer
+    buffer := make([]byte, bufferSize)
+    
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            filePath := prepResult.(string)
+            
+            file, err := os.Open(filePath)
+            if err != nil {
+                return nil, err
+            }
+            defer file.Close()
+            
+            // Reuse buffer
+            n, err := file.Read(buffer)
+            if err != nil && err != io.EOF {
+                return nil, err
+            }
+            
+            // Process buffer[:n]
+            return processData(buffer[:n]), nil
+        }),
+    )
+}
+```
+
+## Middleware Pattern
+
+Wrap nodes with additional behavior:
+
+```go
+func withLogging(name string, node flyt.Node) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            log.Printf("[%s] Starting prep", name)
+            return node.Prep(ctx, shared)
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            start := time.Now()
+            result, err := node.Exec(ctx, prepResult)
+            log.Printf("[%s] Exec took %v", name, time.Since(start))
+            return result, err
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+            action, err := node.Post(ctx, shared, prepResult, execResult)
+            log.Printf("[%s] Returning action: %s", name, action)
+            return action, err
+        }),
+    )
+}
+
+// Usage
+processNode := withLogging("processor", createProcessNode())
+```
+
+## Dynamic Configuration
+
+Load configuration at runtime:
+
+```go
+func createConfigurableNode(configPath string) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            // Load config file
+            data, err := os.ReadFile(configPath)
+            if err != nil {
+                return nil, err
+            }
+            
+            var config map[string]any
+            json.Unmarshal(data, &config)
+            return config, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            config := prepResult.(map[string]any)
+            // Use configuration
+            return processWithConfig(config), nil
+        }),
+    )
+}
+```
+
+## Dependency Injection
+
+Inject dependencies through closures:
+
+```go
+type Dependencies struct {
+    DB       *sql.DB
+    Cache    *redis.Client
+    Logger   *log.Logger
+    Metrics  *prometheus.Registry
+}
+
+func createServiceNode(deps Dependencies) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            // Use injected dependencies
+            deps.Logger.Println("Processing request")
+            
+            // Check cache
+            if cached, err := deps.Cache.Get(ctx, "key").Result(); err == nil {
+                deps.Metrics.Inc("cache_hits")
+                return cached, nil
+            }
+            
+            // Query database
+            result, err := queryDB(deps.DB, prepResult)
+            if err != nil {
+                deps.Logger.Printf("DB error: %v", err)
+                return nil, err
+            }
+            
+            // Update cache
+            deps.Cache.Set(ctx, "key", result, time.Hour)
+            
+            return result, nil
+        }),
+    )
+}
+```
+
+## Best Practices
+
+1. **Immutable Configuration**: Don't modify captured variables after node creation
+2. **Thread Safety**: Use mutexes for shared state in concurrent scenarios
+3. **Resource Cleanup**: Ensure resources are properly closed
+4. **Error Handling**: Handle configuration errors gracefully
+5. **Documentation**: Document required configuration clearly
+
+## Next Steps
+
+- [Error Handling](/patterns/error-handling) - Build resilient nodes
+- [Custom Node Types](/advanced/custom-nodes) - Advanced node patterns
+- [Best Practices](/best-practices) - General guidelines

@@ -1,0 +1,353 @@
+# Flow as Node
+
+Flows implement the Node interface, allowing them to be used anywhere a node is expected. This enables powerful composition patterns.
+
+## The Node Interface
+
+Flows implement all Node methods:
+
+```go
+type Node interface {
+    Prep(ctx context.Context, shared *SharedStore) (any, error)
+    Exec(ctx context.Context, prepResult any) (any, error)
+    Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error)
+}
+
+// Flow implements Node
+var _ Node = (*Flow)(nil)
+```
+
+## Basic Usage
+
+Use a flow wherever a node is expected:
+
+```go
+// Create a reusable flow
+processingFlow := flyt.NewFlow(validateNode)
+processingFlow.Connect(validateNode, "valid", transformNode)
+processingFlow.Connect(transformNode, flyt.DefaultAction, enrichNode)
+
+// Use the flow as a node
+mainFlow := flyt.NewFlow(fetchNode)
+mainFlow.Connect(fetchNode, flyt.DefaultAction, processingFlow) // Flow used as node
+mainFlow.Connect(processingFlow, flyt.DefaultAction, saveNode)
+```
+
+## Flow Lifecycle as Node
+
+Understanding how flows behave as nodes:
+
+```go
+// When a flow is used as a node:
+// 1. Prep: Prepares the flow's start node
+// 2. Exec: Runs the entire flow
+// 3. Post: Returns the final action from the flow
+
+func demonstrateFlowLifecycle() {
+    subFlow := flyt.NewFlow(startNode)
+    subFlow.Connect(startNode, flyt.DefaultAction, endNode)
+    
+    // When mainFlow executes subFlow:
+    // - subFlow.Prep() calls startNode.Prep()
+    // - subFlow.Exec() runs the entire sub-flow
+    // - subFlow.Post() returns the final action
+    
+    mainFlow := flyt.NewFlow(initNode)
+    mainFlow.Connect(initNode, flyt.DefaultAction, subFlow)
+}
+```
+
+## Composable Workflows
+
+Build complex workflows from simpler ones:
+
+```go
+// Level 1: Basic operations
+func createValidationFlow() *flyt.Flow {
+    schemaNode := createSchemaValidationNode()
+    businessNode := createBusinessValidationNode()
+    
+    flow := flyt.NewFlow(schemaNode)
+    flow.Connect(schemaNode, "valid", businessNode)
+    return flow
+}
+
+func createEnrichmentFlow() *flyt.Flow {
+    fetchNode := createDataFetchNode()
+    mergeNode := createDataMergeNode()
+    
+    flow := flyt.NewFlow(fetchNode)
+    flow.Connect(fetchNode, flyt.DefaultAction, mergeNode)
+    return flow
+}
+
+// Level 2: Combine basic flows
+func createProcessingPipeline() *flyt.Flow {
+    validation := createValidationFlow()
+    enrichment := createEnrichmentFlow()
+    
+    pipeline := flyt.NewFlow(validation)
+    pipeline.Connect(validation, flyt.DefaultAction, enrichment)
+    return pipeline
+}
+
+// Level 3: Use in application
+func createApplicationFlow() *flyt.Flow {
+    auth := createAuthFlow()
+    pipeline := createProcessingPipeline()
+    audit := createAuditFlow()
+    
+    app := flyt.NewFlow(auth)
+    app.Connect(auth, flyt.DefaultAction, pipeline)
+    app.Connect(pipeline, flyt.DefaultAction, audit)
+    return app
+}
+```
+
+## Dynamic Flow Selection
+
+Choose flows at runtime:
+
+```go
+type FlowSelector struct {
+    flows map[string]*flyt.Flow
+}
+
+func (fs *FlowSelector) CreateSelectorNode() flyt.Node {
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            flowType := prepResult.(string)
+            return flowType, nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+            return flyt.Action(execResult.(string)), nil
+        }),
+    )
+}
+
+func (fs *FlowSelector) BuildDynamicFlow() *flyt.Flow {
+    selector := fs.CreateSelectorNode()
+    mainFlow := flyt.NewFlow(selector)
+    
+    // Connect different flows based on selection
+    for name, flow := range fs.flows {
+        mainFlow.Connect(selector, flyt.Action(name), flow)
+    }
+    
+    return mainFlow
+}
+
+// Usage
+selector := &FlowSelector{
+    flows: map[string]*flyt.Flow{
+        "simple":  createSimpleFlow(),
+        "complex": createComplexFlow(),
+        "custom":  createCustomFlow(),
+    },
+}
+
+dynamicFlow := selector.BuildDynamicFlow()
+```
+
+## Flow Factories
+
+Create flows on demand:
+
+```go
+type FlowFactory interface {
+    CreateFlow(config FlowConfig) *flyt.Flow
+}
+
+type ProcessingFlowFactory struct{}
+
+func (f *ProcessingFlowFactory) CreateFlow(config FlowConfig) *flyt.Flow {
+    // Create nodes based on configuration
+    var nodes []flyt.Node
+    
+    for _, nodeConfig := range config.Nodes {
+        node := createNodeFromConfig(nodeConfig)
+        nodes = append(nodes, node)
+    }
+    
+    // Build flow
+    flow := flyt.NewFlow(nodes[0])
+    for i := 0; i < len(nodes)-1; i++ {
+        flow.Connect(nodes[i], flyt.DefaultAction, nodes[i+1])
+    }
+    
+    return flow
+}
+
+// Use factory-created flows as nodes
+func createDynamicPipeline(factory FlowFactory, configs []FlowConfig) *flyt.Flow {
+    pipeline := flyt.NewFlow(startNode)
+    previous := flyt.Node(startNode)
+    
+    for _, config := range configs {
+        flow := factory.CreateFlow(config)
+        pipeline.Connect(previous, flyt.DefaultAction, flow)
+        previous = flow
+    }
+    
+    return pipeline
+}
+```
+
+## Recursive Flow Patterns
+
+Flows containing themselves:
+
+```go
+func createRecursiveProcessingFlow(maxDepth int) *flyt.Flow {
+    var flow *flyt.Flow
+    
+    depthCheck := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            depth, _ := shared.Get("recursion_depth")
+            if depth == nil {
+                depth = 0
+            }
+            return depth.(int), nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            depth := prepResult.(int)
+            if depth >= maxDepth {
+                return "terminate", nil
+            }
+            return "recurse", nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+            if execResult.(string) == "recurse" {
+                depth := prepResult.(int)
+                shared.Set("recursion_depth", depth+1)
+            }
+            return flyt.Action(execResult.(string)), nil
+        }),
+    )
+    
+    processNode := createProcessNode()
+    
+    flow = flyt.NewFlow(depthCheck)
+    flow.Connect(depthCheck, "recurse", processNode)
+    flow.Connect(processNode, flyt.DefaultAction, flow) // Recursive reference
+    flow.Connect(depthCheck, "terminate", nil)
+    
+    return flow
+}
+```
+
+## Flow Middleware
+
+Wrap flows with additional behavior:
+
+```go
+func withLogging(name string, flow *flyt.Flow) *flyt.Flow {
+    logStart := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            log.Printf("[%s] Flow starting", name)
+            return prepResult, nil
+        }),
+    )
+    
+    logEnd := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            log.Printf("[%s] Flow completed", name)
+            return prepResult, nil
+        }),
+    )
+    
+    wrapped := flyt.NewFlow(logStart)
+    wrapped.Connect(logStart, flyt.DefaultAction, flow)
+    wrapped.Connect(flow, flyt.DefaultAction, logEnd)
+    
+    return wrapped
+}
+
+// Usage
+processFlow := createProcessingFlow()
+loggedFlow := withLogging("ProcessingPipeline", processFlow)
+```
+
+## Testing Flows as Nodes
+
+Test flow behavior when used as nodes:
+
+```go
+func TestFlowAsNode(t *testing.T) {
+    // Create a simple flow
+    innerFlow := flyt.NewFlow(
+        flyt.NewNode(
+            flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+                return "inner_result", nil
+            }),
+        ),
+    )
+    
+    // Test the flow directly
+    ctx := context.Background()
+    shared := flyt.NewSharedStore()
+    
+    // Call flow methods as if it were a node
+    prepResult, err := innerFlow.Prep(ctx, shared)
+    assert.NoError(t, err)
+    
+    execResult, err := innerFlow.Exec(ctx, prepResult)
+    assert.NoError(t, err)
+    
+    action, err := innerFlow.Post(ctx, shared, prepResult, execResult)
+    assert.NoError(t, err)
+    assert.Equal(t, flyt.DefaultAction, action)
+}
+```
+
+## Performance Considerations
+
+Using flows as nodes:
+
+```go
+// Lightweight flow - good as node
+func createLightweightFlow() *flyt.Flow {
+    node := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            // Simple operation
+            return transform(prepResult), nil
+        }),
+    )
+    return flyt.NewFlow(node)
+}
+
+// Heavy flow - consider alternatives
+func createHeavyFlow() *flyt.Flow {
+    // Many nodes, complex logic
+    // Consider breaking into smaller flows
+    // or using batch processing
+}
+
+// Alternative: Use node with embedded logic
+func createOptimizedNode() flyt.Node {
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            // Inline the flow logic for performance
+            result := step1(prepResult)
+            result = step2(result)
+            result = step3(result)
+            return result, nil
+        }),
+    )
+}
+```
+
+## Best Practices
+
+1. **Keep Flows Focused**: Flows used as nodes should have clear, single purposes
+2. **Document Behavior**: Clearly document what the flow expects and returns
+3. **Test Thoroughly**: Test flows both standalone and as nodes
+4. **Consider Performance**: Be mindful of overhead when nesting many flows
+5. **Use Meaningful Names**: Name flows to indicate they're used as nodes
+6. **Handle Errors**: Ensure proper error propagation through nested flows
+
+## Next Steps
+
+- [Nested Flows](/advanced/nested-flows) - Complex flow composition
+- [Nodes](/concepts/nodes) - Node interface details
+- [Flows](/concepts/flows) - Flow fundamentals

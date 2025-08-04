@@ -1,0 +1,186 @@
+# Nodes
+
+Nodes are the fundamental building blocks of Flyt workflows. Each node represents a single unit of work with a well-defined lifecycle.
+
+## Node Lifecycle
+
+Every node has three phases that execute in order:
+
+### 1. Prep Phase
+
+The preparation phase reads from the SharedStore and prepares data for execution.
+
+```go
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Read configuration or input data
+    config, _ := shared.Get("config")
+    input, _ := shared.Get("input_data")
+    
+    // Prepare and return data for Exec phase
+    return map[string]any{
+        "config": config,
+        "input": input,
+    }, nil
+}
+```
+
+### 2. Exec Phase
+
+The execution phase performs the main work. This phase can be retried on failure.
+
+```go
+func (n *MyNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    data := prepResult.(map[string]any)
+    
+    // Perform the main operation
+    result, err := processData(data["input"])
+    if err != nil {
+        return nil, err // Will trigger retry if configured
+    }
+    
+    return result, nil
+}
+```
+
+### 3. Post Phase
+
+The post-processing phase handles results and determines the next action.
+
+```go
+func (n *MyNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    // Store results
+    shared.Set("output", execResult)
+    
+    // Determine next action based on results
+    if isValid(execResult) {
+        return "success", nil
+    }
+    return "failure", nil
+}
+```
+
+## Creating Nodes
+
+### Using Helper Functions
+
+The simplest way to create a node:
+
+```go
+node := flyt.NewNode(
+    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        // Prep logic
+        return prepData, nil
+    }),
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        // Exec logic
+        return result, nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        // Post logic
+        return flyt.DefaultAction, nil
+    }),
+)
+```
+
+### Custom Node Types
+
+For complex nodes with state:
+
+```go
+type DatabaseNode struct {
+    *flyt.BaseNode
+    db *sql.DB
+}
+
+func NewDatabaseNode(db *sql.DB) *DatabaseNode {
+    return &DatabaseNode{
+        BaseNode: flyt.NewBaseNode(),
+        db: db,
+    }
+}
+
+func (n *DatabaseNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    query := prepResult.(string)
+    rows, err := n.db.QueryContext(ctx, query)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    
+    // Process rows...
+    return results, nil
+}
+```
+
+## Node Options
+
+Configure node behavior with options:
+
+```go
+node := flyt.NewNode(
+    flyt.WithExecFunc(execFunc),
+    flyt.WithMaxRetries(3),        // Retry up to 3 times
+    flyt.WithWait(time.Second * 2), // Wait 2 seconds between retries
+)
+```
+
+## BaseNode
+
+The `BaseNode` provides default implementations:
+
+```go
+type MyNode struct {
+    *flyt.BaseNode
+    // Add custom fields
+}
+
+func NewMyNode() *MyNode {
+    return &MyNode{
+        BaseNode: flyt.NewBaseNode(
+            flyt.WithMaxRetries(5),
+            flyt.WithWait(time.Second),
+        ),
+    }
+}
+
+// Override only the methods you need
+func (n *MyNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Custom exec logic
+    return result, nil
+}
+```
+
+## Thread Safety
+
+Nodes should be thread-safe if used in concurrent batch operations:
+
+```go
+type SafeNode struct {
+    *flyt.BaseNode
+    mu      sync.Mutex
+    counter int
+}
+
+func (n *SafeNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    n.mu.Lock()
+    n.counter++
+    count := n.counter
+    n.mu.Unlock()
+    
+    return fmt.Sprintf("Execution #%d", count), nil
+}
+```
+
+## Best Practices
+
+1. **Single Responsibility**: Each node should do one thing well
+2. **Idempotency**: Design nodes to be safely retryable
+3. **Context Handling**: Always respect context cancellation
+4. **Error Handling**: Return clear, actionable errors
+5. **Resource Management**: Clean up resources in defer blocks
+
+## Next Steps
+
+- [Actions](/concepts/actions) - Control flow with actions
+- [Flows](/concepts/flows) - Connect nodes into workflows
+- [Custom Node Types](/advanced/custom-nodes) - Advanced node patterns

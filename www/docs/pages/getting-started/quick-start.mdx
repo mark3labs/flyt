@@ -1,0 +1,160 @@
+# Quick Start
+
+This guide will help you build your first Flyt workflow in 5 minutes.
+
+## Your First Node
+
+Let's start with a simple node that processes data:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/mark3labs/flyt"
+)
+
+func main() {
+    // Create a node with just an Exec function
+    node := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            fmt.Println("Processing data...")
+            return "Hello, Flyt!", nil
+        }),
+    )
+
+    // Create shared store and context
+    shared := flyt.NewSharedStore()
+    ctx := context.Background()
+
+    // Run the node
+    action, err := flyt.Run(ctx, node, shared)
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Completed with action: %s\n", action)
+}
+```
+
+## Building a Flow
+
+Now let's create a simple workflow with multiple nodes:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/mark3labs/flyt"
+)
+
+func main() {
+    // Create nodes
+    fetchNode := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            fmt.Println("Fetching data...")
+            return map[string]string{"data": "important info"}, nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+            shared.Set("fetched_data", execResult)
+            return flyt.DefaultAction, nil
+        }),
+    )
+
+    processNode := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            data, _ := shared.Get("fetched_data")
+            return data, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            data := prepResult.(map[string]string)
+            fmt.Printf("Processing: %v\n", data["data"])
+            return "processed: " + data["data"], nil
+        }),
+    )
+
+    // Build the flow
+    flow := flyt.NewFlow(fetchNode)
+    flow.Connect(fetchNode, flyt.DefaultAction, processNode)
+
+    // Run the flow
+    shared := flyt.NewSharedStore()
+    ctx := context.Background()
+    
+    err := flow.Run(ctx, shared)
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Println("Flow completed successfully!")
+}
+```
+
+## Adding Error Handling
+
+Let's add retry logic and error handling:
+
+```go
+func createRobustNode() flyt.Node {
+    attempts := 0
+    
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            attempts++
+            fmt.Printf("Attempt %d...\n", attempts)
+            
+            // Simulate flaky operation
+            if attempts < 2 {
+                return nil, fmt.Errorf("temporary failure")
+            }
+            
+            return "Success!", nil
+        }),
+        flyt.WithMaxRetries(3),
+        flyt.WithWait(time.Second),
+    )
+}
+```
+
+## Using Shared Store
+
+The SharedStore allows nodes to communicate:
+
+```go
+func main() {
+    shared := flyt.NewSharedStore()
+    
+    // Set initial data
+    shared.Set("config", map[string]any{
+        "timeout": 30,
+        "retries": 3,
+    })
+    
+    node := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            config, _ := shared.Get("config")
+            return config, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            config := prepResult.(map[string]any)
+            fmt.Printf("Using config: %v\n", config)
+            return "configured", nil
+        }),
+    )
+    
+    ctx := context.Background()
+    flyt.Run(ctx, node, shared)
+}
+```
+
+## Next Steps
+
+Now that you've built your first workflow, explore:
+
+- [Nodes](/concepts/nodes) - Deep dive into node lifecycle
+- [Actions](/concepts/actions) - Control flow with actions
+- [Error Handling](/patterns/error-handling) - Build resilient workflows
+- [Examples](/examples/agent) - Real-world use cases

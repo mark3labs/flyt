@@ -1,0 +1,377 @@
+# Best Practices
+
+Follow these guidelines to build robust, maintainable Flyt workflows.
+
+## Node Design
+
+### Single Responsibility
+
+Each node should do one thing well:
+
+```go
+// ❌ Bad: Node doing too much
+node := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        // Fetch data
+        data := fetchFromAPI()
+        // Validate
+        if !isValid(data) {
+            return nil, errors.New("invalid")
+        }
+        // Transform
+        transformed := transform(data)
+        // Save
+        saveToDatabase(transformed)
+        return transformed, nil
+    }),
+)
+
+// ✅ Good: Separate concerns
+fetchNode := createFetchNode()
+validateNode := createValidateNode()
+transformNode := createTransformNode()
+saveNode := createSaveNode()
+
+flow := flyt.NewFlow(fetchNode)
+flow.Connect(fetchNode, flyt.DefaultAction, validateNode)
+flow.Connect(validateNode, "valid", transformNode)
+flow.Connect(transformNode, flyt.DefaultAction, saveNode)
+```
+
+### Idempotency
+
+Design nodes to be safely retryable:
+
+```go
+// ✅ Good: Idempotent operation
+func (n *SaveNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    data := prepResult.(Record)
+    
+    // Use upsert instead of insert
+    _, err := db.Exec(`
+        INSERT INTO records (id, data) VALUES (?, ?)
+        ON CONFLICT (id) DO UPDATE SET data = ?
+    `, data.ID, data.Data, data.Data)
+    
+    return data.ID, err
+}
+```
+
+### Error Handling
+
+Return clear, actionable errors:
+
+```go
+// ❌ Bad: Generic error
+return nil, errors.New("failed")
+
+// ✅ Good: Descriptive error
+return nil, fmt.Errorf("failed to fetch user %d: %w", userID, err)
+```
+
+## Flow Design
+
+### Modular Flows
+
+Create reusable sub-flows:
+
+```go
+// Reusable validation flow
+func createValidationFlow() *flyt.Flow {
+    schemaCheck := createSchemaValidator()
+    businessRules := createBusinessValidator()
+    
+    flow := flyt.NewFlow(schemaCheck)
+    flow.Connect(schemaCheck, "valid", businessRules)
+    return flow
+}
+
+// Use in multiple places
+mainFlow.Connect(fetchNode, flyt.DefaultAction, createValidationFlow())
+apiFlow.Connect(parseNode, flyt.DefaultAction, createValidationFlow())
+```
+
+### Error Boundaries
+
+Centralize error handling:
+
+```go
+func createFlowWithErrorHandling() *flyt.Flow {
+    flow := flyt.NewFlow(startNode)
+    errorHandler := createErrorHandler()
+    
+    // Connect all error paths to handler
+    for _, node := range []flyt.Node{startNode, processNode, saveNode} {
+        flow.Connect(node, "error", errorHandler)
+    }
+    
+    return flow
+}
+```
+
+## Context Handling
+
+### Respect Cancellation
+
+Always check context in long-running operations:
+
+```go
+func (n *ProcessNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    items := prepResult.([]Item)
+    results := []Result{}
+    
+    for _, item := range items {
+        // Check context before each iteration
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        default:
+        }
+        
+        result := processItem(ctx, item)
+        results = append(results, result)
+    }
+    
+    return results, nil
+}
+```
+
+### Timeout Management
+
+Set appropriate timeouts:
+
+```go
+func (n *APINode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Create timeout context
+    ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+    defer cancel()
+    
+    return callAPI(ctx, prepResult)
+}
+```
+
+## Concurrency Safety
+
+### Thread-Safe Nodes
+
+Protect shared state in nodes:
+
+```go
+type CounterNode struct {
+    *flyt.BaseNode
+    mu    sync.Mutex
+    count int
+}
+
+func (n *CounterNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    n.mu.Lock()
+    n.count++
+    current := n.count
+    n.mu.Unlock()
+    
+    return current, nil
+}
+```
+
+### Avoid Shared Node Instances
+
+Create new instances for concurrent use:
+
+```go
+// ❌ Bad: Sharing node instance
+node := createProcessNode()
+for i := 0; i < 10; i++ {
+    go flyt.Run(ctx, node, shared) // Race condition!
+}
+
+// ✅ Good: Create new instances
+for i := 0; i < 10; i++ {
+    go flyt.Run(ctx, createProcessNode(), shared)
+}
+```
+
+## Resource Management
+
+### Clean Up Resources
+
+Use defer for cleanup:
+
+```go
+func (n *FileNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    file, err := os.Open(prepResult.(string))
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close() // Always cleanup
+    
+    // Process file...
+    return processFile(file)
+}
+```
+
+### Connection Pooling
+
+Reuse expensive resources:
+
+```go
+type DatabaseFlow struct {
+    db *sql.DB
+}
+
+func NewDatabaseFlow(db *sql.DB) *DatabaseFlow {
+    return &DatabaseFlow{db: db}
+}
+
+func (f *DatabaseFlow) CreateNode() flyt.Node {
+    return &DatabaseNode{
+        BaseNode: flyt.NewBaseNode(),
+        db: f.db, // Reuse connection pool
+    }
+}
+```
+
+## Testing
+
+### Unit Test Nodes
+
+Test nodes in isolation:
+
+```go
+func TestProcessNode(t *testing.T) {
+    node := createProcessNode()
+    ctx := context.Background()
+    
+    // Test successful case
+    result, err := node.Exec(ctx, "test input")
+    assert.NoError(t, err)
+    assert.Equal(t, "expected output", result)
+    
+    // Test error case
+    result, err = node.Exec(ctx, nil)
+    assert.Error(t, err)
+}
+```
+
+### Integration Test Flows
+
+Test complete workflows:
+
+```go
+func TestCompleteFlow(t *testing.T) {
+    flow := createMainFlow()
+    shared := flyt.NewSharedStore()
+    shared.Set("input", testData)
+    
+    ctx := context.Background()
+    err := flow.Run(ctx, shared)
+    assert.NoError(t, err)
+    
+    result, ok := shared.Get("output")
+    assert.True(t, ok)
+    assert.Equal(t, expectedResult, result)
+}
+```
+
+## Documentation
+
+### Document Node Behavior
+
+```go
+// FetchUserNode fetches user data from the API.
+// 
+// Prep: Reads "user_id" from SharedStore
+// Exec: Fetches user from API, retries on network errors
+// Post: Stores user data in "user_data" key
+// Actions:
+//   - "success": User fetched successfully
+//   - "not_found": User does not exist
+//   - "error": Unrecoverable error occurred
+type FetchUserNode struct {
+    *flyt.BaseNode
+    apiClient *APIClient
+}
+```
+
+### Document Flow Structure
+
+```go
+// CreateOrderFlow processes new orders:
+// 1. Validates order data
+// 2. Checks inventory
+// 3. Processes payment
+// 4. Creates shipment
+// 5. Sends confirmation
+//
+// Required SharedStore keys:
+//   - "order_data": OrderData struct
+//   - "customer_id": string
+//
+// Sets SharedStore keys:
+//   - "order_id": string
+//   - "tracking_number": string
+func CreateOrderFlow() *flyt.Flow {
+    // ...
+}
+```
+
+## Performance
+
+### Batch Operations
+
+Process items in batches when possible:
+
+```go
+// Instead of processing one at a time
+for _, item := range items {
+    process(item)
+}
+
+// Process in batches
+batchNode := flyt.NewBatchNode(processFunc, true)
+shared.Set("items", items)
+```
+
+### Lazy Loading
+
+Load data only when needed:
+
+```go
+func (n *ProcessNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Only load the data this node needs
+    if needsUserData(shared) {
+        userData := loadUserData()
+        return userData, nil
+    }
+    return nil, nil
+}
+```
+
+## Monitoring
+
+### Add Observability
+
+Log important events:
+
+```go
+func (n *ProcessNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    start := time.Now()
+    defer func() {
+        log.Printf("ProcessNode took %v", time.Since(start))
+    }()
+    
+    result, err := process(prepResult)
+    if err != nil {
+        log.Printf("ProcessNode error: %v", err)
+        return nil, err
+    }
+    
+    log.Printf("ProcessNode success: processed %d items", len(result))
+    return result, nil
+}
+```
+
+## Next Steps
+
+- [Examples](/examples/agent) - See best practices in action
+- [Advanced Usage](/advanced/custom-nodes) - Advanced patterns
+- [Core Concepts](/concepts/nodes) - Review fundamentals

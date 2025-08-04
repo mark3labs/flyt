@@ -1,0 +1,282 @@
+# Error Handling & Retries
+
+Build resilient workflows with proper error handling and retry strategies.
+
+## Basic Retry Configuration
+
+Configure retries at the node level:
+
+```go
+node := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        // This will be retried up to 3 times
+        return callFlakeyAPI()
+    }),
+    flyt.WithMaxRetries(3),
+    flyt.WithWait(time.Second), // Wait 1 second between retries
+)
+```
+
+## Exponential Backoff
+
+Implement exponential backoff with RetryableNode:
+
+```go
+type BackoffNode struct {
+    *flyt.BaseNode
+    attempt int
+}
+
+func (n *BackoffNode) GetMaxRetries() int {
+    return 5
+}
+
+func (n *BackoffNode) GetWait() time.Duration {
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+    return time.Duration(math.Pow(2, float64(n.attempt))) * time.Second
+}
+
+func (n *BackoffNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    n.attempt++
+    result, err := callAPI()
+    if err != nil {
+        log.Printf("Attempt %d failed: %v", n.attempt, err)
+        return nil, err
+    }
+    n.attempt = 0 // Reset on success
+    return result, nil
+}
+```
+
+## Circuit Breaker Pattern
+
+Prevent cascading failures:
+
+```go
+type CircuitBreakerNode struct {
+    *flyt.BaseNode
+    failures    int
+    lastFailure time.Time
+    threshold   int
+    timeout     time.Duration
+}
+
+func NewCircuitBreakerNode() *CircuitBreakerNode {
+    return &CircuitBreakerNode{
+        BaseNode:  flyt.NewBaseNode(),
+        threshold: 5,
+        timeout:   30 * time.Second,
+    }
+}
+
+func (n *CircuitBreakerNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Check if circuit is open
+    if n.failures >= n.threshold {
+        if time.Since(n.lastFailure) < n.timeout {
+            return nil, fmt.Errorf("circuit breaker open")
+        }
+        // Reset after timeout
+        n.failures = 0
+    }
+    
+    result, err := callService()
+    if err != nil {
+        n.failures++
+        n.lastFailure = time.Now()
+        return nil, err
+    }
+    
+    n.failures = 0 // Reset on success
+    return result, nil
+}
+```
+
+## Fallback on Failure
+
+Implement the FallbackNode interface for graceful degradation:
+
+```go
+type CachedAPINode struct {
+    *flyt.BaseNode
+    cache sync.Map
+}
+
+func (n *CachedAPINode) Exec(ctx context.Context, prepResult any) (any, error) {
+    key := prepResult.(string)
+    
+    // Try to fetch fresh data
+    data, err := fetchFromAPI(key)
+    if err == nil {
+        // Cache successful result
+        n.cache.Store(key, data)
+        return data, nil
+    }
+    
+    return nil, err
+}
+
+func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
+    key := prepResult.(string)
+    
+    // Return cached data on failure
+    if cached, ok := n.cache.Load(key); ok {
+        log.Printf("Returning cached data for %s due to error: %v", key, err)
+        return cached, nil
+    }
+    
+    // Return default if no cache
+    return map[string]any{
+        "status": "unavailable",
+        "cached": false,
+    }, nil
+}
+```
+
+## Error Aggregation
+
+Collect errors from batch operations:
+
+```go
+func processBatch(ctx context.Context, items []Item) error {
+    var errs []error
+    
+    for i, item := range items {
+        if err := processItem(item); err != nil {
+            errs = append(errs, fmt.Errorf("item %d: %w", i, err))
+        }
+    }
+    
+    if len(errs) > 0 {
+        return &flyt.BatchError{
+            Errors: errs,
+            Message: fmt.Sprintf("%d/%d items failed", len(errs), len(items)),
+        }
+    }
+    
+    return nil
+}
+```
+
+## Retry with Jitter
+
+Add randomization to prevent thundering herd:
+
+```go
+func (n *JitterNode) GetWait() time.Duration {
+    base := time.Second * time.Duration(n.attempt)
+    jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
+    return base + jitter
+}
+```
+
+## Selective Retry
+
+Only retry specific errors:
+
+```go
+func (n *SelectiveRetryNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    result, err := callAPI()
+    if err != nil {
+        // Only retry on network errors
+        if isNetworkError(err) {
+            return nil, err // Will be retried
+        }
+        // Don't retry business logic errors
+        return nil, fmt.Errorf("permanent error: %w", err)
+    }
+    return result, nil
+}
+
+func (n *SelectiveRetryNode) GetMaxRetries() int {
+    // Check error type from last execution
+    if n.lastError != nil && !isRetryable(n.lastError) {
+        return 0 // Don't retry
+    }
+    return 3
+}
+```
+
+## Error Context
+
+Provide context for debugging:
+
+```go
+type ErrorContext struct {
+    Node      string
+    Action    string
+    Input     any
+    Error     error
+    Timestamp time.Time
+    Attempts  int
+}
+
+func (n *DetailedErrorNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    if err, ok := execResult.(error); ok && err != nil {
+        errorCtx := ErrorContext{
+            Node:      "DetailedErrorNode",
+            Action:    "process",
+            Input:     prepResult,
+            Error:     err,
+            Timestamp: time.Now(),
+            Attempts:  n.attempts,
+        }
+        
+        shared.Set("last_error", errorCtx)
+        
+        if n.attempts < n.maxRetries {
+            return "retry", nil
+        }
+        return "error", nil
+    }
+    
+    return flyt.DefaultAction, nil
+}
+```
+
+## Timeout Handling
+
+Prevent hanging operations:
+
+```go
+func (n *TimeoutNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Create timeout context
+    ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+    defer cancel()
+    
+    resultChan := make(chan any)
+    errChan := make(chan error)
+    
+    go func() {
+        result, err := longRunningOperation()
+        if err != nil {
+            errChan <- err
+        } else {
+            resultChan <- result
+        }
+    }()
+    
+    select {
+    case result := <-resultChan:
+        return result, nil
+    case err := <-errChan:
+        return nil, err
+    case <-ctx.Done():
+        return nil, fmt.Errorf("operation timed out: %w", ctx.Err())
+    }
+}
+```
+
+## Best Practices
+
+1. **Identify Transient vs Permanent Errors**: Only retry transient failures
+2. **Set Reasonable Limits**: Don't retry indefinitely
+3. **Use Backoff**: Avoid overwhelming failing services
+4. **Log Failures**: Track retry attempts for debugging
+5. **Provide Fallbacks**: Gracefully degrade when possible
+6. **Monitor Retry Rates**: High retry rates indicate problems
+
+## Next Steps
+
+- [Fallback on Failure](/patterns/fallback) - Graceful degradation
+- [Batch Error Handling](/advanced/batch-processing#batch-error-handling) - Handle batch failures
+- [Best Practices](/best-practices) - General guidelines

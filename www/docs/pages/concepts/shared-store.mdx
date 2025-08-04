@@ -1,0 +1,280 @@
+# Shared Store
+
+The SharedStore provides thread-safe data sharing between nodes in a flow. It acts as a key-value store that persists throughout flow execution.
+
+## Creating a SharedStore
+
+```go
+shared := flyt.NewSharedStore()
+```
+
+## Basic Operations
+
+### Set and Get
+
+Store and retrieve individual values:
+
+```go
+// Set a value
+shared.Set("user_id", 123)
+shared.Set("config", map[string]any{"timeout": 30})
+
+// Get a value
+if value, ok := shared.Get("user_id"); ok {
+    userID := value.(int)
+    fmt.Printf("User ID: %d\n", userID)
+}
+```
+
+### GetAll
+
+Get a copy of all stored data:
+
+```go
+allData := shared.GetAll()
+for key, value := range allData {
+    fmt.Printf("%s: %v\n", key, value)
+}
+```
+
+### Merge
+
+Merge multiple values at once:
+
+```go
+shared.Merge(map[string]any{
+    "status": "active",
+    "timestamp": time.Now(),
+    "metadata": map[string]string{
+        "version": "1.0",
+        "env": "production",
+    },
+})
+```
+
+## Thread Safety
+
+SharedStore is safe for concurrent access:
+
+```go
+var wg sync.WaitGroup
+
+// Multiple goroutines can safely access
+for i := 0; i < 10; i++ {
+    wg.Add(1)
+    go func(id int) {
+        defer wg.Done()
+        shared.Set(fmt.Sprintf("worker_%d", id), "done")
+    }(i)
+}
+
+wg.Wait()
+```
+
+## Common Patterns
+
+### Configuration Storage
+
+Store configuration that multiple nodes need:
+
+```go
+// In main or initial node
+shared.Set("api_config", map[string]string{
+    "base_url": "https://api.example.com",
+    "api_key": os.Getenv("API_KEY"),
+    "timeout": "30s",
+})
+
+// In any node
+func (n *APINode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    config, _ := shared.Get("api_config")
+    return config, nil
+}
+```
+
+### Accumulating Results
+
+Collect results from multiple nodes:
+
+```go
+// Node 1
+func (n *Node1) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    results, _ := shared.Get("results")
+    if results == nil {
+        results = []any{}
+    }
+    
+    resultList := results.([]any)
+    resultList = append(resultList, execResult)
+    shared.Set("results", resultList)
+    
+    return flyt.DefaultAction, nil
+}
+```
+
+### State Management
+
+Track workflow state:
+
+```go
+// Initialize state
+shared.Set("workflow_state", "initialized")
+shared.Set("retry_count", 0)
+shared.Set("start_time", time.Now())
+
+// Update state in nodes
+func updateState(shared *flyt.SharedStore, newState string) {
+    shared.Set("workflow_state", newState)
+    shared.Set("last_update", time.Now())
+}
+```
+
+### Error Context
+
+Store error information for debugging:
+
+```go
+func (n *ErrorHandler) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    if err := execResult.(error); err != nil {
+        shared.Set("last_error", map[string]any{
+            "error": err.Error(),
+            "node": "ProcessNode",
+            "timestamp": time.Now(),
+            "input": prepResult,
+        })
+        return "error", nil
+    }
+    return flyt.DefaultAction, nil
+}
+```
+
+## Batch Processing
+
+SharedStore in batch operations:
+
+```go
+// Store items to process
+shared.Set("items", []string{"item1", "item2", "item3"})
+
+// Store batch configuration
+shared.Set("batch_config", map[string]any{
+    "batch_size": 10,
+    "concurrent": true,
+    "timeout": 60,
+})
+
+// After batch processing
+results, _ := shared.Get("results")
+errors, _ := shared.Get("errors")
+```
+
+## Isolation in Batch Flows
+
+Each flow in a batch has its own SharedStore:
+
+```go
+batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+    // This shared is from the parent
+    baseConfig, _ := shared.Get("base_config")
+    
+    return []flyt.FlowInputs{
+        {"id": 1, "config": baseConfig}, // Each gets own SharedStore
+        {"id": 2, "config": baseConfig},
+    }, nil
+}
+```
+
+## Best Practices
+
+### 1. Type Safety
+
+Use type assertions carefully:
+
+```go
+// Safe type assertion
+if value, ok := shared.Get("count"); ok {
+    if count, ok := value.(int); ok {
+        // Use count
+    } else {
+        // Handle type mismatch
+    }
+}
+```
+
+### 2. Key Naming
+
+Use consistent, descriptive keys:
+
+```go
+const (
+    KeyUserID     = "user_id"
+    KeyAuthToken  = "auth_token"
+    KeyResults    = "processing_results"
+    KeyErrorCount = "error_count"
+)
+```
+
+### 3. Data Structure
+
+Store structured data for clarity:
+
+```go
+type WorkflowContext struct {
+    RequestID string
+    UserID    int
+    StartTime time.Time
+    Metadata  map[string]string
+}
+
+shared.Set("context", WorkflowContext{
+    RequestID: "req-123",
+    UserID:    456,
+    StartTime: time.Now(),
+    Metadata:  map[string]string{"source": "api"},
+})
+```
+
+### 4. Cleanup
+
+Clear sensitive data when done:
+
+```go
+defer func() {
+    // Clear sensitive data
+    shared.Set("auth_token", nil)
+    shared.Set("api_key", nil)
+}()
+```
+
+### 5. Documentation
+
+Document expected keys:
+
+```go
+// SharedStore keys used by this flow:
+// - "input_file": string - Path to input file
+// - "output_dir": string - Output directory path
+// - "processed_count": int - Number of processed items
+// - "errors": []error - Collection of errors
+```
+
+## Debugging
+
+Use GetAll for debugging:
+
+```go
+func debugSharedStore(shared *flyt.SharedStore) {
+    data := shared.GetAll()
+    fmt.Println("=== SharedStore Contents ===")
+    for k, v := range data {
+        fmt.Printf("%s: %T = %v\n", k, v, v)
+    }
+    fmt.Println("===========================")
+}
+```
+
+## Next Steps
+
+- [Nodes](/concepts/nodes) - Use SharedStore in node lifecycle
+- [Batch Processing](/advanced/batch-processing) - SharedStore in batch operations
+- [Best Practices](/best-practices) - General Flyt best practices
