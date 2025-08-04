@@ -24,9 +24,16 @@ A minimalist workflow framework for Go with zero dependencies inspired by [Pocke
   - [Conditional Branching](#conditional-branching)
 - [Advanced Usage](#advanced-usage)
   - [Custom Node Types](#custom-node-types)
+    - [RetryableNode Interface](#retryablenode-interface)
   - [Batch Processing](#batch-processing)
+    - [Advanced Batch Configuration](#advanced-batch-configuration)
+    - [Batch Error Handling](#batch-error-handling)
   - [Batch Flows](#batch-flows)
   - [Nested Flows](#nested-flows)
+  - [Flow as Node](#flow-as-node)
+  - [Worker Pool](#worker-pool)
+  - [Utility Functions](#utility-functions)
+    - [ToSlice](#toslice)
 - [Best Practices](#best-practices)
 - [Examples](#examples)
 - [License](#license)
@@ -162,32 +169,19 @@ Thread-safe data sharing between nodes:
 
 ```go
 shared := flyt.NewSharedStore()
+
+// Set and get individual values
 shared.Set("key", "value")
 value, ok := shared.Get("key")
-```
 
-## Intermediate Patterns
+// Get all data as a map (returns a copy)
+allData := shared.GetAll()
 
-### Configuration via Closures
-
-Pass configuration to nodes using closures:
-
-```go
-func createAPINode(apiKey string, baseURL string) flyt.Node {
-    return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-            // apiKey and baseURL are captured in the closure
-            url := fmt.Sprintf("%s/data", baseURL)
-            req, _ := http.NewRequest("GET", url, nil)
-            req.Header.Set("Authorization", apiKey)
-            // ... make request
-            return data, nil
-        }),
-    )
-}
-
-// Usage
-node := createAPINode("secret-key", "https://api.example.com")
+// Merge multiple values at once
+shared.Merge(map[string]any{
+    "user_id": 123,
+    "config": map[string]any{"timeout": 30},
+})
 ```
 
 ### Error Handling & Retries
@@ -288,6 +282,35 @@ func (n *RateLimitedNode) Exec(ctx context.Context, prepResult any) (any, error)
 }
 ```
 
+#### RetryableNode Interface
+
+For custom retry logic, implement the `RetryableNode` interface:
+
+```go
+type CustomRetryNode struct {
+    *flyt.BaseNode
+    attempts int
+}
+
+func (n *CustomRetryNode) GetMaxRetries() int {
+    // Dynamic retry count based on state
+    if n.attempts > 5 {
+        return 0 // Stop retrying after 5 total attempts
+    }
+    return 3
+}
+
+func (n *CustomRetryNode) GetWait() time.Duration {
+    // Exponential backoff
+    return time.Duration(n.attempts) * time.Second
+}
+
+func (n *CustomRetryNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    n.attempts++
+    return callAPI(prepResult)
+}
+```
+
 ### Batch Processing
 
 Process multiple items concurrently:
@@ -301,6 +324,44 @@ processFunc := func(ctx context.Context, item any) (any, error) {
 
 batchNode := flyt.NewBatchNode(processFunc, true) // true for concurrent
 shared.Set("items", []string{"item1", "item2", "item3"})
+```
+
+#### Advanced Batch Configuration
+
+For more control over batch processing:
+
+```go
+config := &flyt.BatchConfig{
+    BatchSize:   10,        // Process 10 items at a time
+    Concurrency: 5,         // Use 5 concurrent workers
+    ItemsKey:    "data",    // Custom key for input items
+    ResultsKey:  "output",  // Custom key for results
+    CountKey:    "total",   // Custom key for processed count
+}
+
+processFunc := func(ctx context.Context, item any) (any, error) {
+    return processItem(item)
+}
+
+batchNode := flyt.NewBatchNodeWithConfig(processFunc, true, config)
+```
+
+#### Batch Error Handling
+
+Batch operations aggregate errors:
+
+```go
+action, err := flyt.Run(ctx, batchNode, shared)
+if err != nil {
+    if batchErr, ok := err.(*flyt.BatchError); ok {
+        // Access individual errors
+        for i, e := range batchErr.Errors {
+            if e != nil {
+                fmt.Printf("Item %d failed: %v\n", i, e)
+            }
+        }
+    }
+}
 ```
 
 ### Batch Flows
@@ -356,6 +417,72 @@ validationFlow := createValidationFlow()
 mainFlow := flyt.NewFlow(fetchNode)
 mainFlow.Connect(fetchNode, "validate", validationFlow)
 mainFlow.Connect(validationFlow, flyt.DefaultAction, processNode)
+```
+
+### Flow as Node
+
+Flows implement the Node interface and can be used anywhere a node is expected:
+
+```go
+// Create a reusable flow
+func createProcessingFlow() *flyt.Flow {
+    validateNode := createValidateNode()
+    transformNode := createTransformNode()
+    
+    flow := flyt.NewFlow(validateNode)
+    flow.Connect(validateNode, "valid", transformNode)
+    return flow
+}
+
+// Use the flow as a node in another flow
+processingFlow := createProcessingFlow()
+mainFlow := flyt.NewFlow(fetchNode)
+mainFlow.Connect(fetchNode, flyt.DefaultAction, processingFlow) // Flow used as node
+mainFlow.Connect(processingFlow, flyt.DefaultAction, saveNode)
+```
+
+### Worker Pool
+
+For custom concurrent task management:
+
+```go
+// Create a worker pool with 10 workers
+pool := flyt.NewWorkerPool(10)
+
+// Submit tasks
+for _, item := range items {
+    item := item // Capture loop variable
+    pool.Submit(func() {
+        // Process item
+        result := processItem(item)
+        // Store result safely
+        mu.Lock()
+        results = append(results, result)
+        mu.Unlock()
+    })
+}
+
+// Wait for all tasks to complete
+pool.Wait()
+
+// Clean up
+pool.Close()
+```
+
+### Utility Functions
+
+#### ToSlice
+
+Convert various types to slices for batch processing:
+
+```go
+// Convert different types to []any
+items1 := flyt.ToSlice([]string{"a", "b", "c"})
+items2 := flyt.ToSlice([]int{1, 2, 3})
+items3 := flyt.ToSlice("single item") // Returns []any{"single item"}
+
+// Useful for batch processing with mixed types
+shared.Set("items", flyt.ToSlice(data))
 ```
 
 ## Best Practices
