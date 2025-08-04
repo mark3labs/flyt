@@ -20,6 +20,7 @@ A minimalist workflow framework for Go with zero dependencies inspired by [Pocke
 - [Intermediate Patterns](#intermediate-patterns)
   - [Configuration via Closures](#configuration-via-closures)
   - [Error Handling & Retries](#error-handling--retries)
+  - [Fallback on Failure](#fallback-on-failure)
   - [Conditional Branching](#conditional-branching)
 - [Advanced Usage](#advanced-usage)
   - [Custom Node Types](#custom-node-types)
@@ -203,6 +204,38 @@ node := flyt.NewNode(
     flyt.WithWait(time.Second),
 )
 ```
+
+### Fallback on Failure
+
+Handle failures gracefully by implementing the `FallbackNode` interface:
+
+```go
+type CachedAPINode struct {
+    *flyt.BaseNode
+    cache map[string]any
+}
+
+func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
+    // Return cached data when API fails
+    key := prepResult.(string)
+    if cached, ok := n.cache[key]; ok {
+        return cached, nil
+    }
+    // Return default value if no cache
+    return map[string]any{"status": "unavailable"}, nil
+}
+
+func (n *CachedAPINode) Exec(ctx context.Context, prepResult any) (any, error) {
+    key := prepResult.(string)
+    data, err := callAPI(key)
+    if err == nil {
+        n.cache[key] = data // Update cache on success
+    }
+    return data, err
+}
+```
+
+The `ExecFallback` method is called automatically after all retries are exhausted, allowing you to provide degraded functionality, cached results, or default values.
 
 ### Conditional Branching
 
