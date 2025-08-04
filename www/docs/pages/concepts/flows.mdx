@@ -193,20 +193,18 @@ flow.Connect(createLoggingNode("debug"), flyt.DefaultAction, node2)
 
 ## Visualizing Flows
 
-Document your flows with diagrams:
+Document your flows with clear structure:
 
-```mermaid
-graph TD
-    Start([Start])
-    Validate[Validate]
-    Process[Process]
-    Save[Save]
-    Error[Error]
-    
-    Start -->|default| Validate
-    Validate -->|valid| Process
-    Validate -->|invalid| Error
-    Process -->|default| Save
+```go
+// Flow structure:
+// Start -> Validate -> Process -> Save
+//              └─> Error (on invalid)
+
+flow := flyt.NewFlow(startNode)
+flow.Connect(startNode, flyt.DefaultAction, validateNode)
+flow.Connect(validateNode, "valid", processNode)
+flow.Connect(validateNode, "invalid", errorNode)
+flow.Connect(processNode, flyt.DefaultAction, saveNode)
 ```
 
 ## Next Steps
