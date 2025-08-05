@@ -1,0 +1,15 @@
+# SST build artifacts
+.sst/
+
+# Node modules
+node_modules/
+
+# Go binary
+main
+
+# Environment files
+.env
+.env.local
+
+# OS files
+.DS_Store

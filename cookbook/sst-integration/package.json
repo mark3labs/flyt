@@ -1,0 +1,8 @@
+{
+  "name": "sst-integration",
+  "version": "1.0.0",
+  "type": "module",
+  "devDependencies": {
+    "sst": "3.3.0"
+  }
+}
