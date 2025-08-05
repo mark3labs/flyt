@@ -3,6 +3,7 @@ import { defineConfig } from 'vocs'
 export default defineConfig({
   title: 'Flyt',
   description: 'A minimalist workflow framework for Go with zero dependencies',
+  baseUrl: '/flyt/',
   logoUrl: '/flyt-logo.png',
   sidebar: [
     {
