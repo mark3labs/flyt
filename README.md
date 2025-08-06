@@ -220,6 +220,10 @@ node := flyt.NewNode(
     }),
     flyt.WithMaxRetries(3),
     flyt.WithWait(time.Second),
+    flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+        // Called after all retries fail
+        return "default-value", nil
+    }),
 )
 ```
 

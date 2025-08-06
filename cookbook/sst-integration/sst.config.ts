@@ -22,6 +22,7 @@ export default $config({
       handler: "./src",
       link: [sourceBucket, destBucket, anthropicKey],
       timeout: "2 minutes",
+      dev: false,
     });
 
     // Add S3 trigger

@@ -735,9 +735,10 @@ type FlowFactory func() *Flow
 //	}
 type CustomNode struct {
 	*BaseNode
-	prepFunc func(context.Context, *SharedStore) (any, error)
-	execFunc func(context.Context, any) (any, error)
-	postFunc func(context.Context, *SharedStore, any, any) (Action, error)
+	prepFunc         func(context.Context, *SharedStore) (any, error)
+	execFunc         func(context.Context, any) (any, error)
+	postFunc         func(context.Context, *SharedStore, any, any) (Action, error)
+	execFallbackFunc func(any, error) (any, error)
 }
 
 // Prep implements Node.Prep by calling the custom prepFunc if provided
@@ -762,6 +763,14 @@ func (n *CustomNode) Post(ctx context.Context, shared *SharedStore, prepResult, 
 		return n.postFunc(ctx, shared, prepResult, execResult)
 	}
 	return n.BaseNode.Post(ctx, shared, prepResult, execResult)
+}
+
+// ExecFallback implements FallbackNode.ExecFallback by calling the custom execFallbackFunc if provided
+func (n *CustomNode) ExecFallback(prepResult any, err error) (any, error) {
+	if n.execFallbackFunc != nil {
+		return n.execFallbackFunc(prepResult, err)
+	}
+	return n.BaseNode.ExecFallback(prepResult, err)
 }
 
 // NewNode creates a new node with custom function implementations.
@@ -889,6 +898,25 @@ func WithPostFunc(fn func(context.Context, *SharedStore, any, any) (Action, erro
 	return &customNodeOption{
 		f: func(n *CustomNode) {
 			n.postFunc = fn
+		},
+	}
+}
+
+// WithExecFallbackFunc sets a custom ExecFallback implementation for a CustomNode.
+// The provided function will be called when Exec fails after all retries are exhausted.
+// This allows for custom error handling or returning a default value.
+//
+// Example:
+//
+//	flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+//	    log.Printf("Exec failed after retries: %v", err)
+//	    // Return nil to indicate failure, which can be handled in Post
+//	    return nil, nil
+//	})
+func WithExecFallbackFunc(fn func(any, error) (any, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.execFallbackFunc = fn
 		},
 	}
 }

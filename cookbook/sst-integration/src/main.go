@@ -3,9 +3,10 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
-	"path/filepath"
+	"log"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -18,34 +19,76 @@ import (
 	"github.com/sst/sst/v3/sdk/golang/resource"
 )
 
+// ExtractedResponse represents the expected JSON response from Claude
+type ExtractedResponse struct {
+	Content string `json:"content"`
+	Title   string `json:"title"`
+}
+
 // Simple node that downloads image from S3
 func createDownloadNode() flyt.Node {
 	return flyt.NewNode(
-		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-			shared := prepResult.(*flyt.SharedStore)
+		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			bucket, _ := shared.Get("bucket")
 			key, _ := shared.Get("key")
+			return map[string]any{
+				"bucket": bucket,
+				"key":    key,
+			}, nil
+		}),
+		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+			data := prepResult.(map[string]any)
+			bucket := data["bucket"].(string)
+			key := data["key"].(string)
 
 			// Create S3 client
 			cfg, err := config.LoadDefaultConfig(ctx)
 			if err != nil {
-				return nil, err
+				log.Printf("Failed to load AWS config: %v", err)
+				return nil, fmt.Errorf("failed to load AWS config: %w", err)
 			}
 			s3Client := s3.NewFromConfig(cfg)
 
-			bucketStr := bucket.(string)
-			keyStr := key.(string)
-
+			log.Printf("Downloading image from S3: bucket=%s, key=%s", bucket, key)
 			result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
-				Bucket: &bucketStr,
-				Key:    &keyStr,
+				Bucket: &bucket,
+				Key:    &key,
 			})
 			if err != nil {
-				return nil, err
+				log.Printf("Failed to download from S3: %v", err)
+				return nil, fmt.Errorf("failed to download from S3: %w", err)
 			}
 
-			imageData, _ := io.ReadAll(result.Body)
-			return imageData, nil
+			imageData, err := io.ReadAll(result.Body)
+			if err != nil {
+				log.Printf("Failed to read image data: %v", err)
+				return nil, fmt.Errorf("failed to read image data: %w", err)
+			}
+
+			// Detect MIME type from file extension
+			mimeType := "image/jpeg" // default
+			lowerKey := strings.ToLower(key)
+			if strings.HasSuffix(lowerKey, ".png") {
+				mimeType = "image/png"
+			} else if strings.HasSuffix(lowerKey, ".jpg") || strings.HasSuffix(lowerKey, ".jpeg") {
+				mimeType = "image/jpeg"
+			} else if strings.HasSuffix(lowerKey, ".webp") {
+				mimeType = "image/webp"
+			}
+
+			log.Printf("Successfully downloaded image: %d bytes, MIME type: %s", len(imageData), mimeType)
+			return map[string]any{
+				"imageData": imageData,
+				"mimeType":  mimeType,
+			}, nil
+		}),
+		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+			// Store the image data and mime type for the next node
+			result := execResult.(map[string]any)
+			shared.Set("imageData", result["imageData"])
+			shared.Set("mimeType", result["mimeType"])
+			log.Printf("Download node completed, MIME type: %s", result["mimeType"])
+			return flyt.DefaultAction, nil
 		}),
 	)
 }
@@ -53,12 +96,52 @@ func createDownloadNode() flyt.Node {
 // Simple node that calls Claude to extract text
 func createExtractTextNode() flyt.Node {
 	return flyt.NewNode(
+		flyt.WithMaxRetries(3), // Add retry capability
+		flyt.WithPrepFunc(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
+			// Get the image data and mime type from the previous node
+			imageData, _ := store.Get("imageData")
+			mimeType, _ := store.Get("mimeType")
+			return map[string]any{
+				"imageData": imageData,
+				"mimeType":  mimeType,
+			}, nil
+		}),
+		flyt.WithPostFunc(func(ctx context.Context, store *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+			// Check if extraction failed
+			if execResult == nil {
+				log.Println("Extract text failed after retries, moving to cleanup")
+				return "skip", nil
+			}
+
+			// Check for unsupported type
+			if str, ok := execResult.(string); ok && strings.HasPrefix(str, "Unsupported image type:") {
+				log.Printf("Skipping save for unsupported type: %s", str)
+				return "skip", nil
+			}
+
+			// Store the extracted response for the next node
+			response := execResult.(*ExtractedResponse)
+			store.Set("extractedResponse", response)
+			log.Printf("Extract text node completed, title: %s, content length: %d", response.Title, len(response.Content))
+
+			return flyt.DefaultAction, nil
+		}),
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-			imageData := prepResult.([]byte)
+			log.Println("Extract text node executing...")
+			data := prepResult.(map[string]any)
+			imageData := data["imageData"].([]byte)
+			mimeType := data["mimeType"].(string)
+
+			// Check if we support this image type
+			if mimeType != "image/png" && mimeType != "image/jpeg" {
+				log.Printf("Unsupported image type: %s, skipping text extraction", mimeType)
+				return "Unsupported image type: " + mimeType, nil
+			}
 
 			// Get API key from SST v3 secret
 			apiKey, err := resource.Get("AnthropicApiKey", "value")
 			if err != nil {
+				log.Printf("Failed to get API key from SST: %v", err)
 				return nil, fmt.Errorf("failed to get API key: %w", err)
 			}
 
@@ -69,28 +152,61 @@ func createExtractTextNode() flyt.Node {
 
 			// Encode image to base64
 			imageEncoded := base64.StdEncoding.EncodeToString(imageData)
+			log.Printf("Encoded image for Claude API: %d bytes -> %d base64 chars", len(imageData), len(imageEncoded))
+
+			// Prepare the prompt
+			prompt := `Follow these instructions.
+- Transcribe the handwritten note. Format the transcription with markdown.
+- Based on the contents of the note, come up with a descriptive but concise title.
+- Return the transcription as "content" and title as "title" in a JSON object.`
 
 			// Call Claude API to extract text
+			log.Println("Calling Claude API to extract text from image...")
 			message, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 				MaxTokens: 1024,
 				Messages: []anthropic.MessageParam{
 					anthropic.NewUserMessage(
-						anthropic.NewTextBlock("Extract all text from this image. If there is no text, describe what you see."),
-						anthropic.NewImageBlockBase64("image/jpeg", imageEncoded),
+						anthropic.NewTextBlock(prompt),
+						anthropic.NewImageBlockBase64(mimeType, imageEncoded),
 					),
 				},
-				Model: anthropic.ModelClaude_3_Sonnet_20240229,
+				Model: "claude-sonnet-4-20250514",
 			})
 			if err != nil {
+				log.Printf("Failed to call Claude API: %v", err)
 				return nil, fmt.Errorf("failed to call Claude API: %w", err)
 			}
 
 			// Extract text from response
-			if len(message.Content) > 0 {
-				return message.Content[0].Text, nil
+			if len(message.Content) == 0 {
+				log.Println("No content in Claude API response")
+				return nil, fmt.Errorf("no content in Claude API response")
 			}
 
-			return "No text extracted", nil
+			responseText := message.Content[0].Text
+			log.Printf("Claude response: %s", responseText)
+
+			// Strip JSON code block markers if present
+			responseText = strings.TrimSpace(responseText)
+			if strings.HasPrefix(responseText, "```json") {
+				responseText = strings.TrimPrefix(responseText, "```json")
+				responseText = strings.TrimSuffix(responseText, "```")
+				responseText = strings.TrimSpace(responseText)
+			}
+
+			// Parse JSON response
+			var extracted ExtractedResponse
+			if err := json.Unmarshal([]byte(responseText), &extracted); err != nil {
+				log.Printf("Failed to parse JSON response: %v", err)
+				return nil, fmt.Errorf("failed to parse JSON response: %w", err)
+			}
+			log.Printf("Successfully parsed response - Title: %s, Content length: %d", extracted.Title, len(extracted.Content))
+			return &extracted, nil
+		}),
+		flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+			log.Printf("Extract text failed after all retries: %v", err)
+			// Return nil to indicate failure, which will trigger skip action in Post
+			return nil, nil
 		}),
 	)
 }
@@ -98,60 +214,129 @@ func createExtractTextNode() flyt.Node {
 // Simple node that saves text to S3
 func createSaveTextNode() flyt.Node {
 	return flyt.NewNode(
+		flyt.WithPrepFunc(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
+			// Get the extracted response
+			response, _ := store.Get("extractedResponse")
+			return response, nil
+		}),
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-			text := prepResult.(string)
-			shared := ctx.Value("shared").(*flyt.SharedStore)
-			originalKey, _ := shared.Get("key")
+			response := prepResult.(*ExtractedResponse)
+
+			// Create filename from title (replace spaces with underscores)
+			filename := strings.ReplaceAll(response.Title, " ", "_") + ".md"
 
 			// Create S3 client
 			cfg, err := config.LoadDefaultConfig(ctx)
 			if err != nil {
-				return nil, err
+				log.Printf("Failed to load AWS config: %v", err)
+				return nil, fmt.Errorf("failed to load AWS config: %w", err)
 			}
 			s3Client := s3.NewFromConfig(cfg)
 
 			// Get destination bucket name from SST
-			destBucketName, _ := resource.Get("ExtractedText", "name")
-			// Save as .txt file with same name
-			textKey := strings.Replace(originalKey.(string), filepath.Ext(originalKey.(string)), ".txt", 1)
+			destBucketName, err := resource.Get("ExtractedText", "name")
+			if err != nil {
+				log.Printf("Failed to get destination bucket name: %v", err)
+				return nil, fmt.Errorf("failed to get destination bucket name: %w", err)
+			}
 
 			bucketName := destBucketName.(string)
+			log.Printf("Saving extracted text to S3: bucket=%s, key=%s, size=%d bytes", bucketName, filename, len(response.Content))
+
 			_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
 				Bucket: &bucketName,
-				Key:    &textKey,
-				Body:   strings.NewReader(text),
+				Key:    &filename,
+				Body:   strings.NewReader(response.Content),
 			})
 
-			return textKey, err
+			if err != nil {
+				log.Printf("Failed to save text to S3: %v", err)
+				return nil, fmt.Errorf("failed to save text to S3: %w", err)
+			}
+
+			log.Printf("Successfully saved extracted text to: s3://%s/%s", bucketName, filename)
+			return filename, nil
+		}),
+	)
+}
+
+// Simple node that cleans up the original file from S3
+func createCleanupNode() flyt.Node {
+	return flyt.NewNode(
+		flyt.WithPrepFunc(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
+			bucket, _ := store.Get("bucket")
+			key, _ := store.Get("key")
+			return map[string]any{
+				"bucket": bucket,
+				"key":    key,
+			}, nil
+		}),
+		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+			data := prepResult.(map[string]any)
+			bucket := data["bucket"].(string)
+			key := data["key"].(string)
+
+			// Create S3 client
+			cfg, err := config.LoadDefaultConfig(ctx)
+			if err != nil {
+				log.Printf("Failed to load AWS config for cleanup: %v", err)
+				return nil, fmt.Errorf("failed to load AWS config: %w", err)
+			}
+			s3Client := s3.NewFromConfig(cfg)
+
+			log.Printf("Deleting original file from S3: bucket=%s, key=%s", bucket, key)
+			_, err = s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+				Bucket: &bucket,
+				Key:    &key,
+			})
+			if err != nil {
+				log.Printf("Failed to delete from S3: %v", err)
+				return nil, fmt.Errorf("failed to delete from S3: %w", err)
+			}
+
+			log.Printf("Successfully deleted original file: s3://%s/%s", bucket, key)
+			return fmt.Sprintf("Deleted s3://%s/%s", bucket, key), nil
 		}),
 	)
 }
 
 func HandleS3Event(ctx context.Context, s3Event events.S3Event) error {
+	log.Printf("Received S3 event with %d records", len(s3Event.Records))
+
 	// Create nodes
 	downloadNode := createDownloadNode()
 	extractNode := createExtractTextNode()
 	saveNode := createSaveTextNode()
+	cleanupNode := createCleanupNode()
 
 	// Create flow
 	flow := flyt.NewFlow(downloadNode)
-	flow.Connect(downloadNode, "", extractNode)
-	flow.Connect(extractNode, "", saveNode)
-
+	flow.Connect(downloadNode, flyt.DefaultAction, extractNode)
+	flow.Connect(extractNode, flyt.DefaultAction, saveNode)
+	flow.Connect(extractNode, "skip", cleanupNode) // Skip saving for unsupported types
+	flow.Connect(saveNode, flyt.DefaultAction, cleanupNode)
 	// Process each S3 record
-	for _, record := range s3Event.Records {
+	for i, record := range s3Event.Records {
+		bucket := record.S3.Bucket.Name
+		key := record.S3.Object.Key
+
+		log.Printf("Processing record %d/%d: s3://%s/%s", i+1, len(s3Event.Records), bucket, key)
+
 		shared := flyt.NewSharedStore()
-		shared.Set("bucket", record.S3.Bucket.Name)
-		shared.Set("key", record.S3.Object.Key)
+		shared.Set("bucket", bucket)
+		shared.Set("key", key)
 
 		if err := flow.Run(ctx, shared); err != nil {
-			return err
+			log.Printf("Failed to process s3://%s/%s: %v", bucket, key, err)
+			return fmt.Errorf("failed to process s3://%s/%s: %w", bucket, key, err)
 		}
+
+		log.Printf("Successfully processed record %d/%d", i+1, len(s3Event.Records))
 	}
 
+	log.Printf("Successfully processed all %d records", len(s3Event.Records))
 	return nil
 }
-
 func main() {
 	lambda.Start(HandleS3Event)
 }
