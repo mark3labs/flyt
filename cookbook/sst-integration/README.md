@@ -1,26 +1,26 @@
 # SST Integration with Flyt
 
-This example demonstrates how to integrate Flyt workflows with SST v3 to build a serverless image text extraction service.
+This example demonstrates how to integrate Flyt workflows with SST v3 to build a serverless handwritten note transcription service.
 
 ## Overview
 
-This application processes images uploaded to S3 by:
-1. Triggering a Lambda function on image upload
-2. Using Flyt's node-based workflow to orchestrate the process
-3. Extracting text from images using Anthropic's Claude Vision API
-4. Saving the extracted text to a separate S3 bucket
+Upload handwritten notes as images to S3 and automatically:
+1. Extract and transcribe text using Claude Vision
+2. Generate descriptive titles for the notes
+3. Save transcriptions as markdown files
+4. Clean up processed images
 
 ## Architecture
 
-The application uses:
-- **SST v3** for infrastructure and resource management
-- **Flyt** for workflow orchestration with three nodes:
-  - `DownloadNode`: Downloads the image from S3
-  - `ExtractTextNode`: Calls Claude Vision API to extract text
-  - `SaveTextNode`: Saves the extracted text to S3
-- **AWS Lambda** for serverless compute
-- **S3** for storage (source images and extracted text)
-- **Anthropic Claude** for AI-powered text extraction
+- **SST v3** - Infrastructure as code and resource management
+- **Flyt** - Workflow orchestration with four nodes:
+  - `DownloadNode` - Downloads image and detects MIME type
+  - `ExtractTextNode` - Transcribes using Claude Vision (with retry)
+  - `SaveTextNode` - Saves markdown with generated title
+  - `CleanupNode` - Deletes processed image
+- **AWS Lambda** - Serverless compute
+- **S3** - Image storage and markdown output
+- **Claude Sonnet 4** - AI-powered transcription
 
 ## Prerequisites
 
@@ -81,15 +81,16 @@ aws s3 cp /path/to/images/ s3://sst-integration-sourceimages-xxxxx/ --recursive 
 
 ### Check Results
 
-List the extracted text files:
+List the transcribed markdown files:
 ```bash
 aws s3 ls s3://sst-integration-extractedtext-xxxxx/
 ```
 
-Download and view the extracted text:
+Download and view a transcription:
 ```bash
-aws s3 cp s3://sst-integration-extractedtext-xxxxx/image.txt ./
-cat image.txt
+# Files are named based on the content, e.g., "Meeting_Notes_Q4_Planning.md"
+aws s3 cp s3://sst-integration-extractedtext-xxxxx/Your_Note_Title.md ./
+cat Your_Note_Title.md
 ```
 
 ### Monitor Execution
@@ -136,11 +137,11 @@ This will delete:
 
 ## Key Features
 
-- **Resource Linking**: Uses SST v3's resource linking to access S3 buckets and secrets without environment variables
-- **Type-Safe Configuration**: Leverages SST's type-safe configuration
-- **Node-Based Workflow**: Demonstrates Flyt's composable node architecture
-- **Error Handling**: Each node can handle errors independently
-- **Scalable**: Automatically scales with Lambda
+- **Smart Transcription**: Claude generates both content and descriptive titles
+- **Automatic Cleanup**: Processed images are deleted to save storage
+- **Error Recovery**: Retries failed transcriptions up to 3 times
+- **Format Support**: Handles PNG and JPEG images (skips unsupported formats)
+- **SST Resource Linking**: Clean access to S3 and secrets without env vars
 
 ## Project Structure
 
@@ -157,12 +158,16 @@ cookbook/sst-integration/
 
 ## How It Works
 
-1. **S3 Event Trigger**: When an image is uploaded to the source bucket, S3 sends an event to the Lambda function
-2. **Flyt Workflow**: The Lambda handler creates a Flyt flow with three connected nodes
-3. **Download**: The first node downloads the image from S3 using the AWS SDK
-4. **Extract Text**: The second node sends the image to Claude Vision API for text extraction
-5. **Save Result**: The final node saves the extracted text to the destination S3 bucket
+1. **Upload** an image to the source bucket
+2. **Download** node fetches the image and detects its type
+3. **Extract** node sends to Claude with this prompt:
+   - Transcribe the handwritten note with markdown formatting
+   - Generate a descriptive title
+   - Return as JSON with "content" and "title" fields
+4. **Save** node creates a markdown file named after the title
+5. **Cleanup** node deletes the original image
 
-## Monitoring
-
-View Lambda logs in CloudWatch to monitor the workflow execution and debug any issues.
+The workflow includes:
+- **Retry Logic**: Failed transcriptions retry up to 3 times
+- **Fallback Handling**: Gracefully skips to cleanup on permanent failures
+- **Format Validation**: Only processes PNG and JPEG images

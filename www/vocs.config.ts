@@ -123,6 +123,10 @@ export default defineConfig({
           link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/mcp',
         },
         {
+          text: 'SST Integration',
+          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/sst-integration',
+        },
+        {
           text: 'Summarize',
           link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/summarize',
         },
