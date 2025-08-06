@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync/atomic"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -23,6 +24,13 @@ import (
 type ExtractedResponse struct {
 	Content string `json:"content"`
 	Title   string `json:"title"`
+}
+
+// ProgressTracker tracks batch processing progress
+type ProgressTracker struct {
+	total     int
+	completed int32
+	failed    int32
 }
 
 // Simple node that downloads image from S3
@@ -300,41 +308,132 @@ func createCleanupNode() flyt.Node {
 	)
 }
 
+// Create a flow factory that returns a new flow instance for each S3 record
+func createImageProcessingFlowFactory(tracker *ProgressTracker) func() *flyt.Flow {
+	return func() *flyt.Flow {
+		// Create nodes with progress tracking
+		downloadNode := createDownloadNode()
+		extractNode := createExtractTextNode()
+		saveNode := createSaveTextNode()
+
+		// Wrap cleanup node with progress tracking
+		cleanupNode := flyt.NewNode(
+			flyt.WithPrepFunc(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
+				bucket, _ := store.Get("bucket")
+				key, _ := store.Get("key")
+				return map[string]any{
+					"bucket": bucket,
+					"key":    key,
+				}, nil
+			}),
+			flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+				data := prepResult.(map[string]any)
+				bucket := data["bucket"].(string)
+				key := data["key"].(string)
+
+				// Create S3 client
+				cfg, err := config.LoadDefaultConfig(ctx)
+				if err != nil {
+					log.Printf("Failed to load AWS config for cleanup: %v", err)
+					return nil, fmt.Errorf("failed to load AWS config: %w", err)
+				}
+				s3Client := s3.NewFromConfig(cfg)
+
+				log.Printf("Deleting original file from S3: bucket=%s, key=%s", bucket, key)
+				_, err = s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+					Bucket: &bucket,
+					Key:    &key,
+				})
+				if err != nil {
+					log.Printf("Failed to delete from S3: %v", err)
+					return nil, fmt.Errorf("failed to delete from S3: %w", err)
+				}
+
+				log.Printf("Successfully deleted original file: s3://%s/%s", bucket, key)
+				return fmt.Sprintf("Deleted s3://%s/%s", bucket, key), nil
+			}),
+			flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+				// Update progress tracking
+				if execResult != nil {
+					atomic.AddInt32(&tracker.completed, 1)
+				} else {
+					atomic.AddInt32(&tracker.failed, 1)
+				}
+
+				progress := atomic.LoadInt32(&tracker.completed) + atomic.LoadInt32(&tracker.failed)
+				percentage := float64(progress) / float64(tracker.total) * 100
+
+				log.Printf("Batch progress: %.1f%% (%d/%d) - Completed: %d, Failed: %d",
+					percentage, progress, tracker.total,
+					atomic.LoadInt32(&tracker.completed),
+					atomic.LoadInt32(&tracker.failed))
+
+				return flyt.DefaultAction, nil
+			}),
+		)
+
+		// Create flow
+		flow := flyt.NewFlow(downloadNode)
+		flow.Connect(downloadNode, flyt.DefaultAction, extractNode)
+		flow.Connect(extractNode, flyt.DefaultAction, saveNode)
+		flow.Connect(extractNode, "skip", cleanupNode) // Skip saving for unsupported types
+		flow.Connect(saveNode, flyt.DefaultAction, cleanupNode)
+
+		return flow
+	}
+}
+
 func HandleS3Event(ctx context.Context, s3Event events.S3Event) error {
 	log.Printf("Received S3 event with %d records", len(s3Event.Records))
 
-	// Create nodes
-	downloadNode := createDownloadNode()
-	extractNode := createExtractTextNode()
-	saveNode := createSaveTextNode()
-	cleanupNode := createCleanupNode()
-
-	// Create flow
-	flow := flyt.NewFlow(downloadNode)
-	flow.Connect(downloadNode, flyt.DefaultAction, extractNode)
-	flow.Connect(extractNode, flyt.DefaultAction, saveNode)
-	flow.Connect(extractNode, "skip", cleanupNode) // Skip saving for unsupported types
-	flow.Connect(saveNode, flyt.DefaultAction, cleanupNode)
-	// Process each S3 record
-	for i, record := range s3Event.Records {
-		bucket := record.S3.Bucket.Name
-		key := record.S3.Object.Key
-
-		log.Printf("Processing record %d/%d: s3://%s/%s", i+1, len(s3Event.Records), bucket, key)
-
-		shared := flyt.NewSharedStore()
-		shared.Set("bucket", bucket)
-		shared.Set("key", key)
-
-		if err := flow.Run(ctx, shared); err != nil {
-			log.Printf("Failed to process s3://%s/%s: %v", bucket, key, err)
-			return fmt.Errorf("failed to process s3://%s/%s: %w", bucket, key, err)
-		}
-
-		log.Printf("Successfully processed record %d/%d", i+1, len(s3Event.Records))
+	// Create progress tracker
+	tracker := &ProgressTracker{
+		total: len(s3Event.Records),
 	}
 
-	log.Printf("Successfully processed all %d records", len(s3Event.Records))
+	// Create batch function that generates inputs for each S3 record
+	batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+		inputs := make([]flyt.FlowInputs, len(s3Event.Records))
+
+		for i, record := range s3Event.Records {
+			inputs[i] = flyt.FlowInputs{
+				"bucket": record.S3.Bucket.Name,
+				"key":    record.S3.Object.Key,
+				"index":  i + 1,
+			}
+			log.Printf("Queued record %d/%d: s3://%s/%s",
+				i+1, len(s3Event.Records),
+				record.S3.Bucket.Name,
+				record.S3.Object.Key)
+		}
+
+		return inputs, nil
+	}
+
+	// Create batch flow with concurrent processing
+	batchFlow := flyt.NewBatchFlow(
+		createImageProcessingFlowFactory(tracker),
+		batchFunc,
+		true, // Enable concurrent processing
+	)
+
+	// Run the batch flow
+	shared := flyt.NewSharedStore()
+	if err := batchFlow.Run(ctx, shared); err != nil {
+		log.Printf("Batch flow failed: %v", err)
+		return fmt.Errorf("batch flow failed: %w", err)
+	}
+
+	log.Printf("Successfully processed all %d records - Completed: %d, Failed: %d",
+		tracker.total,
+		atomic.LoadInt32(&tracker.completed),
+		atomic.LoadInt32(&tracker.failed))
+
+	// Return error if any records failed
+	if failed := atomic.LoadInt32(&tracker.failed); failed > 0 {
+		return fmt.Errorf("%d out of %d records failed processing", failed, tracker.total)
+	}
+
 	return nil
 }
 func main() {

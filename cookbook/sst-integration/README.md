@@ -13,7 +13,7 @@ Upload handwritten notes as images to S3 and automatically:
 ## Architecture
 
 - **SST v3** - Infrastructure as code and resource management
-- **Flyt** - Workflow orchestration with four nodes:
+- **Flyt** - Workflow orchestration with batch flow processing:
   - `DownloadNode` - Downloads image and detects MIME type
   - `ExtractTextNode` - Transcribes using Claude Vision (with retry)
   - `SaveTextNode` - Saves markdown with generated title
@@ -137,11 +137,13 @@ This will delete:
 
 ## Key Features
 
+- **Concurrent Processing**: Uses Flyt batch flows to process multiple images in parallel
 - **Smart Transcription**: Claude generates both content and descriptive titles
 - **Automatic Cleanup**: Processed images are deleted to save storage
 - **Error Recovery**: Retries failed transcriptions up to 3 times
 - **Format Support**: Handles PNG and JPEG images (skips unsupported formats)
 - **SST Resource Linking**: Clean access to S3 and secrets without env vars
+- **Progress Tracking**: Real-time progress updates with completion percentages
 
 ## Project Structure
 
@@ -168,6 +170,47 @@ cookbook/sst-integration/
 5. **Cleanup** node deletes the original image
 
 The workflow includes:
+- **Batch Flow Processing**: Processes multiple images concurrently for better performance
 - **Retry Logic**: Failed transcriptions retry up to 3 times
 - **Fallback Handling**: Gracefully skips to cleanup on permanent failures
 - **Format Validation**: Only processes PNG and JPEG images
+- **Progress Monitoring**: Real-time batch progress with completion statistics
+
+## Batch Flow Implementation
+
+This example uses Flyt's batch flow feature to process multiple S3 images concurrently, providing better performance and progress tracking.
+
+### Key Changes from Sequential Processing
+
+1. **Concurrent Processing**: Multiple images are processed in parallel instead of sequentially
+2. **Progress Tracking**: Real-time progress updates showing completed and failed items
+3. **Better Error Handling**: Individual failures don't stop the entire batch
+4. **Resource Isolation**: Each image gets its own flow instance with isolated SharedStore
+
+### How Batch Flow Works
+
+1. **Flow Factory**: Creates a new flow instance for each S3 record
+2. **Batch Function**: Generates inputs (bucket, key) for each record
+3. **Concurrent Execution**: Processes multiple images simultaneously
+4. **Progress Tracking**: Monitors completion and failure rates
+
+### Performance Benefits
+
+- **Faster Processing**: Concurrent execution reduces total processing time
+- **Better Resource Utilization**: Makes full use of Lambda's available resources
+- **Scalability**: Handles large batches efficiently
+
+### Monitoring Batch Progress
+
+The logs now show real-time progress:
+```
+Batch progress: 33.3% (1/3) - Completed: 1, Failed: 0
+Batch progress: 66.7% (2/3) - Completed: 2, Failed: 0
+Batch progress: 100.0% (3/3) - Completed: 3, Failed: 0
+```
+
+### Error Handling
+
+- Individual image failures don't stop the batch
+- Final summary shows total completed vs failed
+- Lambda returns error if any records failed
