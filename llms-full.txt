@@ -5060,6 +5060,11 @@ node := flyt.NewNode(
     }),
     flyt.WithMaxRetries(3),
     flyt.WithWait(time.Second), // Wait 1 second between retries
+    flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+        // Called after all retries fail
+        log.Printf("API failed after retries: %v", err)
+        return nil, nil // Return nil to handle in Post
+    }),
 )
 ```
 
