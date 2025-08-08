@@ -12,7 +12,7 @@ import (
 // ParseMessageNode prepares the message for processing
 type ParseMessageNode struct {
 	*flyt.BaseNode
-	slack *SlackService // Optional: for enhanced message parsing
+	slack *SlackService // Used for precise bot mention removal
 }
 
 func (n *ParseMessageNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
@@ -200,7 +200,6 @@ func (n *ToolExecutorNode) Post(ctx context.Context, shared *flyt.SharedStore, p
 // FormatResponseNode formats the final response for Slack
 type FormatResponseNode struct {
 	*flyt.BaseNode
-	slack *SlackService
 }
 
 func (n *FormatResponseNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
@@ -208,18 +207,8 @@ func (n *FormatResponseNode) Prep(ctx context.Context, shared *flyt.SharedStore)
 	if !ok {
 		return nil, fmt.Errorf("no response found")
 	}
-
-	// Optionally show typing indicator
-	if channel, ok := shared.Get("channel"); ok {
-		if channelStr, ok := channel.(string); ok {
-			// This is a no-op in current Slack API but kept for future
-			n.slack.SetTyping(channelStr)
-		}
-	}
-
 	return response, nil
 }
-
 func (n *FormatResponseNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	response := prepResult.(string)
 

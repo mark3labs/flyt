@@ -76,13 +76,13 @@ func (b *SlackBot) Start(ctx context.Context) error {
 	go b.handleEvents(ctx)
 
 	// Start cleanup routine for old conversations
-	go b.cleanupOldConversations(ctx, 30*time.Minute)
+	go b.cleanupOldConversations(ctx)
 
 	// Run Socket Mode client
 	log.Println("Connected to Slack with Socket Mode")
 	return b.slack.RunSocketMode(ctx)
 }
-func (b *SlackBot) cleanupOldConversations(ctx context.Context, maxAge time.Duration) {
+func (b *SlackBot) cleanupOldConversations(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -92,17 +92,16 @@ func (b *SlackBot) cleanupOldConversations(ctx context.Context, maxAge time.Dura
 			return
 		case <-ticker.C:
 			b.mu.Lock()
-			// In a production system, you'd track last access time
-			// For now, we'll just clear if the map gets too large
+			// Simple memory management: clear all conversations if we have too many
+			// In production, implement proper LRU cache or track last access time
 			if len(b.llmServices) > 100 {
-				log.Printf("Clearing %d old conversations", len(b.llmServices))
+				log.Printf("Memory cleanup: clearing %d conversations", len(b.llmServices))
 				b.llmServices = make(map[string]*LLMService)
 			}
 			b.mu.Unlock()
 		}
 	}
 }
-
 func (b *SlackBot) handleEvents(ctx context.Context) {
 	for {
 		select {
@@ -164,8 +163,9 @@ func (b *SlackBot) handleMessage(ctx context.Context, event *slackevents.Message
 
 	// For DMs, don't use threads - respond directly in the conversation
 	// Pass empty string for threadTS to indicate no threading
-	b.processWithFlyt(ctx, event.Text, event.Channel, "", event.User)
+	b.processWithFlyt(ctx, event.Text, event.Channel, "")
 }
+
 func (b *SlackBot) handleMention(ctx context.Context, event *slackevents.AppMentionEvent) {
 	log.Printf("Mention from %s in channel %s: %s", event.User, event.Channel, event.Text)
 
@@ -177,7 +177,7 @@ func (b *SlackBot) handleMention(ctx context.Context, event *slackevents.AppMent
 	}
 
 	// Process mention through Flyt workflow
-	b.processWithFlyt(ctx, event.Text, event.Channel, threadTS, event.User)
+	b.processWithFlyt(ctx, event.Text, event.Channel, threadTS)
 }
 
 func (b *SlackBot) isDirectMessage(channel string) bool {
@@ -207,7 +207,7 @@ func (b *SlackBot) getLLMService(channel, threadTS string) *LLMService {
 	return service
 }
 
-func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, threadTS, userID string) {
+func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, threadTS string) {
 	// Get or create LLM service for this thread
 	llmService := b.getLLMService(channel, threadTS)
 
@@ -219,9 +219,7 @@ func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, thread
 	shared.Set("message", message)
 	shared.Set("channel", channel)
 	shared.Set("thread_ts", threadTS)
-	shared.Set("user_id", userID)
 	shared.Set("history", history)
-
 	// Create workflow with injected LLM service
 	flow := b.createWorkflow(llmService)
 
@@ -295,10 +293,7 @@ func (b *SlackBot) createWorkflow(llmService *LLMService) *flyt.Flow {
 		llm:      llmService,
 	}
 	toolNode := &ToolExecutorNode{BaseNode: flyt.NewBaseNode()}
-	formatNode := &FormatResponseNode{
-		BaseNode: flyt.NewBaseNode(),
-		slack:    b.slack,
-	}
+	formatNode := &FormatResponseNode{BaseNode: flyt.NewBaseNode()}
 
 	// Create flow
 	flow := flyt.NewFlow(parseNode)

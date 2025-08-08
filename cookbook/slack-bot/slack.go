@@ -80,55 +80,6 @@ func (s *SlackService) SendMessage(channel, text, threadTS string) error {
 	return nil
 }
 
-// SendBlocks sends a message with Block Kit blocks
-func (s *SlackService) SendBlocks(channel string, blocks []slack.Block, threadTS string) error {
-	options := []slack.MsgOption{
-		slack.MsgOptionBlocks(blocks...),
-	}
-
-	if threadTS != "" {
-		options = append(options, slack.MsgOptionTS(threadTS))
-	}
-
-	_, _, err := s.client.PostMessage(channel, options...)
-	if err != nil {
-		return fmt.Errorf("failed to send blocks: %w", err)
-	}
-	return nil
-}
-
-// AddReaction adds an emoji reaction to a message
-func (s *SlackService) AddReaction(channel, timestamp, emoji string) error {
-	err := s.client.AddReaction(emoji, slack.ItemRef{
-		Channel:   channel,
-		Timestamp: timestamp,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to add reaction: %w", err)
-	}
-	return nil
-}
-
-// GetUserInfo retrieves information about a user
-func (s *SlackService) GetUserInfo(userID string) (*slack.User, error) {
-	user, err := s.client.GetUserInfo(userID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user info: %w", err)
-	}
-	return user, nil
-}
-
-// GetChannelInfo retrieves information about a channel
-func (s *SlackService) GetChannelInfo(channelID string) (*slack.Channel, error) {
-	channel, err := s.client.GetConversationInfo(&slack.GetConversationInfoInput{
-		ChannelID: channelID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get channel info: %w", err)
-	}
-	return channel, nil
-}
-
 // IsBotMessage checks if a message is from a bot (including self)
 func (s *SlackService) IsBotMessage(event *slackevents.MessageEvent) bool {
 	return event.User == s.botUserID || event.BotID != ""
@@ -142,35 +93,6 @@ func (s *SlackService) IsBotMention(event *slackevents.AppMentionEvent) bool {
 // GetBotUserID returns the bot's user ID
 func (s *SlackService) GetBotUserID() string {
 	return s.botUserID
-}
-
-// UpdateMessage updates an existing message
-func (s *SlackService) UpdateMessage(channel, timestamp, text string) error {
-	_, _, _, err := s.client.UpdateMessage(
-		channel,
-		timestamp,
-		slack.MsgOptionText(text, false),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to update message: %w", err)
-	}
-	return nil
-}
-
-// DeleteMessage deletes a message
-func (s *SlackService) DeleteMessage(channel, timestamp string) error {
-	_, _, err := s.client.DeleteMessage(channel, timestamp)
-	if err != nil {
-		return fmt.Errorf("failed to delete message: %w", err)
-	}
-	return nil
-}
-
-// SetTyping shows typing indicator in a channel
-func (s *SlackService) SetTyping(channel string) error {
-	// Note: Slack doesn't have a direct API for this in the SDK
-	// This is a placeholder for future implementation
-	return nil
 }
 
 // GetThreadMessages retrieves messages from a thread
@@ -201,43 +123,4 @@ func (s *SlackService) GetChannelHistory(channel string, limit int) ([]slack.Mes
 	}
 
 	return resp.Messages, nil
-}
-
-// EnrichMessageContext adds user and channel information to the message context
-func (s *SlackService) EnrichMessageContext(userID, channelID string) map[string]string {
-	context := make(map[string]string)
-
-	// Get user info
-	if user, err := s.GetUserInfo(userID); err == nil {
-		context["user_name"] = user.Name
-		context["user_real_name"] = user.RealName
-		context["user_tz"] = user.TZ
-	}
-
-	// Get channel info
-	if channel, err := s.GetChannelInfo(channelID); err == nil {
-		context["channel_name"] = channel.Name
-		context["channel_topic"] = channel.Topic.Value
-		context["channel_purpose"] = channel.Purpose.Value
-	}
-
-	return context
-}
-
-// JoinChannel joins a channel
-func (s *SlackService) JoinChannel(channelID string) error {
-	_, _, _, err := s.client.JoinConversation(channelID)
-	if err != nil {
-		return fmt.Errorf("failed to join channel: %w", err)
-	}
-	return nil
-}
-
-// LeaveChannel leaves a channel
-func (s *SlackService) LeaveChannel(channelID string) error {
-	_, err := s.client.LeaveConversation(channelID)
-	if err != nil {
-		return fmt.Errorf("failed to leave channel: %w", err)
-	}
-	return nil
 }
