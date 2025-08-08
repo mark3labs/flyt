@@ -153,19 +153,43 @@ func (b *SlackBot) handleEventAPI(ctx context.Context, evt socketmode.Event) {
 }
 
 func (b *SlackBot) handleMessage(ctx context.Context, event *slackevents.MessageEvent) {
-	log.Printf("Message from %s in channel %s: %s", event.User, event.Channel, event.Text)
+	// Only process direct messages (not in a channel)
+	if !b.isDirectMessage(event.Channel) {
+		// In channels, we only respond to mentions (handled by handleMention)
+		return
+	}
+
+	log.Printf("DM from %s: %s", event.User, event.Text)
+
+	// For DMs, use the message timestamp as thread (maintains conversation flow)
+	threadTS := event.ThreadTimeStamp
+	if threadTS == "" {
+		threadTS = event.TimeStamp
+	}
 
 	// Process message through Flyt workflow
-	b.processWithFlyt(ctx, event.Text, event.Channel, event.ThreadTimeStamp)
+	b.processWithFlyt(ctx, event.Text, event.Channel, threadTS, event.User)
 }
 
 func (b *SlackBot) handleMention(ctx context.Context, event *slackevents.AppMentionEvent) {
 	log.Printf("Mention from %s in channel %s: %s", event.User, event.Channel, event.Text)
 
+	// For mentions in channels, always reply in thread
+	threadTS := event.ThreadTimeStamp
+	if threadTS == "" {
+		// Start a new thread with the mention message as root
+		threadTS = event.TimeStamp
+	}
+
 	// Process mention through Flyt workflow
-	b.processWithFlyt(ctx, event.Text, event.Channel, event.ThreadTimeStamp)
+	b.processWithFlyt(ctx, event.Text, event.Channel, threadTS, event.User)
 }
 
+func (b *SlackBot) isDirectMessage(channel string) bool {
+	// Direct message channels start with 'D'
+	// Group DMs start with 'G'
+	return len(channel) > 0 && (channel[0] == 'D' || channel[0] == 'G')
+}
 func (b *SlackBot) getLLMService(channel, threadTS string) *LLMService {
 	// Create a key for this conversation context
 	key := channel
@@ -188,15 +212,20 @@ func (b *SlackBot) getLLMService(channel, threadTS string) *LLMService {
 	return service
 }
 
-func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, threadTS string) {
+func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, threadTS, userID string) {
 	// Get or create LLM service for this thread
 	llmService := b.getLLMService(channel, threadTS)
+
+	// Fetch conversation history for context
+	history := b.fetchConversationHistory(channel, threadTS)
 
 	// Create shared store
 	shared := flyt.NewSharedStore()
 	shared.Set("message", message)
 	shared.Set("channel", channel)
 	shared.Set("thread_ts", threadTS)
+	shared.Set("user_id", userID)
+	shared.Set("history", history)
 
 	// Create workflow with injected LLM service
 	flow := b.createWorkflow(llmService)
@@ -216,6 +245,40 @@ func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, thread
 	}
 }
 
+func (b *SlackBot) fetchConversationHistory(channel, threadTS string) []map[string]string {
+	var history []map[string]string
+
+	if threadTS != "" {
+		// Fetch thread messages
+		messages, err := b.slack.GetThreadMessages(channel, threadTS)
+		if err != nil {
+			log.Printf("Failed to fetch thread history: %v", err)
+			return history
+		}
+
+		// Convert to simplified format, excluding bot's own messages
+		botID := b.slack.GetBotUserID()
+		for _, msg := range messages {
+			// Skip bot's own messages and empty messages
+			if msg.User == botID || msg.BotID != "" || msg.Text == "" {
+				continue
+			}
+
+			history = append(history, map[string]string{
+				"user":      msg.User,
+				"text":      msg.Text,
+				"timestamp": msg.Timestamp,
+			})
+		}
+	}
+
+	// Limit history to last 10 messages for context
+	if len(history) > 10 {
+		history = history[len(history)-10:]
+	}
+
+	return history
+}
 func (b *SlackBot) createWorkflow(llmService *LLMService) *flyt.Flow {
 	// Create nodes with injected dependencies
 	parseNode := &ParseMessageNode{

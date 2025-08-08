@@ -213,6 +213,31 @@ func (s *LLMService) ProcessMessage(ctx context.Context, message string) (string
 	return assistantMessage.Content, nil, nil
 }
 
+// ProcessMessageWithHistory processes a message with conversation history context
+func (s *LLMService) ProcessMessageWithHistory(ctx context.Context, message string, history []map[string]string) (string, []ToolCall, error) {
+	// If we have history and this is a fresh conversation, add the history as context
+	if len(history) > 0 && len(s.conversation.messages) <= 2 {
+		// Build conversation history in a natural format
+		for _, msg := range history {
+			// Add each historical message as a user message
+			// This gives the LLM the full context of the conversation
+			s.conversation.messages = append(s.conversation.messages, ChatMessage{
+				Role:    "user",
+				Content: msg["text"],
+			})
+			// Add a placeholder assistant response to maintain conversation flow
+			// (In a real implementation, you'd store and retrieve actual bot responses)
+			s.conversation.messages = append(s.conversation.messages, ChatMessage{
+				Role:    "assistant",
+				Content: "[Previous response in thread]",
+			})
+		}
+	}
+
+	// Process the current message
+	return s.ProcessMessage(ctx, message)
+}
+
 // ProcessToolResponses processes tool responses and gets final answer from LLM
 func (s *LLMService) ProcessToolResponses(ctx context.Context, toolResponses map[string]string) (string, error) {
 	// Add tool responses to conversation
@@ -253,7 +278,14 @@ func NewConversationManager() *ConversationManager {
 
 You should use these tools when appropriate to help users. Be friendly, concise, and helpful in your responses.
 When users ask for calculations, use the calculator tool.
-When users want entertainment or Chuck Norris facts, use the chuck_norris_fact tool.`,
+When users want entertainment or Chuck Norris facts, use the chuck_norris_fact tool.
+
+You are operating in Slack, so:
+- Keep responses concise and well-formatted for Slack
+- Use *bold* for emphasis (not **bold**)
+- Be aware you may be in a thread with conversation history
+- In channels, you only respond when directly mentioned
+- Be professional but friendly`,
 			},
 		},
 		maxSize: 20, // Keep last 20 messages

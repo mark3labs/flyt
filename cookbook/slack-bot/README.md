@@ -10,8 +10,11 @@ A sophisticated Slack bot built with Flyt workflow framework that integrates Ope
   - Chuck Norris fact generator for entertainment
 - **Flyt Workflow**: Leverages Flyt's node-based architecture for clean separation of concerns
 - **Socket Mode**: Real-time message handling without webhooks
-- **Conversation Memory**: Maintains context across messages
-- **Thread Support**: Responds in threads when appropriate
+- **Conversation Memory**: Maintains context across messages with thread history
+- **Smart Threading**: 
+  - In channels: Only responds to @mentions and always replies in threads
+  - In DMs: Maintains conversation flow naturally
+- **Context Awareness**: Includes thread/DM history in LLM context for better responses
 
 ## Architecture
 
@@ -182,9 +185,9 @@ The bot will connect to Slack and start listening for messages.
 
 ### Interacting with the Bot
 
-1. **Direct Message**: Send a DM to the bot
-2. **Channel Mention**: @YourBot in any channel
-3. **Channel Message**: Any message in channels where the bot is present
+1. **Direct Message**: Send a DM to the bot - it will maintain conversation context
+2. **Channel Mention**: @YourBot in any channel - bot will reply in a thread
+3. **Thread Reply**: Continue conversation in threads with full context
 
 ### Example Interactions
 
@@ -217,14 +220,17 @@ Bot: I'll calculate 2^10 and get you a Chuck Norris fact.
 
 ### Function Calling Flow
 
-1. User sends a message to the bot
+1. User sends a message to the bot (DM or @mention in channel)
 2. Bot retrieves or creates an LLM service for the specific thread/channel
-3. The message is processed through the Flyt workflow with injected LLM service
-4. OpenAI GPT-4.1 analyzes the message and determines if tools are needed
-5. If tools are requested, the bot executes them and sends results back to GPT-4.1
-6. GPT-4.1 formulates a final response using the tool results
-7. The response is sent back to the user in Slack
-8. Conversation history is maintained per thread for context continuity
+3. Bot fetches conversation history from the thread/DM
+4. The message is processed through the Flyt workflow with injected LLM service
+5. OpenAI GPT-4.1 analyzes the message with full context and determines if tools are needed
+6. If tools are requested, the bot executes them and sends results back to GPT-4.1
+7. GPT-4.1 formulates a final response using the tool results
+8. The response is sent back:
+   - In channels: Always as a thread reply
+   - In DMs: In the conversation flow
+9. Conversation history is maintained per thread for context continuity
 
 ### Available Tools
 

@@ -80,11 +80,21 @@ func (n *LLMNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, erro
 		return nil, fmt.Errorf("no cleaned message found")
 	}
 
+	// Get conversation history if available
+	var history []map[string]string
+	if h, ok := shared.Get("history"); ok {
+		if hist, ok := h.([]map[string]string); ok {
+			history = hist
+		}
+	}
+
 	return map[string]interface{}{
 		"type":    "user_message",
 		"message": message,
+		"history": history,
 	}, nil
 }
+
 func (n *LLMNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	data := prepResult.(map[string]interface{})
 
@@ -101,9 +111,20 @@ func (n *LLMNode) Exec(ctx context.Context, prepResult any) (any, error) {
 		}, nil
 	}
 
-	// Process user message
+	// Process user message with optional history
 	message := data["message"].(string)
-	response, toolCalls, err := n.llm.ProcessMessage(ctx, message)
+
+	var response string
+	var toolCalls []ToolCall
+	var err error
+
+	// Check if we have history
+	if history, ok := data["history"].([]map[string]string); ok && len(history) > 0 {
+		response, toolCalls, err = n.llm.ProcessMessageWithHistory(ctx, message, history)
+	} else {
+		response, toolCalls, err = n.llm.ProcessMessage(ctx, message)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to process with LLM: %w", err)
 	}
