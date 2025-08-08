@@ -54,27 +54,15 @@ func (n *ParseMessageNode) Post(ctx context.Context, shared *flyt.SharedStore, p
 // LLMNode processes the message through OpenAI with function calling
 type LLMNode struct {
 	*flyt.BaseNode
-	conversation *ConversationManager
+	llm *LLMService
 }
 
 func (n *LLMNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-	// Initialize conversation manager if not exists
-	if n.conversation == nil {
-		n.conversation = NewConversationManager()
-	}
-
-	// Get API key from shared store
-	apiKey, ok := shared.Get("openai_key")
-	if !ok {
-		return nil, fmt.Errorf("no OpenAI API key found")
-	}
-
 	// Check if we're processing tool responses
 	if toolResponses, ok := shared.Get("tool_responses"); ok {
 		return map[string]interface{}{
 			"type":           "tool_response",
 			"tool_responses": toolResponses,
-			"api_key":        apiKey,
 		}, nil
 	}
 
@@ -87,18 +75,15 @@ func (n *LLMNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, erro
 	return map[string]interface{}{
 		"type":    "user_message",
 		"message": message,
-		"api_key": apiKey,
 	}, nil
 }
-
 func (n *LLMNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	data := prepResult.(map[string]interface{})
-	apiKey := data["api_key"].(string)
 
 	if data["type"] == "tool_response" {
 		// Process tool responses
 		toolResponses := data["tool_responses"].(map[string]string)
-		response, err := ProcessToolResponses(ctx, apiKey, toolResponses, n.conversation)
+		response, err := n.llm.ProcessToolResponses(ctx, toolResponses)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process tool responses: %w", err)
 		}
@@ -110,7 +95,7 @@ func (n *LLMNode) Exec(ctx context.Context, prepResult any) (any, error) {
 
 	// Process user message
 	message := data["message"].(string)
-	response, toolCalls, err := ProcessWithLLM(ctx, apiKey, message, n.conversation)
+	response, toolCalls, err := n.llm.ProcessMessage(ctx, message)
 	if err != nil {
 		return nil, fmt.Errorf("failed to process with LLM: %w", err)
 	}
@@ -127,7 +112,6 @@ func (n *LLMNode) Exec(ctx context.Context, prepResult any) (any, error) {
 		"response": response,
 	}, nil
 }
-
 func (n *LLMNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 	result := execResult.(map[string]interface{})
 

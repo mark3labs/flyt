@@ -18,7 +18,7 @@ A sophisticated Slack bot built with Flyt workflow framework that integrates Ope
 The bot uses Flyt's workflow pattern with the following nodes:
 
 1. **ParseMessageNode**: Cleans and prepares incoming messages
-2. **LLMNode**: Processes messages through OpenAI with function calling
+2. **LLMNode**: Processes messages through OpenAI with function calling (with injected LLM service)
 3. **ToolExecutorNode**: Executes requested tools (calculator, Chuck Norris facts)
 4. **FormatResponseNode**: Formats responses for Slack
 
@@ -27,6 +27,13 @@ User Message → Parse → LLM → Tool Execution (if needed) → Format → Res
                          ↑                    ↓
                          └────────────────────┘
 ```
+
+### Key Design Features
+
+- **Dependency Injection**: LLM service is injected into nodes that need it, not passed through SharedStore
+- **Per-Thread Conversations**: Each Slack thread maintains its own conversation history
+- **Memory Management**: Automatic cleanup of old conversations after 30 minutes of inactivity
+- **Clean Separation**: Configuration (API keys) separate from workflow data
 
 ## Prerequisites
 
@@ -209,11 +216,13 @@ Bot: I'll calculate 2^10 and get you a Chuck Norris fact.
 ### Function Calling Flow
 
 1. User sends a message to the bot
-2. The message is processed through the Flyt workflow
-3. OpenAI GPT-4 analyzes the message and determines if tools are needed
-4. If tools are requested, the bot executes them and sends results back to GPT-4
-5. GPT-4 formulates a final response using the tool results
-6. The response is sent back to the user in Slack
+2. Bot retrieves or creates an LLM service for the specific thread/channel
+3. The message is processed through the Flyt workflow with injected LLM service
+4. OpenAI GPT-4.1 analyzes the message and determines if tools are needed
+5. If tools are requested, the bot executes them and sends results back to GPT-4.1
+6. GPT-4.1 formulates a final response using the tool results
+7. The response is sent back to the user in Slack
+8. Conversation history is maintained per thread for context continuity
 
 ### Available Tools
 

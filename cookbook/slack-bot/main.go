@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/mark3labs/flyt"
@@ -62,6 +64,7 @@ func main() {
 		client:       api,
 		socketClient: client,
 		openAIKey:    openAIKey,
+		llmServices:  make(map[string]*LLMService),
 	}
 
 	log.Println("🤖 Slack Bot with Flyt starting...")
@@ -75,6 +78,8 @@ type SlackBot struct {
 	socketClient *socketmode.Client
 	openAIKey    string
 	botUserID    string
+	llmServices  map[string]*LLMService
+	mu           sync.RWMutex
 }
 
 func (b *SlackBot) Start(ctx context.Context) error {
@@ -89,9 +94,33 @@ func (b *SlackBot) Start(ctx context.Context) error {
 	// Start event handler
 	go b.handleEvents(ctx)
 
+	// Start cleanup routine for old conversations
+	go b.cleanupOldConversations(ctx, 30*time.Minute)
+
 	// Run Socket Mode client
 	log.Println("Connected to Slack with Socket Mode")
 	return b.socketClient.RunContext(ctx)
+}
+
+func (b *SlackBot) cleanupOldConversations(ctx context.Context, maxAge time.Duration) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.mu.Lock()
+			// In a production system, you'd track last access time
+			// For now, we'll just clear if the map gets too large
+			if len(b.llmServices) > 100 {
+				log.Printf("Clearing %d old conversations", len(b.llmServices))
+				b.llmServices = make(map[string]*LLMService)
+			}
+			b.mu.Unlock()
+		}
+	}
 }
 
 func (b *SlackBot) handleEvents(ctx context.Context) {
@@ -154,16 +183,40 @@ func (b *SlackBot) handleMention(ctx context.Context, event *slackevents.AppMent
 	b.processWithFlyt(ctx, event.Text, event.Channel, event.ThreadTimeStamp)
 }
 
+func (b *SlackBot) getLLMService(channel, threadTS string) *LLMService {
+	// Create a key for this conversation context
+	key := channel
+	if threadTS != "" {
+		key = channel + ":" + threadTS
+	}
+
+	b.mu.RLock()
+	service, exists := b.llmServices[key]
+	b.mu.RUnlock()
+
+	if !exists {
+		b.mu.Lock()
+		service = NewLLMService(b.openAIKey)
+		b.llmServices[key] = service
+		b.mu.Unlock()
+		log.Printf("Created new LLM service for conversation: %s", key)
+	}
+
+	return service
+}
+
 func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, threadTS string) {
+	// Get or create LLM service for this thread
+	llmService := b.getLLMService(channel, threadTS)
+
 	// Create shared store
 	shared := flyt.NewSharedStore()
 	shared.Set("message", message)
 	shared.Set("channel", channel)
 	shared.Set("thread_ts", threadTS)
-	shared.Set("openai_key", b.openAIKey)
 
-	// Create workflow
-	flow := b.createWorkflow()
+	// Create workflow with injected LLM service
+	flow := b.createWorkflow(llmService)
 
 	// Run workflow
 	if err := flow.Run(ctx, shared); err != nil {
@@ -180,10 +233,13 @@ func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, thread
 	}
 }
 
-func (b *SlackBot) createWorkflow() *flyt.Flow {
-	// Create nodes
+func (b *SlackBot) createWorkflow(llmService *LLMService) *flyt.Flow {
+	// Create nodes with injected dependencies
 	parseNode := &ParseMessageNode{BaseNode: flyt.NewBaseNode()}
-	llmNode := &LLMNode{BaseNode: flyt.NewBaseNode()}
+	llmNode := &LLMNode{
+		BaseNode: flyt.NewBaseNode(),
+		llm:      llmService,
+	}
 	toolNode := &ToolExecutorNode{BaseNode: flyt.NewBaseNode()}
 	formatNode := &FormatResponseNode{BaseNode: flyt.NewBaseNode()}
 

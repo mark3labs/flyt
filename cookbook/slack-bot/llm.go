@@ -169,6 +169,73 @@ func (c *LLMClient) CreateChatCompletion(ctx context.Context, messages []ChatMes
 	return &completion, nil
 }
 
+// LLMService encapsulates the LLM client and conversation management
+type LLMService struct {
+	client       *LLMClient
+	conversation *ConversationManager
+}
+
+// NewLLMService creates a new LLM service with its own conversation manager
+func NewLLMService(apiKey string) *LLMService {
+	return &LLMService{
+		client:       NewLLMClient(apiKey),
+		conversation: NewConversationManager(),
+	}
+}
+
+// ProcessMessage processes a user message through the LLM
+func (s *LLMService) ProcessMessage(ctx context.Context, message string) (string, []ToolCall, error) {
+	// Add user message to conversation
+	s.conversation.AddUserMessage(message)
+
+	// Get completion from OpenAI
+	response, err := s.client.CreateChatCompletion(ctx, s.conversation.GetMessages())
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to get completion: %w", err)
+	}
+
+	if len(response.Choices) == 0 {
+		return "", nil, fmt.Errorf("no choices in response")
+	}
+
+	choice := response.Choices[0]
+	assistantMessage := choice.Message
+
+	// Add assistant message to conversation
+	s.conversation.AddAssistantMessage(assistantMessage)
+
+	// Check if there are tool calls
+	if len(assistantMessage.ToolCalls) > 0 {
+		return "", assistantMessage.ToolCalls, nil
+	}
+
+	// Return the text response
+	return assistantMessage.Content, nil, nil
+}
+
+// ProcessToolResponses processes tool responses and gets final answer from LLM
+func (s *LLMService) ProcessToolResponses(ctx context.Context, toolResponses map[string]string) (string, error) {
+	// Add tool responses to conversation
+	for toolCallID, response := range toolResponses {
+		s.conversation.AddToolResponse(toolCallID, response)
+	}
+
+	// Get final response from LLM
+	response, err := s.client.CreateChatCompletion(ctx, s.conversation.GetMessages())
+	if err != nil {
+		return "", fmt.Errorf("failed to get final completion: %w", err)
+	}
+
+	if len(response.Choices) == 0 {
+		return "", fmt.Errorf("no choices in final response")
+	}
+
+	finalMessage := response.Choices[0].Message
+	s.conversation.AddAssistantMessage(finalMessage)
+
+	return finalMessage.Content, nil
+}
+
 // ConversationManager manages the conversation history
 type ConversationManager struct {
 	messages []ChatMessage
@@ -225,60 +292,4 @@ func (cm *ConversationManager) trimMessages() {
 		systemMsg := cm.messages[0]
 		cm.messages = append([]ChatMessage{systemMsg}, cm.messages[len(cm.messages)-cm.maxSize+1:]...)
 	}
-}
-
-// ProcessWithLLM processes a message through the LLM with function calling
-func ProcessWithLLM(ctx context.Context, apiKey, message string, conversation *ConversationManager) (string, []ToolCall, error) {
-	client := NewLLMClient(apiKey)
-
-	// Add user message to conversation
-	conversation.AddUserMessage(message)
-
-	// Get completion from OpenAI
-	response, err := client.CreateChatCompletion(ctx, conversation.GetMessages())
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to get completion: %w", err)
-	}
-
-	if len(response.Choices) == 0 {
-		return "", nil, fmt.Errorf("no choices in response")
-	}
-
-	choice := response.Choices[0]
-	assistantMessage := choice.Message
-
-	// Add assistant message to conversation
-	conversation.AddAssistantMessage(assistantMessage)
-
-	// Check if there are tool calls
-	if len(assistantMessage.ToolCalls) > 0 {
-		return "", assistantMessage.ToolCalls, nil
-	}
-
-	// Return the text response
-	return assistantMessage.Content, nil, nil
-}
-
-// ProcessToolResponses processes tool responses and gets final answer from LLM
-func ProcessToolResponses(ctx context.Context, apiKey string, toolResponses map[string]string, conversation *ConversationManager) (string, error) {
-	// Add tool responses to conversation
-	for toolCallID, response := range toolResponses {
-		conversation.AddToolResponse(toolCallID, response)
-	}
-
-	// Get final response from LLM
-	client := NewLLMClient(apiKey)
-	response, err := client.CreateChatCompletion(ctx, conversation.GetMessages())
-	if err != nil {
-		return "", fmt.Errorf("failed to get final completion: %w", err)
-	}
-
-	if len(response.Choices) == 0 {
-		return "", fmt.Errorf("no choices in final response")
-	}
-
-	finalMessage := response.Choices[0].Message
-	conversation.AddAssistantMessage(finalMessage)
-
-	return finalMessage.Content, nil
 }
