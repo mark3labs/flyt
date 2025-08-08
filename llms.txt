@@ -5,6 +5,13 @@
 ## Docs
 
 - [Best Practices](/best-practices): Follow these guidelines to build robust, maintainable Flyt workflows.
+- [Batch Flows](/advanced/batch-flows): Run the same flow multiple times with different parameters, perfect for processing multiple entities or parallel workflows.
+- [Batch Processing](/advanced/batch-processing): Process collections of items efficiently with concurrent or sequential execution.
+- [Custom Node Types](/advanced/custom-nodes): Create sophisticated nodes with custom behavior, state management, and advanced features.
+- [Flow as Node](/advanced/flow-as-node): Flows implement the Node interface, allowing them to be used anywhere a node is expected. This enables powerful composition patterns.
+- [Nested Flows](/advanced/nested-flows): Compose complex workflows by nesting flows within flows, creating modular and reusable workflow components.
+- [Utilities](/advanced/utilities): Helper functions and utilities to simplify common tasks in Flyt workflows.
+- [Worker Pool](/advanced/worker-pool): Manage concurrent task execution with fine-grained control using the WorkerPool utility.
 - [Actions](/concepts/actions): Actions are strings returned by a node's Post phase that determine the next step in a workflow. They provide dynamic, runtime control over flow execution.
 - [Flows](/concepts/flows): Flows connect nodes together to create workflows. They define the execution path based on actions returned by nodes.
 - [Nodes](/concepts/nodes): Nodes are the fundamental building blocks of Flyt workflows. Each node represents a single unit of work with a well-defined lifecycle.
@@ -16,10 +23,3 @@
 - [Configuration via Closures](/patterns/closures): Use closures to create configurable, reusable nodes with encapsulated state and configuration.
 - [Error Handling & Retries](/patterns/error-handling): Build resilient workflows with proper error handling and retry strategies.
 - [Fallback on Failure](/patterns/fallback): Implement graceful degradation when operations fail, ensuring your workflows remain resilient and provide the best possible user experience even during failures.
-- [Batch Flows](/advanced/batch-flows): Run the same flow multiple times with different parameters, perfect for processing multiple entities or parallel workflows.
-- [Batch Processing](/advanced/batch-processing): Process collections of items efficiently with concurrent or sequential execution.
-- [Custom Node Types](/advanced/custom-nodes): Create sophisticated nodes with custom behavior, state management, and advanced features.
-- [Flow as Node](/advanced/flow-as-node): Flows implement the Node interface, allowing them to be used anywhere a node is expected. This enables powerful composition patterns.
-- [Nested Flows](/advanced/nested-flows): Compose complex workflows by nesting flows within flows, creating modular and reusable workflow components.
-- [Utilities](/advanced/utilities): Helper functions and utilities to simplify common tasks in Flyt workflows.
-- [Worker Pool](/advanced/worker-pool): Manage concurrent task execution with fine-grained control using the WorkerPool utility.
