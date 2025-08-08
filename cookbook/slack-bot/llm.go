@@ -126,7 +126,7 @@ func NewLLMClient(apiKey string) *LLMClient {
 
 func (c *LLMClient) CreateChatCompletion(ctx context.Context, messages []ChatMessage) (*ChatCompletionResponse, error) {
 	request := ChatCompletionRequest{
-		Model:       "gpt-4-0125-preview",
+		Model:       "gpt-4.1",
 		Messages:    messages,
 		Tools:       getToolDefinitions(),
 		ToolChoice:  "auto",

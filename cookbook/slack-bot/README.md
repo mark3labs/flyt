@@ -1,10 +1,10 @@
-# Slack Bot with OpenAI GPT-4 and Flyt
+# Slack Bot with OpenAI GPT-4.1 and Flyt
 
-A sophisticated Slack bot built with Flyt workflow framework that integrates OpenAI GPT-4 with function calling capabilities. The bot can perform calculations and share Chuck Norris facts while maintaining conversation context.
+A sophisticated Slack bot built with Flyt workflow framework that integrates OpenAI GPT-4.1 with function calling capabilities. The bot can perform calculations and share Chuck Norris facts while maintaining conversation context.
 
 ## Features
 
-- **OpenAI GPT-4 Integration**: Uses the latest GPT-4 model with function calling API
+- **OpenAI GPT-4.1 Integration**: Uses GPT-4.1 model with function calling API
 - **Tool Support**: 
   - Calculator for mathematical expressions
   - Chuck Norris fact generator for entertainment
@@ -47,9 +47,9 @@ User Message → Parse → LLM → Tool Execution (if needed) → Format → Res
 ```yaml
 display_information:
   name: Flyt AI Bot
-  description: An AI-powered Slack bot using OpenAI GPT-4 with calculator and Chuck Norris facts
+  description: An AI-powered Slack bot using OpenAI GPT-4.1 with calculator and Chuck Norris facts
   background_color: "#2c2d30"
-  long_description: This bot integrates OpenAI's GPT-4 with function calling capabilities to provide intelligent responses, perform calculations, and share Chuck Norris facts. Built with the Flyt workflow framework for clean, maintainable code architecture.
+  long_description: This bot integrates OpenAI's GPT-4.1 with function calling capabilities to provide intelligent responses, perform calculations, and share Chuck Norris facts. Built with the Flyt workflow framework for clean, maintainable code architecture.
 features:
   app_home:
     home_tab_enabled: false
@@ -281,7 +281,7 @@ slack-bot/
 ### OpenAI Settings
 
 The bot uses GPT-4 with these settings:
-- Model: `gpt-4-0125-preview`
+- Model: `gpt-4.1`
 - Temperature: 0.7
 - Tool Choice: `auto`
 - Max conversation history: 20 messages
