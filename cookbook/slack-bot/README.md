@@ -13,7 +13,7 @@ A sophisticated Slack bot built with Flyt workflow framework that integrates Ope
 - **Conversation Memory**: Maintains context across messages with thread history
 - **Smart Threading**: 
   - In channels: Only responds to @mentions and always replies in threads
-  - In DMs: Maintains conversation flow naturally
+  - In DMs: Responds directly in conversation (no threading)
 - **Context Awareness**: Includes thread/DM history in LLM context for better responses
 
 ## Architecture
@@ -191,28 +191,37 @@ The bot will connect to Slack and start listening for messages.
 
 ### Example Interactions
 
-**Calculator:**
+**In a Channel (must @mention):**
 ```
-User: Can you calculate 25 * 4 + sqrt(16)?
-Bot: I'll help you calculate that expression.
+User: Can you calculate 25 * 4?
+Bot: [No response - not mentioned]
+
+User: @Bot Can you calculate 25 * 4 + sqrt(16)?
+Bot: [In thread] I'll help you calculate that expression.
      Result: 104
+
+User: [In same thread] Now divide by 2
+Bot: [In thread] Dividing 104 by 2 gives us 52.
 ```
 
-**Chuck Norris Facts:**
+**In Direct Message:**
 ```
 User: Tell me a Chuck Norris fact about programming
 Bot: Here's a Chuck Norris fact for you:
      Chuck Norris doesn't use web standards. The web conforms to Chuck Norris.
+
+User: Give me another one
+Bot: [Knows context] Here's another Chuck Norris fact:
+     Chuck Norris can unit test an entire application with a single assert.
 ```
 
-**Combined:**
+**Combined Tools in DM:**
 ```
-User: What's 2^10 and also give me a Chuck Norris fact
-Bot: I'll calculate 2^10 and get you a Chuck Norris fact.
-     
-     The calculation 2^10 equals 1024.
-     
-     And here's your Chuck Norris fact:
+User: What's 2^10?
+Bot: The calculation 2^10 equals 1024.
+
+User: Cool! Now give me a Chuck Norris fact
+Bot: Here's your Chuck Norris fact:
      Chuck Norris can divide by zero.
 ```
 
@@ -229,7 +238,7 @@ Bot: I'll calculate 2^10 and get you a Chuck Norris fact.
 7. GPT-4.1 formulates a final response using the tool results
 8. The response is sent back:
    - In channels: Always as a thread reply
-   - In DMs: In the conversation flow
+   - In DMs: Directly in the conversation (no threads)
 9. Conversation history is maintained per thread for context continuity
 
 ### Available Tools

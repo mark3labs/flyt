@@ -188,6 +188,21 @@ func (s *SlackService) GetThreadMessages(channel, threadTS string) ([]slack.Mess
 	return messages, nil
 }
 
+// GetChannelHistory retrieves recent messages from a channel or DM
+func (s *SlackService) GetChannelHistory(channel string, limit int) ([]slack.Message, error) {
+	params := &slack.GetConversationHistoryParameters{
+		ChannelID: channel,
+		Limit:     limit,
+	}
+
+	resp, err := s.client.GetConversationHistory(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get channel history: %w", err)
+	}
+
+	return resp.Messages, nil
+}
+
 // EnrichMessageContext adds user and channel information to the message context
 func (s *SlackService) EnrichMessageContext(userID, channelID string) map[string]string {
 	context := make(map[string]string)

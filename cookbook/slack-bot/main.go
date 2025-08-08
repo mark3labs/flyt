@@ -11,6 +11,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/mark3labs/flyt"
+	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 )
@@ -161,16 +162,10 @@ func (b *SlackBot) handleMessage(ctx context.Context, event *slackevents.Message
 
 	log.Printf("DM from %s: %s", event.User, event.Text)
 
-	// For DMs, use the message timestamp as thread (maintains conversation flow)
-	threadTS := event.ThreadTimeStamp
-	if threadTS == "" {
-		threadTS = event.TimeStamp
-	}
-
-	// Process message through Flyt workflow
-	b.processWithFlyt(ctx, event.Text, event.Channel, threadTS, event.User)
+	// For DMs, don't use threads - respond directly in the conversation
+	// Pass empty string for threadTS to indicate no threading
+	b.processWithFlyt(ctx, event.Text, event.Channel, "", event.User)
 }
-
 func (b *SlackBot) handleMention(ctx context.Context, event *slackevents.AppMentionEvent) {
 	log.Printf("Mention from %s in channel %s: %s", event.User, event.Channel, event.Text)
 
@@ -247,29 +242,38 @@ func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, thread
 
 func (b *SlackBot) fetchConversationHistory(channel, threadTS string) []map[string]string {
 	var history []map[string]string
+	var messages []slack.Message
+	var err error
 
 	if threadTS != "" {
-		// Fetch thread messages
-		messages, err := b.slack.GetThreadMessages(channel, threadTS)
+		// For threads in channels, fetch thread messages
+		messages, err = b.slack.GetThreadMessages(channel, threadTS)
 		if err != nil {
 			log.Printf("Failed to fetch thread history: %v", err)
 			return history
 		}
-
-		// Convert to simplified format, excluding bot's own messages
-		botID := b.slack.GetBotUserID()
-		for _, msg := range messages {
-			// Skip bot's own messages and empty messages
-			if msg.User == botID || msg.BotID != "" || msg.Text == "" {
-				continue
-			}
-
-			history = append(history, map[string]string{
-				"user":      msg.User,
-				"text":      msg.Text,
-				"timestamp": msg.Timestamp,
-			})
+	} else if b.isDirectMessage(channel) {
+		// For DMs, fetch recent channel history
+		messages, err = b.slack.GetChannelHistory(channel, 20)
+		if err != nil {
+			log.Printf("Failed to fetch DM history: %v", err)
+			return history
 		}
+	}
+
+	// Convert to simplified format, excluding bot's own messages
+	botID := b.slack.GetBotUserID()
+	for _, msg := range messages {
+		// Skip bot's own messages and empty messages
+		if msg.User == botID || msg.BotID != "" || msg.Text == "" {
+			continue
+		}
+
+		history = append(history, map[string]string{
+			"user":      msg.User,
+			"text":      msg.Text,
+			"timestamp": msg.Timestamp,
+		})
 	}
 
 	// Limit history to last 10 messages for context
@@ -279,6 +283,7 @@ func (b *SlackBot) fetchConversationHistory(channel, threadTS string) []map[stri
 
 	return history
 }
+
 func (b *SlackBot) createWorkflow(llmService *LLMService) *flyt.Flow {
 	// Create nodes with injected dependencies
 	parseNode := &ParseMessageNode{
