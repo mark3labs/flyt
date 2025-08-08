@@ -1,14 +1,3143 @@
+Directory structure:
+└── flyt/
+    ├── README.md
+    ├── AGENTS.md
+    ├── batch.go
+    ├── batch_test.go
+    ├── flyt.go
+    ├── flyt_test.go
+    ├── go.mod
+    ├── LICENSE
+    ├── www/
+    │   ├── README.md
+    │   ├── package.json
+    │   ├── tsconfig.json
+    │   ├── vocs.config.ts
+    │   └── docs/
+    │       ├── pages/
+    │       │   ├── best-practices.mdx
+    │       │   ├── index.mdx
+    │       │   ├── advanced/
+    │       │   │   ├── batch-flows.mdx
+    │       │   │   ├── batch-processing.mdx
+    │       │   │   ├── custom-nodes.mdx
+    │       │   │   ├── flow-as-node.mdx
+    │       │   │   ├── nested-flows.mdx
+    │       │   │   ├── utilities.mdx
+    │       │   │   └── worker-pool.mdx
+    │       │   ├── concepts/
+    │       │   │   ├── actions.mdx
+    │       │   │   ├── flows.mdx
+    │       │   │   ├── nodes.mdx
+    │       │   │   └── shared-store.mdx
+    │       │   ├── getting-started/
+    │       │   │   ├── installation.mdx
+    │       │   │   ├── quick-start.mdx
+    │       │   │   └── template.mdx
+    │       │   └── patterns/
+    │       │       ├── branching.mdx
+    │       │       ├── closures.mdx
+    │       │       ├── error-handling.mdx
+    │       │       └── fallback.mdx
+    │       └── public/
+    │           └── site.webmanifest
+    └── .github/
+        └── workflows/
+            ├── pages.yml
+            ├── release.yml
+            └── test.yml
+
+================================================
+FILE: README.md
+================================================
+![Flyt Logo](flyt-logo.png)
+
 # Flyt
 
-> A minimalist workflow framework for Go with zero dependencies
+*Norwegian for "flow" • Pronounced "fleet"*
+
+A minimalist workflow framework for Go with zero dependencies inspired by [Pocket Flow](https://github.com/The-Pocket/PocketFlow).
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Getting Started](#getting-started)
+  - [Using the Project Template (Recommended)](#using-the-project-template-recommended)
+  - [Manual Setup](#manual-setup)
+- [Core Concepts](#core-concepts)
+  - [Nodes](#nodes)
+  - [Actions](#actions)
+  - [Flows](#flows)
+  - [Shared Store](#shared-store)
+- [Intermediate Patterns](#intermediate-patterns)
+  - [Configuration via Closures](#configuration-via-closures)
+  - [Error Handling & Retries](#error-handling--retries)
+  - [Fallback on Failure](#fallback-on-failure)
+  - [Conditional Branching](#conditional-branching)
+- [Advanced Usage](#advanced-usage)
+  - [Custom Node Types](#custom-node-types)
+    - [RetryableNode Interface](#retryablenode-interface)
+  - [Batch Processing](#batch-processing)
+    - [Advanced Batch Configuration](#advanced-batch-configuration)
+    - [Batch Error Handling](#batch-error-handling)
+  - [Batch Flows](#batch-flows)
+  - [Nested Flows](#nested-flows)
+  - [Flow as Node](#flow-as-node)
+  - [Worker Pool](#worker-pool)
+  - [Utility Functions](#utility-functions)
+    - [ToSlice](#toslice)
+- [Best Practices](#best-practices)
+- [Examples](#examples)
+- [License](#license)
+
+## Installation
+
+```bash
+go get github.com/mark3labs/flyt
+```
+
+## Getting Started
+
+### Using the Project Template (Recommended)
+
+The fastest way to start a new Flyt project is using the official template:
+
+```bash
+# Create a new project from the template
+git clone https://github.com/mark3labs/flyt-project-template my-flyt-project
+cd my-flyt-project
+
+# Remove the template git history and start fresh
+rm -rf .git
+git init
+
+# Install dependencies
+go mod tidy
+
+# Run the example
+go run main.go
+```
+
+The template provides a starting point for your Flyt project with a basic structure and example code.
+
+### Manual Setup
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/mark3labs/flyt"
+)
+
+func main() {
+    // Create a simple node using the helper
+    node := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            fmt.Println("Hello, Flyt!")
+            return "done", nil
+        }),
+    )
+
+    // Run it
+    ctx := context.Background()
+    shared := flyt.NewSharedStore()
+    
+    action, err := flyt.Run(ctx, node, shared)
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Completed with action: %s\n", action)
+}
+```
+
+## Core Concepts
+
+### Nodes
+
+Nodes are the building blocks. Each node has three phases:
+
+1. **Prep** - Read from shared store and prepare data
+2. **Exec** - Execute main logic (can be retried)
+3. **Post** - Process results and decide next action
+
+```go
+// Using the helper
+node := flyt.NewNode(
+    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        data, _ := shared.Get("input")
+        return data, nil
+    }),
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        // Process data
+        return "result", nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        shared.Set("output", execResult)
+        return flyt.DefaultAction, nil
+    }),
+)
+```
+
+### Actions
+
+Actions are strings returned by a node's Post phase that determine what happens next:
+
+```go
+func (n *MyNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    if execResult.(bool) {
+        return "success", nil  // Go to node connected with "success"
+    }
+    return "retry", nil       // Go to node connected with "retry"
+}
+```
+
+The default action is `flyt.DefaultAction` (value: "default"). If no connection exists for an action, the flow ends.
+
+### Flows
+
+Connect nodes to create workflows:
+
+```go
+// Create nodes
+validateNode := createValidateNode()
+processNode := createProcessNode()
+errorNode := createErrorNode()
+
+// Build flow with action-based routing
+flow := flyt.NewFlow(validateNode)
+flow.Connect(validateNode, "valid", processNode)    // If validation succeeds
+flow.Connect(validateNode, "invalid", errorNode)    // If validation fails
+flow.Connect(processNode, "done", nil)              // End flow after processing
+
+// Run flow
+err := flow.Run(ctx, shared)
+```
+
+### Shared Store
+
+Thread-safe data sharing between nodes:
+
+```go
+shared := flyt.NewSharedStore()
+
+// Set and get individual values
+shared.Set("key", "value")
+value, ok := shared.Get("key")
+
+// Get all data as a map (returns a copy)
+allData := shared.GetAll()
+
+// Merge multiple values at once
+shared.Merge(map[string]any{
+    "user_id": 123,
+    "config": map[string]any{"timeout": 30},
+})
+```
+
+## Intermediate Patterns
+
+### Configuration via Closures
+
+Pass configuration to nodes using closures:
+
+```go
+func createAPINode(apiKey string, baseURL string) flyt.Node {
+    return flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            // apiKey and baseURL are captured in the closure
+            url := fmt.Sprintf("%s/data", baseURL)
+            req, _ := http.NewRequest("GET", url, nil)
+            req.Header.Set("Authorization", apiKey)
+            // ... make request
+            return data, nil
+        }),
+    )
+}
+
+// Usage
+node := createAPINode("secret-key", "https://api.example.com")
+```
+
+### Error Handling & Retries
+
+Add retry logic to handle transient failures:
+
+```go
+node := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        // This will be retried up to 3 times
+        return callFlakeyAPI()
+    }),
+    flyt.WithMaxRetries(3),
+    flyt.WithWait(time.Second),
+    flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+        // Called after all retries fail
+        return "default-value", nil
+    }),
+)
+```
+
+### Fallback on Failure
+
+Handle failures gracefully by implementing the `FallbackNode` interface:
+
+```go
+type CachedAPINode struct {
+    *flyt.BaseNode
+    cache map[string]any
+}
+
+func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
+    // Return cached data when API fails
+    key := prepResult.(string)
+    if cached, ok := n.cache[key]; ok {
+        return cached, nil
+    }
+    // Return default value if no cache
+    return map[string]any{"status": "unavailable"}, nil
+}
+
+func (n *CachedAPINode) Exec(ctx context.Context, prepResult any) (any, error) {
+    key := prepResult.(string)
+    data, err := callAPI(key)
+    if err == nil {
+        n.cache[key] = data // Update cache on success
+    }
+    return data, err
+}
+```
+
+The `ExecFallback` method is called automatically after all retries are exhausted, allowing you to provide degraded functionality, cached results, or default values.
+
+### Conditional Branching
+
+Control flow based on results:
+
+```go
+decisionNode := flyt.NewNode(
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        value := prepResult.(int)
+        return value > 100, nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        if execResult.(bool) {
+            return "high", nil
+        }
+        return "low", nil
+    }),
+)
+
+flow := flyt.NewFlow(decisionNode)
+flow.Connect(decisionNode, "high", highNode)
+flow.Connect(decisionNode, "low", lowNode)
+```
+
+## Advanced Usage
+
+### Custom Node Types
+
+For complex nodes with state, create custom types:
+
+```go
+type RateLimitedNode struct {
+    *flyt.BaseNode
+    limiter *rate.Limiter
+}
+
+func NewRateLimitedNode(rps int) *RateLimitedNode {
+    return &RateLimitedNode{
+        BaseNode: flyt.NewBaseNode(),
+        limiter:  rate.NewLimiter(rate.Limit(rps), 1),
+    }
+}
+
+func (n *RateLimitedNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    if err := n.limiter.Wait(ctx); err != nil {
+        return nil, err
+    }
+    // Process with rate limiting
+    return process(prepResult)
+}
+```
+
+#### RetryableNode Interface
+
+For custom retry logic, implement the `RetryableNode` interface:
+
+```go
+type CustomRetryNode struct {
+    *flyt.BaseNode
+    attempts int
+}
+
+func (n *CustomRetryNode) GetMaxRetries() int {
+    // Dynamic retry count based on state
+    if n.attempts > 5 {
+        return 0 // Stop retrying after 5 total attempts
+    }
+    return 3
+}
+
+func (n *CustomRetryNode) GetWait() time.Duration {
+    // Exponential backoff
+    return time.Duration(n.attempts) * time.Second
+}
+
+func (n *CustomRetryNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    n.attempts++
+    return callAPI(prepResult)
+}
+```
+
+### Batch Processing
+
+Process multiple items concurrently:
+
+```go
+// Simple batch node for processing items
+processFunc := func(ctx context.Context, item any) (any, error) {
+    // Process each item
+    return fmt.Sprintf("processed: %v", item), nil
+}
+
+batchNode := flyt.NewBatchNode(processFunc, true) // true for concurrent
+shared.Set("items", []string{"item1", "item2", "item3"})
+```
+
+#### Advanced Batch Configuration
+
+For more control over batch processing:
+
+```go
+config := &flyt.BatchConfig{
+    BatchSize:   10,        // Process 10 items at a time
+    Concurrency: 5,         // Use 5 concurrent workers
+    ItemsKey:    "data",    // Custom key for input items
+    ResultsKey:  "output",  // Custom key for results
+    CountKey:    "total",   // Custom key for processed count
+}
+
+processFunc := func(ctx context.Context, item any) (any, error) {
+    return processItem(item)
+}
+
+batchNode := flyt.NewBatchNodeWithConfig(processFunc, true, config)
+```
+
+#### Batch Error Handling
+
+Batch operations aggregate errors:
+
+```go
+action, err := flyt.Run(ctx, batchNode, shared)
+if err != nil {
+    if batchErr, ok := err.(*flyt.BatchError); ok {
+        // Access individual errors
+        for i, e := range batchErr.Errors {
+            if e != nil {
+                fmt.Printf("Item %d failed: %v\n", i, e)
+            }
+        }
+    }
+}
+```
+
+### Batch Flows
+
+Run the same flow multiple times with different parameters:
+
+```go
+// Create a flow factory - returns a new flow instance for each iteration
+flowFactory := func() *flyt.Flow {
+    validateNode := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            // Each flow has its own SharedStore with merged FlowInputs
+            userID, _ := shared.Get("user_id")
+            email, _ := shared.Get("email")
+            return map[string]any{"user_id": userID, "email": email}, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            data := prepResult.(map[string]any)
+            // Process user data
+            return processUser(data), nil
+        }),
+    )
+    return flyt.NewFlow(validateNode)
+}
+
+// Define input parameters for each flow iteration
+// Each FlowInputs map is merged into that flow's isolated SharedStore
+batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+    // Could fetch from database, API, etc.
+    return []flyt.FlowInputs{
+        {"user_id": 1, "email": "user1@example.com"},
+        {"user_id": 2, "email": "user2@example.com"},
+        {"user_id": 3, "email": "user3@example.com"},
+    }, nil
+}
+
+// Create and run batch flow
+batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true) // true for concurrent
+err := batchFlow.Run(ctx, shared)
+
+// Each flow runs in isolation with its own SharedStore containing the FlowInputs
+```
+
+### Nested Flows
+
+Compose flows for complex workflows:
+
+```go
+// Sub-flow for data validation
+validationFlow := createValidationFlow()
+
+// Main flow
+mainFlow := flyt.NewFlow(fetchNode)
+mainFlow.Connect(fetchNode, "validate", validationFlow)
+mainFlow.Connect(validationFlow, flyt.DefaultAction, processNode)
+```
+
+### Flow as Node
+
+Flows implement the Node interface and can be used anywhere a node is expected:
+
+```go
+// Create a reusable flow
+func createProcessingFlow() *flyt.Flow {
+    validateNode := createValidateNode()
+    transformNode := createTransformNode()
+    
+    flow := flyt.NewFlow(validateNode)
+    flow.Connect(validateNode, "valid", transformNode)
+    return flow
+}
+
+// Use the flow as a node in another flow
+processingFlow := createProcessingFlow()
+mainFlow := flyt.NewFlow(fetchNode)
+mainFlow.Connect(fetchNode, flyt.DefaultAction, processingFlow) // Flow used as node
+mainFlow.Connect(processingFlow, flyt.DefaultAction, saveNode)
+```
+
+### Worker Pool
+
+For custom concurrent task management:
+
+```go
+// Create a worker pool with 10 workers
+pool := flyt.NewWorkerPool(10)
+
+// Submit tasks
+for _, item := range items {
+    item := item // Capture loop variable
+    pool.Submit(func() {
+        // Process item
+        result := processItem(item)
+        // Store result safely
+        mu.Lock()
+        results = append(results, result)
+        mu.Unlock()
+    })
+}
+
+// Wait for all tasks to complete
+pool.Wait()
+
+// Clean up
+pool.Close()
+```
+
+### Utility Functions
+
+#### ToSlice
+
+Convert various types to slices for batch processing:
+
+```go
+// Convert different types to []any
+items1 := flyt.ToSlice([]string{"a", "b", "c"})
+items2 := flyt.ToSlice([]int{1, 2, 3})
+items3 := flyt.ToSlice("single item") // Returns []any{"single item"}
+
+// Useful for batch processing with mixed types
+shared.Set("items", flyt.ToSlice(data))
+```
 
 ## Best Practices
 
+1. **Single Responsibility**: Each node should do one thing well
+2. **Idempotency**: Nodes should be idempotent when possible
+3. **Error Handling**: Always handle errors appropriately
+4. **Context Awareness**: Respect context cancellation
+5. **Concurrency Safety**: Don't share node instances across flows
+
+## Examples
+
+Check out the [cookbook](cookbook/) directory for complete, real-world examples:
+
+- [Agent](cookbook/agent/) - AI agent with web search capabilities using LLM and search providers
+- [Chat](cookbook/chat/) - Interactive chat application with conversation history
+- [LLM Streaming](cookbook/llm-streaming/) - Real-time streaming of LLM responses with OpenAI SSE
+- [MCP](cookbook/mcp/) - Model Context Protocol integration with OpenAI function calling
+- [Summarize](cookbook/summarize/) - Text summarization with error handling and retries
+- [Tracing](cookbook/tracing/) - Distributed tracing with Langfuse for observability
+
+## License
+
+MIT
+
+
+
+================================================
+FILE: AGENTS.md
+================================================
+# Flyt Codebase Guidelines for AI Agents
+
+## Build/Test Commands
+- Run all tests: `go test -race ./...`
+- Run single test: `go test -race -v -run TestName`
+- Format code: `go fmt ./...`
+- Lint code: `go vet ./...`
+- Build: `go build`
+
+## Code Style
+- Package: Always start with package comment describing purpose
+- Imports: Group stdlib, then external (none used), then internal
+- Naming: Use Go conventions (camelCase for private, PascalCase for public)
+- Interfaces: Define minimal interfaces, embed for composition
+- Error handling: Return explicit errors, no panic in library code
+- Comments: Document all exported types/functions with godoc format
+- Testing: Use table-driven tests, test both success and error cases
+- Concurrency: Use sync primitives directly, no abstraction layers
+- Dependencies: ZERO external dependencies - stdlib only
+
+## Project Structure
+- Single package design (package flyt)
+- Core types: Node, Flow, Shared, Params, Action
+- Helper functions for batch processing patterns
+- Comprehensive test coverage with TestNode implementations
+
+
+================================================
+FILE: batch.go
+================================================
+// Package flyt provides batch processing capabilities for the flyt workflow framework.
+//
+// The batch package includes utilities for processing collections of items either
+// sequentially or concurrently, with configurable batch sizes and concurrency limits.
+//
+// Key Features:
+//   - Batch processing nodes for item collections
+//   - Batch flow execution with parameter variations
+//   - Concurrent and sequential processing modes
+//   - Configurable batch sizes and concurrency limits
+//   - Error aggregation for batch operations
+//
+// Example (Batch Processing):
+//
+//	// Process items concurrently
+//	processFunc := func(ctx context.Context, item any) (any, error) {
+//	    // Process each item
+//	    return fmt.Sprintf("processed: %v", item), nil
+//	}
+//
+//	node := flyt.NewBatchNode(processFunc, true) // true for concurrent
+//	shared := flyt.NewSharedStore()
+//	shared.Set(flyt.KeyItems, []string{"item1", "item2", "item3"})
+//
+//	action, err := flyt.Run(ctx, node, shared)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	results, _ := shared.Get(flyt.KeyResults)
+//	fmt.Println(results) // ["processed: item1", "processed: item2", "processed: item3"]
+//
+// Example (Batch Flow):
+//
+//	// Run a flow multiple times with different parameters
+//	flowFactory := func() *flyt.Flow {
+//	    // Create your flow here
+//	    return flyt.NewFlow(startNode)
+//	}
+//
+//	batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+//	    return []flyt.FlowInputs{
+//	        {"user_id": 1, "action": "process"},
+//	        {"user_id": 2, "action": "process"},
+//	    }, nil
+//	}
+//
+//	batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true)
+//	err := batchFlow.Run(ctx, shared)
+package flyt
+
+import (
+	"context"
+	"fmt"
+	"sync"
+)
+
+// BatchError aggregates multiple errors from batch operations.
+// It implements the error interface and provides detailed information
+// about all errors that occurred during batch processing.
+type BatchError struct {
+	Errors []error
+}
+
+func (e *BatchError) Error() string {
+	if len(e.Errors) == 0 {
+		return "batch: no errors recorded"
+	}
+	if len(e.Errors) == 1 {
+		return fmt.Sprintf("batch: %v", e.Errors[0])
+	}
+	return fmt.Sprintf("batch: %d errors occurred, first: %v", len(e.Errors), e.Errors[0])
+}
+
+// BatchConfig holds configuration for batch operations.
+// It allows customization of batch processing behavior including
+// size limits, concurrency settings, and storage keys.
+type BatchConfig struct {
+	// MaxBatchSize is the maximum number of items to process in a single batch.
+	// If a batch exceeds this size, an error will be returned.
+	// Default: 1000
+	MaxBatchSize int
+
+	// MaxConcurrency is the maximum number of concurrent workers for parallel processing.
+	// This is only used when concurrent processing is enabled.
+	// Default: 10
+	MaxConcurrency int
+
+	// ItemsKey is the SharedStore key to read items from.
+	// Default: "items"
+	ItemsKey string
+
+	// ResultsKey is the SharedStore key to write results to.
+	// Default: "results"
+	ResultsKey string
+
+	// BatchCountKey is the SharedStore key to write the batch count for BatchFlow.
+	// Default: "batch_count"
+	BatchCountKey string
+}
+
+// DefaultBatchConfig returns a BatchConfig with sensible defaults.
+// The defaults are:
+//   - MaxBatchSize: 1000
+//   - MaxConcurrency: 10
+//   - ItemsKey: "items"
+//   - ResultsKey: "results"
+//   - BatchCountKey: "batch_count"
+func DefaultBatchConfig() *BatchConfig {
+	return &BatchConfig{
+		MaxBatchSize:   1000,
+		MaxConcurrency: 10,
+		ItemsKey:       KeyItems,
+		ResultsKey:     KeyResults,
+		BatchCountKey:  KeyBatchCount,
+	}
+}
+
+// BatchProcessFunc is a function that processes a single item in a batch.
+// It receives a context and an item, and returns the processed result or an error.
+// The function should be thread-safe if concurrent processing is enabled.
+type BatchProcessFunc func(ctx context.Context, item any) (any, error)
+
+// NewBatchNode creates a node that processes items in batch.
+// The node reads items from the SharedStore (using the key "items" by default),
+// processes each item using the provided function, and stores results back
+// to the SharedStore (using the key "results" by default).
+//
+// Parameters:
+//   - processFunc: Function to process each item
+//   - concurrent: If true, items are processed concurrently using a worker pool
+//   - opts: Additional node options (e.g., WithMaxRetries, WithWait)
+//
+// Example:
+//
+//	processFunc := func(ctx context.Context, item any) (any, error) {
+//	    // Process the item
+//	    return processedItem, nil
+//	}
+//	node := flyt.NewBatchNode(processFunc, true)
+func NewBatchNode(processFunc BatchProcessFunc, concurrent bool, opts ...NodeOption) Node {
+	baseOpts := append([]NodeOption{}, opts...)
+	return &batchNode{
+		BaseNode:    NewBaseNode(baseOpts...),
+		processFunc: processFunc,
+		concurrent:  concurrent,
+		config:      DefaultBatchConfig(),
+	}
+}
+
+// NewBatchNodeWithKeys creates a batch node with custom keys for items and results.
+// This allows you to specify which keys in the SharedStore to read items from
+// and write results to, instead of using the default keys.
+//
+// Parameters:
+//   - processFunc: Function to process each item
+//   - concurrent: If true, items are processed concurrently
+//   - itemsKey: SharedStore key to read items from
+//   - resultsKey: SharedStore key to write results to
+//   - opts: Additional node options
+//
+// Example:
+//
+//	node := flyt.NewBatchNodeWithKeys(processFunc, true, "input_data", "output_data")
+func NewBatchNodeWithKeys(processFunc BatchProcessFunc, concurrent bool, itemsKey, resultsKey string, opts ...NodeOption) Node {
+	config := DefaultBatchConfig()
+	config.ItemsKey = itemsKey
+	config.ResultsKey = resultsKey
+
+	baseOpts := append([]NodeOption{}, opts...)
+	return &batchNode{
+		BaseNode:    NewBaseNode(baseOpts...),
+		processFunc: processFunc,
+		concurrent:  concurrent,
+		config:      config,
+	}
+}
+
+// NewBatchNodeWithConfig creates a batch node with custom configuration.
+// This provides full control over all batch processing settings.
+//
+// Parameters:
+//   - processFunc: Function to process each item
+//   - concurrent: If true, items are processed concurrently
+//   - config: Custom batch configuration
+//   - opts: Additional node options
+//
+// Example:
+//
+//	config := &flyt.BatchConfig{
+//	    MaxBatchSize:   500,
+//	    MaxConcurrency: 20,
+//	    ItemsKey:       "tasks",
+//	    ResultsKey:     "completed_tasks",
+//	}
+//	node := flyt.NewBatchNodeWithConfig(processFunc, true, config)
+func NewBatchNodeWithConfig(processFunc BatchProcessFunc, concurrent bool, config *BatchConfig, opts ...NodeOption) Node {
+	baseOpts := append([]NodeOption{}, opts...)
+	return &batchNode{
+		BaseNode:    NewBaseNode(baseOpts...),
+		processFunc: processFunc,
+		concurrent:  concurrent,
+		config:      config,
+	}
+}
+
+type batchNode struct {
+	*BaseNode
+	processFunc BatchProcessFunc
+	concurrent  bool
+	config      *BatchConfig
+}
+
+func (n *batchNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	// Use configured key or fall back to common keys
+	keysToCheck := []string{}
+	if n.config != nil && n.config.ItemsKey != "" {
+		keysToCheck = []string{n.config.ItemsKey}
+	} else {
+		keysToCheck = []string{KeyItems, "data", "batch"}
+	}
+
+	for _, key := range keysToCheck {
+		if val, ok := shared.Get(key); ok {
+			return val, nil
+		}
+	}
+
+	return nil, fmt.Errorf("batchNode: prep failed: no batch data found in shared store (looked for: %v)",
+		keysToCheck)
+}
+
+func (n *batchNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	// Convert to slice
+	items := ToSlice(prepResult)
+
+	// Validate batch size
+	if n.config != nil && n.config.MaxBatchSize > 0 && len(items) > n.config.MaxBatchSize {
+		return nil, fmt.Errorf("batchNode: exec failed: batch size %d exceeds maximum %d", len(items), n.config.MaxBatchSize)
+	}
+
+	if len(items) == 0 {
+		return []any{}, nil
+	}
+
+	results := make([]any, len(items))
+
+	if n.concurrent {
+		// Process concurrently with worker pool
+		maxWorkers := 10
+		if n.config != nil && n.config.MaxConcurrency > 0 {
+			maxWorkers = n.config.MaxConcurrency
+		}
+
+		pool := NewWorkerPool(maxWorkers)
+		defer pool.Close()
+
+		errors := make([]error, len(items))
+		var mu sync.Mutex
+
+		for i, item := range items {
+			idx, itm := i, item // Capture loop variables
+			pool.Submit(func() {
+				// Check context
+				if ctx.Err() != nil {
+					mu.Lock()
+					errors[idx] = fmt.Errorf("batch item %d: context cancelled: %w", idx, ctx.Err())
+					mu.Unlock()
+					return
+				}
+
+				result, err := n.processFunc(ctx, itm)
+				mu.Lock()
+				results[idx] = result
+				errors[idx] = err
+				mu.Unlock()
+			})
+		}
+
+		pool.Wait()
+
+		// Collect all errors
+		var batchErrors []error
+		for _, err := range errors {
+			if err != nil {
+				batchErrors = append(batchErrors, err)
+			}
+		}
+
+		if len(batchErrors) > 0 {
+			return nil, &BatchError{Errors: batchErrors}
+		}
+	} else {
+		// Process sequentially
+		for i, item := range items {
+			// Check context
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("batchNode: exec cancelled at item %d: %w", i, err)
+			}
+
+			result, err := n.processFunc(ctx, item)
+			if err != nil {
+				return nil, fmt.Errorf("batch item %d: process failed: %w", i, err)
+			}
+			results[i] = result
+		}
+	}
+
+	return results, nil
+}
+
+func (n *batchNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	resultsKey := KeyResults
+	if n.config != nil && n.config.ResultsKey != "" {
+		resultsKey = n.config.ResultsKey
+	}
+	shared.Set(resultsKey, execResult)
+	return DefaultAction, nil
+}
+
+// FlowInputs holds input parameters for a flow iteration in batch processing.
+// These parameters are merged into each flow's isolated SharedStore,
+// allowing each flow instance to have its own set of input data.
+//
+// Example:
+//
+//	inputs := flyt.FlowInputs{
+//	    "user_id": 123,
+//	    "action": "process",
+//	    "priority": "high",
+//	}
+type FlowInputs map[string]any
+
+// BatchFlowFunc returns input parameters for each flow iteration in batch processing.
+// This function is called during the Prep phase to determine how many flow instances
+// to run and what parameters each should receive.
+//
+// The function receives the parent flow's SharedStore and should return a slice
+// of FlowInputs, where each element represents parameters for one flow iteration.
+type BatchFlowFunc func(ctx context.Context, shared *SharedStore) ([]FlowInputs, error)
+
+// NewBatchFlow creates a flow that runs multiple times with different parameters.
+// Each iteration gets its own isolated SharedStore with merged parameters.
+//
+// Important: The flowFactory must create new flow instances for concurrent
+// execution to avoid race conditions. Do not reuse flow instances.
+//
+// Parameters:
+//   - flowFactory: Function that creates new flow instances
+//   - batchFunc: Function that returns parameters for each iteration
+//   - concurrent: If true, flows run concurrently
+//
+// Example:
+//
+//	flowFactory := func() *flyt.Flow {
+//	    // Create and return a new flow instance
+//	    return flyt.NewFlow(startNode)
+//	}
+//
+//	batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
+//	    users, _ := shared.Get("users")
+//	    var inputs []flyt.FlowInputs
+//	    for _, user := range users.([]User) {
+//	        inputs = append(inputs, flyt.FlowInputs{"user": user})
+//	    }
+//	    return inputs, nil
+//	}
+//
+//	batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true)
+func NewBatchFlow(flowFactory FlowFactory, batchFunc BatchFlowFunc, concurrent bool) *Flow {
+	batchNode := &batchFlowNode{
+		BaseNode:    NewBaseNode(),
+		flowFactory: flowFactory,
+		batchFunc:   batchFunc,
+		concurrent:  concurrent,
+		config:      DefaultBatchConfig(),
+	}
+	return NewFlow(batchNode)
+}
+
+// NewBatchFlowWithCountKey creates a batch flow with a custom key for storing the batch count.
+// After execution, the number of flows that were run is stored in the SharedStore
+// using the specified key instead of the default "batch_count" key.
+//
+// Parameters:
+//   - flowFactory: Function that creates new flow instances
+//   - batchFunc: Function that returns parameters for each iteration
+//   - concurrent: If true, flows run concurrently
+//   - countKey: SharedStore key to store the batch count
+//
+// Example:
+//
+//	batchFlow := flyt.NewBatchFlowWithCountKey(flowFactory, batchFunc, true, "processed_count")
+//	// After execution, retrieve count with: count, _ := shared.Get("processed_count")
+func NewBatchFlowWithCountKey(flowFactory FlowFactory, batchFunc BatchFlowFunc, concurrent bool, countKey string) *Flow {
+	config := DefaultBatchConfig()
+	config.BatchCountKey = countKey
+
+	batchNode := &batchFlowNode{
+		BaseNode:    NewBaseNode(),
+		flowFactory: flowFactory,
+		batchFunc:   batchFunc,
+		concurrent:  concurrent,
+		config:      config,
+	}
+	return NewFlow(batchNode)
+}
+
+// NewBatchFlowWithConfig creates a batch flow with custom configuration.
+// This provides full control over batch flow execution settings.
+//
+// Parameters:
+//   - flowFactory: Function that creates new flow instances
+//   - batchFunc: Function that returns parameters for each iteration
+//   - concurrent: If true, flows run concurrently
+//   - config: Custom batch configuration
+//
+// Example:
+//
+//	config := &flyt.BatchConfig{
+//	    MaxBatchSize:   100,      // Limit to 100 flows
+//	    MaxConcurrency: 5,        // Run max 5 flows concurrently
+//	    BatchCountKey:  "total",  // Store count in "total" key
+//	}
+//	batchFlow := flyt.NewBatchFlowWithConfig(flowFactory, batchFunc, true, config)
+func NewBatchFlowWithConfig(flowFactory FlowFactory, batchFunc BatchFlowFunc, concurrent bool, config *BatchConfig) *Flow {
+	batchNode := &batchFlowNode{
+		BaseNode:    NewBaseNode(),
+		flowFactory: flowFactory,
+		batchFunc:   batchFunc,
+		concurrent:  concurrent,
+		config:      config,
+	}
+	return NewFlow(batchNode)
+}
+
+type batchFlowNode struct {
+	*BaseNode
+	flowFactory FlowFactory
+	batchFunc   BatchFlowFunc
+	concurrent  bool
+	config      *BatchConfig
+}
+
+func (n *batchFlowNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	// Get batch parameters during prep phase
+	batchParams, err := n.batchFunc(ctx, shared)
+	if err != nil {
+		return nil, fmt.Errorf("batch func failed: %w", err)
+	}
+
+	// Return both params and shared data as prepResult
+	return map[string]any{
+		"batchParams": batchParams,
+		"sharedData":  shared.GetAll(),
+	}, nil
+}
+
+func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	// Extract data from prepResult
+	data, ok := prepResult.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid prepResult type %T, expected map[string]any", prepResult)
+	}
+
+	batchParams, ok := data["batchParams"].([]FlowInputs)
+	if !ok {
+		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid batchParams type in prepResult")
+	}
+
+	sharedData, ok := data["sharedData"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid sharedData type in prepResult")
+	}
+
+	// Validate batch size
+	if n.config != nil && n.config.MaxBatchSize > 0 && len(batchParams) > n.config.MaxBatchSize {
+		return nil, fmt.Errorf("batchFlowNode: exec failed: batch size %d exceeds maximum %d", len(batchParams), n.config.MaxBatchSize)
+	}
+
+	if len(batchParams) == 0 {
+		return 0, nil
+	}
+
+	if n.concurrent {
+		// Run flows concurrently with worker pool
+		maxWorkers := 10
+		if n.config != nil && n.config.MaxConcurrency > 0 {
+			maxWorkers = n.config.MaxConcurrency
+		}
+
+		pool := NewWorkerPool(maxWorkers)
+		defer pool.Close()
+
+		errors := make([]error, len(batchParams))
+		var errMu sync.Mutex
+		hasError := false
+
+		for i, params := range batchParams {
+			idx, p := i, params // Capture loop variables
+			sd := sharedData    // Capture shared data
+			pool.Submit(func() {
+				// Check context
+				if ctx.Err() != nil {
+					errMu.Lock()
+					errors[idx] = fmt.Errorf("batchFlowNode: flow %d cancelled: %w", idx, ctx.Err())
+					hasError = true
+					errMu.Unlock()
+					return
+				}
+
+				// Create a new flow instance for concurrent execution
+				flow := n.flowFactory()
+
+				// Create isolated shared store
+				localShared := NewSharedStore()
+
+				// Copy shared data
+				localShared.Merge(sd)
+
+				// Merge params
+				localShared.Merge(p)
+
+				if err := flow.Run(ctx, localShared); err != nil {
+					errMu.Lock()
+					errors[idx] = fmt.Errorf("batchFlowNode: flow %d failed: %w", idx, err)
+					hasError = true
+					errMu.Unlock()
+				}
+			})
+		}
+
+		pool.Wait()
+
+		if hasError {
+			// Collect non-nil errors
+			var batchErrors []error
+			for _, err := range errors {
+				if err != nil {
+					batchErrors = append(batchErrors, err)
+				}
+			}
+			return nil, &BatchError{Errors: batchErrors}
+		}
+	} else {
+		// Run flows sequentially
+		for i, params := range batchParams {
+			// Check context
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("batchFlowNode: exec cancelled at flow %d: %w", i, err)
+			}
+
+			// Create a new flow instance for each iteration
+			flow := n.flowFactory()
+
+			// Create isolated shared store for each iteration
+			iterShared := NewSharedStore()
+			iterShared.Merge(sharedData)
+			iterShared.Merge(params)
+
+			if err := flow.Run(ctx, iterShared); err != nil {
+				return nil, fmt.Errorf("batchFlowNode: flow %d failed: %w", i, err)
+			}
+		}
+	}
+
+	return len(batchParams), nil
+}
+
+func (n *batchFlowNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	if count, ok := execResult.(int); ok {
+		countKey := KeyBatchCount
+		if n.config != nil && n.config.BatchCountKey != "" {
+			countKey = n.config.BatchCountKey
+		}
+		shared.Set(countKey, count)
+	}
+	return DefaultAction, nil
+}
+
+
+
+================================================
+FILE: batch_test.go
+================================================
+package flyt
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// TestBatchErrorAggregation tests the BatchError type
+func TestBatchErrorAggregation(t *testing.T) {
+	// Test empty errors
+	be := &BatchError{Errors: []error{}}
+	if be.Error() != "batch: no errors recorded" {
+		t.Errorf("unexpected error message: %s", be.Error())
+	}
+
+	// Test single error
+	be = &BatchError{Errors: []error{errors.New("test error")}}
+	expected := "batch: test error"
+	if be.Error() != expected {
+		t.Errorf("expected %q, got %q", expected, be.Error())
+	}
+
+	// Test multiple errors
+	be = &BatchError{
+		Errors: []error{
+			errors.New("error 1"),
+			errors.New("error 2"),
+			errors.New("error 3"),
+		},
+	}
+	expected = "batch: 3 errors occurred, first: error 1"
+	if be.Error() != expected {
+		t.Errorf("expected %q, got %q", expected, be.Error())
+	}
+}
+
+// TestBatchNodeValidation tests batch node validation
+func TestBatchNodeValidation(t *testing.T) {
+	processFunc := func(ctx context.Context, item any) (any, error) {
+		return item, nil
+	}
+
+	config := &BatchConfig{
+		MaxBatchSize: 5,
+	}
+
+	node := NewBatchNodeWithConfig(processFunc, false, config)
+	shared := NewSharedStore()
+
+	// Test exceeding max batch size
+	items := make([]int, 10)
+	for i := range items {
+		items[i] = i
+	}
+	shared.Set("items", items)
+
+	ctx := context.Background()
+	_, err := Run(ctx, node, shared)
+	if err == nil {
+		t.Error("expected batch size validation error")
+	}
+
+	expectedErr := "batchNode: exec failed: batch size 10 exceeds maximum 5"
+	if err.Error() != fmt.Sprintf("run: exec failed after 1 retries: %s", expectedErr) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestBatchNodeConcurrency tests concurrent batch processing
+func TestBatchNodeConcurrency(t *testing.T) {
+	var counter int32
+	var maxConcurrent int32
+
+	processFunc := func(ctx context.Context, item any) (any, error) {
+		current := atomic.AddInt32(&counter, 1)
+		defer atomic.AddInt32(&counter, -1)
+
+		// Track max concurrent executions
+		for {
+			max := atomic.LoadInt32(&maxConcurrent)
+			if current <= max || atomic.CompareAndSwapInt32(&maxConcurrent, max, current) {
+				break
+			}
+		}
+
+		// Simulate work
+		time.Sleep(10 * time.Millisecond)
+		return item, nil
+	}
+
+	config := &BatchConfig{
+		MaxConcurrency: 3,
+	}
+
+	node := NewBatchNodeWithConfig(processFunc, true, config)
+	shared := NewSharedStore()
+	shared.Set("items", []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+
+	ctx := context.Background()
+	_, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Check max concurrency was respected
+	if maxConcurrent > 3 {
+		t.Errorf("max concurrency exceeded: %d > 3", maxConcurrent)
+	}
+
+	// Check results
+	results, _ := shared.Get("results")
+	if results == nil {
+		t.Error("results not found")
+	}
+}
+
+// TestBatchNodeSequential tests sequential batch processing
+func TestBatchNodeSequential(t *testing.T) {
+	var order []int
+	var mu sync.Mutex
+
+	processFunc := func(ctx context.Context, item any) (any, error) {
+		mu.Lock()
+		order = append(order, item.(int))
+		mu.Unlock()
+		return item, nil
+	}
+
+	node := NewBatchNode(processFunc, false) // sequential
+	shared := NewSharedStore()
+	shared.Set("items", []int{1, 2, 3, 4, 5})
+
+	ctx := context.Background()
+	_, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Check order is preserved
+	for i, v := range order {
+		if v != i+1 {
+			t.Errorf("order[%d]: expected %d, got %d", i, i+1, v)
+		}
+	}
+}
+
+// TestBatchNodeCustomKeys tests batch node with custom keys
+func TestBatchNodeCustomKeys(t *testing.T) {
+	processFunc := func(ctx context.Context, item any) (any, error) {
+		return fmt.Sprintf("processed_%v", item), nil
+	}
+
+	// Create batch node with custom keys
+	node := NewBatchNodeWithKeys(processFunc, false, "my_items", "my_results")
+
+	shared := NewSharedStore()
+	shared.Set("my_items", []string{"a", "b", "c"})
+
+	ctx := context.Background()
+	_, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Check results are stored with custom key
+	results, ok := shared.Get("my_results")
+	if !ok {
+		t.Error("results not found with custom key")
+	}
+
+	resultSlice, ok := results.([]any)
+	if !ok || len(resultSlice) != 3 {
+		t.Error("unexpected results format")
+	}
+
+	// Verify default keys were not used
+	if _, ok := shared.Get(KeyResults); ok {
+		t.Error("results should not be stored with default key")
+	}
+}
+
+// TestBatchFlowConcurrency tests concurrent batch flow execution
+func TestBatchFlowConcurrency(t *testing.T) {
+	var executionCount int32
+
+	// Factory creates new flow instances
+	flowFactory := func() *Flow {
+		node := &CounterNode{
+			BaseNode: NewBaseNode(),
+			counter:  &executionCount,
+		}
+		return NewFlow(node)
+	}
+
+	// Batch function returns parameters for each iteration
+	batchFunc := func(ctx context.Context, shared *SharedStore) ([]FlowInputs, error) {
+		params := make([]FlowInputs, 5)
+		for i := range params {
+			params[i] = FlowInputs{"index": i}
+		}
+		return params, nil
+	}
+
+	config := &BatchConfig{
+		MaxConcurrency: 3,
+	}
+
+	batchFlow := NewBatchFlowWithConfig(flowFactory, batchFunc, true, config)
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	err := batchFlow.Run(ctx, shared)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Check all flows executed
+	if atomic.LoadInt32(&executionCount) != 5 {
+		t.Errorf("expected 5 executions, got %d", executionCount)
+	}
+
+	// Check batch count was stored
+	count, ok := shared.Get(KeyBatchCount)
+	if !ok {
+		t.Error("batch_count not found in shared store")
+	}
+	if count != 5 {
+		t.Errorf("expected batch_count 5, got %v", count)
+	}
+}
+
+// TestBatchFlowCustomCountKey tests batch flow with custom count key
+func TestBatchFlowCustomCountKey(t *testing.T) {
+	// Factory creates new flow instances
+	flowFactory := func() *Flow {
+		node := &TestNode{
+			BaseNode: NewBaseNode(),
+			name:     "test",
+			action:   DefaultAction,
+		}
+		return NewFlow(node)
+	}
+
+	// Batch function returns parameters
+	batchFunc := func(ctx context.Context, shared *SharedStore) ([]FlowInputs, error) {
+		return []FlowInputs{
+			{"id": 1},
+			{"id": 2},
+			{"id": 3},
+		}, nil
+	}
+
+	// Create batch flow with custom count key
+	batchFlow := NewBatchFlowWithCountKey(flowFactory, batchFunc, false, "my_batch_count")
+
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	err := batchFlow.Run(ctx, shared)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Check custom count key was used
+	count, ok := shared.Get("my_batch_count")
+	if !ok {
+		t.Error("custom count key not found in shared store")
+	}
+	if count != 3 {
+		t.Errorf("expected count 3, got %v", count)
+	}
+
+	// Verify default key was not used
+	if _, ok := shared.Get(KeyBatchCount); ok {
+		t.Error("count should not be stored with default key")
+	}
+}
+
+// CounterNode counts executions
+type CounterNode struct {
+	*BaseNode
+	counter *int32
+}
+
+func (n *CounterNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	atomic.AddInt32(n.counter, 1)
+	return nil, nil
+}
+
+// BenchmarkBatchNodeProcessing benchmarks batch processing
+func BenchmarkBatchNodeProcessing(b *testing.B) {
+	processFunc := func(ctx context.Context, item any) (any, error) {
+		// Simulate some work
+		time.Sleep(time.Microsecond)
+		return item, nil
+	}
+
+	node := NewBatchNode(processFunc, true)
+	shared := NewSharedStore()
+
+	// Create test data
+	items := make([]int, 100)
+	for i := range items {
+		items[i] = i
+	}
+	shared.Set("items", items)
+
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := Run(ctx, node, shared)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+
+
+================================================
+FILE: flyt.go
+================================================
+// Package flyt is a minimalist workflow framework for Go, inspired by Pocket Flow.
+// It provides a simple graph-based abstraction for orchestrating tasks.
+//
+// Thread Safety:
+// When using concurrent batch operations, ensure that your Node implementations
+// are thread-safe. The framework provides SharedStore for safe concurrent access
+// to shared data.
+//
+// Example:
+//
+//	// Define a simple node
+//	type PrintNode struct {
+//	    *flyt.BaseNode
+//	}
+//
+//	func (n *PrintNode) Exec(ctx context.Context, prepResult any) (any, error) {
+//	    fmt.Println("Hello from node!")
+//	    return nil, nil
+//	}
+//
+//	// Create and run a flow
+//	node := &PrintNode{BaseNode: flyt.NewBaseNode()}
+//	shared := flyt.NewSharedStore()
+//
+//	ctx := context.Background()
+//	action, err := flyt.Run(ctx, node, shared)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+package flyt
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"sync"
+	"time"
+)
+
+// SharedStore provides thread-safe access to shared data across nodes in a flow.
+// It acts as a key-value store that can be safely accessed by multiple goroutines
+// during concurrent batch processing.
+//
+// Example:
+//
+//	shared := flyt.NewSharedStore()
+//	shared.Set("user_id", 123)
+//	shared.Set("config", map[string]any{"timeout": 30})
+//
+//	if val, ok := shared.Get("user_id"); ok {
+//	    userID := val.(int)
+//	    // Use userID
+//	}
+type SharedStore struct {
+	mu   sync.RWMutex
+	data map[string]any
+}
+
+// NewSharedStore creates a new thread-safe shared store.
+// The store is initialized empty and ready for use.
+func NewSharedStore() *SharedStore {
+	return &SharedStore{
+		data: make(map[string]any),
+	}
+}
+
+// Get retrieves a value from the store by key.
+// Returns the value and true if the key exists, or nil and false if not found.
+// This method is safe for concurrent access.
+func (s *SharedStore) Get(key string) (any, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	val, ok := s.data[key]
+	return val, ok
+}
+
+// Set stores a value in the store with the given key.
+// If the key already exists, its value is overwritten.
+// This method is safe for concurrent access.
+func (s *SharedStore) Set(key string, value any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[key] = value
+}
+
+// GetAll returns a copy of all data in the store.
+// The returned map is a shallow copy and can be safely modified
+// without affecting the store's internal data.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetAll() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	copy := make(map[string]any, len(s.data))
+	for k, v := range s.data {
+		copy[k] = v
+	}
+	return copy
+}
+
+// Merge merges another map into the store.
+// Existing keys are overwritten with values from the provided map.
+// If the provided map is nil, this method does nothing.
+// This method is safe for concurrent access.
+func (s *SharedStore) Merge(data map[string]any) {
+	if data == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range data {
+		s.data[k] = v
+	}
+}
+
+// Action represents the next action to take after a node executes.
+// Actions are used to determine flow control in workflows, allowing
+// nodes to direct execution to different paths based on their results.
+//
+// Example:
+//
+//	const (
+//	    ActionSuccess Action = "success"
+//	    ActionRetry   Action = "retry"
+//	    ActionFail    Action = "fail"
+//	)
+type Action string
+
+const (
+	// DefaultAction is the default action if none is specified.
+	// Flows use this when a node doesn't explicitly return an action.
+	DefaultAction Action = "default"
+
+	// KeyItems is the shared store key for items to be processed.
+	// Batch nodes look for items under this key by default.
+	KeyItems = "items"
+
+	// KeyResults is the shared store key for processing results.
+	// Batch nodes store their results under this key by default.
+	KeyResults = "results"
+
+	// KeyBatchCount is the shared store key for batch count.
+	// Batch flows store the number of iterations under this key.
+	KeyBatchCount = "batch_count"
+)
+
+// Node is the interface that all nodes must implement.
+//
+// Important: Nodes should not be shared across concurrent flow executions.
+// If you need to run the same logic concurrently, create separate node instances.
+type Node interface {
+	// Prep reads and preprocesses data from shared store
+	Prep(ctx context.Context, shared *SharedStore) (any, error)
+
+	// Exec executes the main logic with optional retries
+	Exec(ctx context.Context, prepResult any) (any, error)
+
+	// Post processes results and writes back to shared store
+	Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error)
+}
+
+// BaseNode provides a base implementation of the Node interface.
+// It includes common functionality like retry configuration and default
+// implementations of Prep, Exec, and Post methods that can be overridden.
+//
+// BaseNode is designed to be embedded in custom node implementations:
+//
+//	type MyNode struct {
+//	    *flyt.BaseNode
+//	    // custom fields
+//	}
+//
+//	func (n *MyNode) Exec(ctx context.Context, prepResult any) (any, error) {
+//	    // custom implementation
+//	}
+type BaseNode struct {
+	mu         sync.RWMutex
+	maxRetries int
+	wait       time.Duration
+}
+
+// NewBaseNode creates a new BaseNode with the provided options.
+// By default, maxRetries is set to 1 (no retries) and wait is 0.
+//
+// Example:
+//
+//	node := flyt.NewBaseNode(
+//	    flyt.WithMaxRetries(3),
+//	    flyt.WithWait(time.Second),
+//	)
+func NewBaseNode(opts ...NodeOption) *BaseNode {
+	n := &BaseNode{
+		maxRetries: 1,
+		wait:       0,
+	}
+
+	for _, opt := range opts {
+		opt(n)
+	}
+
+	return n
+}
+
+// NodeOption is a function that configures a BaseNode.
+// Options can be passed to NewBaseNode to customize its behavior.
+type NodeOption func(*BaseNode)
+
+// WithMaxRetries sets the maximum number of retries for the Exec phase.
+// The default is 1 (no retries). Setting this to a value greater than 1
+// enables automatic retry on Exec failures.
+//
+// Example:
+//
+//	node := flyt.NewBaseNode(flyt.WithMaxRetries(3))
+func WithMaxRetries(retries int) NodeOption {
+	return func(n *BaseNode) {
+		n.maxRetries = retries
+	}
+}
+
+// WithWait sets the wait duration between retries.
+// This only applies when maxRetries is greater than 1.
+// The default is 0 (no wait between retries).
+//
+// Example:
+//
+//	node := flyt.NewBaseNode(
+//	    flyt.WithMaxRetries(3),
+//	    flyt.WithWait(time.Second * 2),
+//	)
+func WithWait(wait time.Duration) NodeOption {
+	return func(n *BaseNode) {
+		n.wait = wait
+	}
+}
+
+// GetMaxRetries returns the maximum number of retries configured for this node.
+// This method is thread-safe.
+func (n *BaseNode) GetMaxRetries() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.maxRetries
+}
+
+// GetWait returns the wait duration between retries configured for this node.
+// This method is thread-safe.
+func (n *BaseNode) GetWait() time.Duration {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.wait
+}
+
+// Prep is the default prep implementation that returns nil.
+// Override this method in your node implementation to read and preprocess
+// data from the SharedStore before execution.
+func (n *BaseNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	return nil, nil
+}
+
+// Exec is the default exec implementation that returns nil.
+// This method should be overridden in your node implementation to provide
+// the main processing logic.
+func (n *BaseNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	return nil, nil
+}
+
+// Post is the default post implementation that returns DefaultAction.
+// Override this method in your node implementation to process results
+// and determine the next action in the flow.
+func (n *BaseNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	return DefaultAction, nil
+}
+
+// ExecFallback handles errors after all retries are exhausted.
+// The default implementation simply returns the error.
+// Override this method to provide custom fallback behavior.
+func (n *BaseNode) ExecFallback(prepResult any, err error) (any, error) {
+	return nil, err
+}
+
+// RetryableNode is a node that supports automatic retries on Exec failures.
+// Nodes implementing this interface can specify retry behavior through
+// GetMaxRetries and GetWait methods.
+type RetryableNode interface {
+	Node
+	GetMaxRetries() int
+	GetWait() time.Duration
+}
+
+// FallbackNode is a node that supports custom fallback behavior on error.
+// When all retries are exhausted, the ExecFallback method is called to
+// provide an alternative result or handle the error gracefully.
+type FallbackNode interface {
+	ExecFallback(prepResult any, err error) (any, error)
+}
+
+// Run executes a node with the standard prep->exec->post lifecycle.
+// This is the main entry point for executing individual nodes.
+//
+// The execution flow is:
+//  1. Prep: Read and preprocess data from SharedStore
+//  2. Exec: Execute main logic with automatic retries if configured
+//  3. Post: Process results and write back to SharedStore
+//
+// If the node implements RetryableNode, the Exec phase will automatically
+// retry on failure according to the configured settings.
+//
+// If the node implements FallbackNode and all retries fail, ExecFallback
+// is called to provide alternative handling.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//   - node: The node to execute
+//   - shared: SharedStore for data exchange
+//
+// Returns:
+//   - Action: The next action to take in the flow
+//   - error: Any error that occurred during execution
+//
+// Example:
+//
+//	node := &MyNode{BaseNode: flyt.NewBaseNode()}
+//	shared := flyt.NewSharedStore()
+//	shared.Set("input", "data")
+//
+//	action, err := flyt.Run(ctx, node, shared)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
+	// Check context before each phase
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("run: context cancelled: %w", err)
+	}
+
+	// Prep phase
+	prepResult, err := node.Prep(ctx, shared)
+	if err != nil {
+		return "", fmt.Errorf("run: prep failed: %w", err)
+	}
+
+	// Check context again
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("run: context cancelled after prep: %w", err)
+	}
+
+	// Get retry settings if available
+	var maxRetries int = 1
+	var wait time.Duration = 0
+
+	if retryable, ok := node.(RetryableNode); ok {
+		maxRetries = retryable.GetMaxRetries()
+		wait = retryable.GetWait()
+	}
+
+	// Exec phase with retries
+	var execResult any
+	var execErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Check context before retry
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("run: context cancelled during retry: %w", err)
+		}
+
+		if attempt > 0 && wait > 0 {
+			select {
+			case <-time.After(wait):
+				// Continue with retry
+			case <-ctx.Done():
+				return "", fmt.Errorf("run: context cancelled during wait: %w", ctx.Err())
+			}
+		}
+
+		execResult, execErr = node.Exec(ctx, prepResult)
+		if execErr == nil {
+			break
+		}
+	}
+
+	// Handle exec failure
+	if execErr != nil {
+		if fallback, ok := node.(FallbackNode); ok {
+			execResult, execErr = fallback.ExecFallback(prepResult, execErr)
+		}
+		if execErr != nil {
+			return "", fmt.Errorf("run: exec failed after %d retries: %w", maxRetries, execErr)
+		}
+	}
+
+	// Post phase
+	action, err := node.Post(ctx, shared, prepResult, execResult)
+	if err != nil {
+		return "", fmt.Errorf("run: post failed: %w", err)
+	}
+
+	if action == "" {
+		action = DefaultAction
+	}
+
+	return action, nil
+}
+
+// Flow represents a workflow of connected nodes.
+// A Flow is itself a Node, allowing flows to be nested within other flows.
+// Nodes are connected via actions, creating a directed graph of execution.
+//
+// Example:
+//
+//	// Create nodes
+//	validateNode := &ValidateNode{BaseNode: flyt.NewBaseNode()}
+//	processNode := &ProcessNode{BaseNode: flyt.NewBaseNode()}
+//	errorNode := &ErrorNode{BaseNode: flyt.NewBaseNode()}
+//
+//	// Create flow
+//	flow := flyt.NewFlow(validateNode)
+//	flow.Connect(validateNode, ActionSuccess, processNode)
+//	flow.Connect(validateNode, ActionFail, errorNode)
+//
+//	// Run flow
+//	err := flow.Run(ctx, shared)
+type Flow struct {
+	*BaseNode
+	start       Node
+	transitions map[Node]map[Action]Node
+}
+
+// NewFlow creates a new Flow with a start node.
+// The flow begins execution at the start node and follows
+// transitions based on the actions returned by each node.
+//
+// Parameters:
+//   - start: The first node to execute in the flow
+//
+// Example:
+//
+//	flow := flyt.NewFlow(startNode)
+func NewFlow(start Node) *Flow {
+	return &Flow{
+		BaseNode:    NewBaseNode(),
+		start:       start,
+		transitions: make(map[Node]map[Action]Node),
+	}
+}
+
+// Connect adds a transition from one node to another based on an action.
+// When the 'from' node returns the specified action, execution continues
+// with the 'to' node. Multiple actions can be connected from a single node.
+//
+// Parameters:
+//   - from: The source node
+//   - action: The action that triggers this transition
+//   - to: The destination node
+//
+// Example:
+//
+//	flow.Connect(nodeA, "success", nodeB)
+//	flow.Connect(nodeA, "retry", nodeA)  // Self-loop for retry
+//	flow.Connect(nodeA, "fail", errorNode)
+func (f *Flow) Connect(from Node, action Action, to Node) {
+	if f.transitions[from] == nil {
+		f.transitions[from] = make(map[Action]Node)
+	}
+	f.transitions[from][action] = to
+}
+
+// Run executes the flow starting from the start node.
+// This is a convenience method that wraps the standard Run function.
+// The flow executes nodes in sequence based on their action transitions
+// until no more transitions are available or an error occurs.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//   - shared: SharedStore for data exchange between nodes
+//
+// Returns:
+//   - error: Any error that occurred during flow execution
+func (f *Flow) Run(ctx context.Context, shared *SharedStore) error {
+	// Use the standard Run function to execute this flow as a node
+	_, err := Run(ctx, f, shared)
+	return err
+}
+
+// Prep implements Node interface for Flow
+func (f *Flow) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	// Pass the shared store to Exec
+	return shared, nil
+}
+
+// Exec orchestrates the flow execution by running nodes in sequence
+func (f *Flow) Exec(ctx context.Context, prepResult any) (any, error) {
+	// Extract shared store from prepResult
+	shared, ok := prepResult.(*SharedStore)
+	if !ok {
+		return nil, fmt.Errorf("flow: exec failed: invalid prepResult type %T, expected *SharedStore", prepResult)
+	}
+
+	if f.start == nil {
+		return nil, fmt.Errorf("flow: exec failed: no start node configured")
+	}
+
+	current := f.start
+	var lastAction Action
+
+	for current != nil {
+		// Check context
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("flow: exec cancelled: %w", err)
+		}
+
+		// Run the current node using the standard Run function
+		action, err := Run(ctx, current, shared)
+		if err != nil {
+			return nil, err
+		}
+
+		lastAction = action
+
+		// Find next node based on action
+		if transitions, ok := f.transitions[current]; ok {
+			if next, ok := transitions[action]; ok {
+				current = next
+			} else {
+				// No transition for this action, flow ends
+				break
+			}
+		} else {
+			// No transitions defined for this node, flow ends
+			break
+		}
+	}
+
+	// Return the last action as the result
+	return lastAction, nil
+}
+
+// Post implements Node interface for Flow
+func (f *Flow) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	// Return the last action from the flow execution
+	if action, ok := execResult.(Action); ok {
+		return action, nil
+	}
+	return DefaultAction, nil
+}
+
+// WorkerPool manages concurrent task execution with a fixed number of workers.
+// It provides a simple way to limit concurrency and execute tasks in parallel.
+// WorkerPool is used internally by batch processing nodes but can also be
+// used directly for custom concurrent operations.
+//
+// Example:
+//
+//	pool := flyt.NewWorkerPool(5)
+//	defer pool.Close()
+//
+//	for _, item := range items {
+//	    item := item // capture loop variable
+//	    pool.Submit(func() {
+//	        // Process item
+//	    })
+//	}
+//
+//	pool.Wait()
+type WorkerPool struct {
+	workers int
+	tasks   chan func()
+	wg      sync.WaitGroup
+	done    chan struct{}
+}
+
+// NewWorkerPool creates a new worker pool with the specified number of workers.
+// If workers is less than or equal to 0, it defaults to 1.
+// The pool starts workers immediately and is ready to accept tasks.
+//
+// Parameters:
+//   - workers: Number of concurrent workers
+//
+// Returns:
+//   - *WorkerPool: A new worker pool ready for use
+//
+// Remember to call Close() when done to clean up resources.
+func NewWorkerPool(workers int) *WorkerPool {
+	if workers <= 0 {
+		workers = 1
+	}
+
+	p := &WorkerPool{
+		workers: workers,
+		tasks:   make(chan func(), workers*2),
+		done:    make(chan struct{}),
+	}
+
+	// Start workers
+	for i := 0; i < workers; i++ {
+		go p.worker()
+	}
+
+	return p
+}
+
+func (p *WorkerPool) worker() {
+	for {
+		select {
+		case task, ok := <-p.tasks:
+			if !ok {
+				return
+			}
+			task()
+		case <-p.done:
+			return
+		}
+	}
+}
+
+// Submit submits a task to the pool for execution.
+// The task will be executed by one of the available workers.
+// This method blocks if all workers are busy and the task buffer is full.
+//
+// Parameters:
+//   - task: Function to execute
+func (p *WorkerPool) Submit(task func()) {
+	p.wg.Add(1)
+	p.tasks <- func() {
+		defer p.wg.Done()
+		task()
+	}
+}
+
+// Wait waits for all submitted tasks to complete.
+// This method blocks until all tasks have finished executing.
+func (p *WorkerPool) Wait() {
+	p.wg.Wait()
+}
+
+// Close closes the worker pool and waits for all workers to finish.
+// After calling Close, no new tasks can be submitted.
+// This method should be called when the pool is no longer needed
+// to properly clean up resources.
+func (p *WorkerPool) Close() {
+	close(p.done)
+	close(p.tasks)
+}
+
+// ToSlice converts various types to []any for batch processing.
+// This utility function handles common slice types and single values,
+// making it easier to work with batch operations.
+//
+// Supported types:
+//   - []any: returned as-is
+//   - []string, []int, []float64: converted to []any
+//   - []map[string]any: converted to []any
+//   - Other slice types: converted using reflection
+//   - Single values: wrapped in a slice
+//   - nil: returns empty slice
+//
+// Example:
+//
+//	items1 := flyt.ToSlice([]string{"a", "b", "c"})  // []any{"a", "b", "c"}
+//	items2 := flyt.ToSlice("single")                 // []any{"single"}
+//	items3 := flyt.ToSlice(nil)                      // []any{}
+func ToSlice(v any) []any {
+	if v == nil {
+		return []any{}
+	}
+
+	switch val := v.(type) {
+	case []any:
+		return val
+	case []string:
+		result := make([]any, len(val))
+		for i, v := range val {
+			result[i] = v
+		}
+		return result
+	case []int:
+		result := make([]any, len(val))
+		for i, v := range val {
+			result[i] = v
+		}
+		return result
+	case []float64:
+		result := make([]any, len(val))
+		for i, v := range val {
+			result[i] = v
+		}
+		return result
+	case []map[string]any:
+		result := make([]any, len(val))
+		for i, v := range val {
+			result[i] = v
+		}
+		return result
+	default:
+		// Try reflection for other slice types
+		rv := reflect.ValueOf(v)
+		if rv.Kind() == reflect.Slice {
+			result := make([]any, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				result[i] = rv.Index(i).Interface()
+			}
+			return result
+		}
+		return []any{v} // Single item
+	}
+}
+
+// FlowFactory creates new instances of a flow.
+// This is used by batch flow operations to create isolated flow instances
+// for concurrent execution. Each call should return a new flow instance
+// to avoid race conditions.
+//
+// Example:
+//
+//	factory := func() *flyt.Flow {
+//	    node1 := &ProcessNode{BaseNode: flyt.NewBaseNode()}
+//	    node2 := &SaveNode{BaseNode: flyt.NewBaseNode()}
+//
+//	    flow := flyt.NewFlow(node1)
+//	    flow.Connect(node1, flyt.DefaultAction, node2)
+//	    return flow
+//	}
+type FlowFactory func() *Flow
+
+// CustomNode is a node implementation that uses custom functions
+// for Prep, Exec, and Post phases. This allows creating nodes
+// without defining new types, useful for simple operations.
+//
+// Example:
+//
+//	node := &flyt.CustomNode{
+//	    BaseNode: flyt.NewBaseNode(),
+//	    execFunc: func(ctx context.Context, prepResult any) (any, error) {
+//	        // Process data
+//	        return result, nil
+//	    },
+//	}
+type CustomNode struct {
+	*BaseNode
+	prepFunc         func(context.Context, *SharedStore) (any, error)
+	execFunc         func(context.Context, any) (any, error)
+	postFunc         func(context.Context, *SharedStore, any, any) (Action, error)
+	execFallbackFunc func(any, error) (any, error)
+}
+
+// Prep implements Node.Prep by calling the custom prepFunc if provided
+func (n *CustomNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	if n.prepFunc != nil {
+		return n.prepFunc(ctx, shared)
+	}
+	return n.BaseNode.Prep(ctx, shared)
+}
+
+// Exec implements Node.Exec by calling the custom execFunc if provided
+func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	if n.execFunc != nil {
+		return n.execFunc(ctx, prepResult)
+	}
+	return n.BaseNode.Exec(ctx, prepResult)
+}
+
+// Post implements Node.Post by calling the custom postFunc if provided
+func (n *CustomNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	if n.postFunc != nil {
+		return n.postFunc(ctx, shared, prepResult, execResult)
+	}
+	return n.BaseNode.Post(ctx, shared, prepResult, execResult)
+}
+
+// ExecFallback implements FallbackNode.ExecFallback by calling the custom execFallbackFunc if provided
+func (n *CustomNode) ExecFallback(prepResult any, err error) (any, error) {
+	if n.execFallbackFunc != nil {
+		return n.execFallbackFunc(prepResult, err)
+	}
+	return n.BaseNode.ExecFallback(prepResult, err)
+}
+
+// NewNode creates a new node with custom function implementations.
+// This is a convenience function for creating nodes without defining new types.
+// It accepts both NodeOption (for BaseNode configuration) and CustomNodeOption
+// (for custom function implementations).
+//
+// Parameters:
+//   - opts: Mix of NodeOption and CustomNodeOption values
+//
+// Example:
+//
+//	node := flyt.NewNode(
+//	    flyt.WithMaxRetries(3),
+//	    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+//	        // Process data
+//	        return processedData, nil
+//	    }),
+//	    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+//	        shared.Set("result", execResult)
+//	        return flyt.DefaultAction, nil
+//	    }),
+//	)
+func NewNode(opts ...any) Node {
+	node := &CustomNode{
+		BaseNode: NewBaseNode(),
+	}
+
+	// Separate options by type
+	var customOpts []CustomNodeOption
+	var baseOpts []NodeOption
+
+	for _, opt := range opts {
+		switch o := opt.(type) {
+		case CustomNodeOption:
+			customOpts = append(customOpts, o)
+		case NodeOption:
+			baseOpts = append(baseOpts, o)
+		case func(*BaseNode):
+			baseOpts = append(baseOpts, NodeOption(o))
+		default:
+			// Ignore unknown option types
+		}
+	}
+
+	// Apply base node options first
+	for _, opt := range baseOpts {
+		opt(node.BaseNode)
+	}
+
+	// Apply custom node options
+	for _, opt := range customOpts {
+		opt.apply(node)
+	}
+
+	return node
+}
+
+// CustomNodeOption is an option for configuring a CustomNode.
+// It allows setting custom implementations for Prep, Exec, and Post methods.
+type CustomNodeOption interface {
+	apply(*CustomNode)
+}
+
+// customNodeOption is the internal implementation of CustomNodeOption
+type customNodeOption struct {
+	f func(*CustomNode)
+}
+
+func (o *customNodeOption) apply(n *CustomNode) {
+	o.f(n)
+}
+
+// WithPrepFunc sets a custom Prep implementation for a CustomNode.
+// The provided function will be called during the Prep phase to read
+// and preprocess data from the SharedStore.
+//
+// Example:
+//
+//	flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+//	    data, _ := shared.Get("input")
+//	    // Preprocess data
+//	    return preprocessedData, nil
+//	})
+func WithPrepFunc(fn func(context.Context, *SharedStore) (any, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.prepFunc = fn
+		},
+	}
+}
+
+// WithExecFunc sets a custom Exec implementation for a CustomNode.
+// The provided function will be called during the Exec phase with
+// the result from Prep as input.
+//
+// Example:
+//
+//	flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+//	    // Process the data
+//	    return processedResult, nil
+//	})
+func WithExecFunc(fn func(context.Context, any) (any, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.execFunc = fn
+		},
+	}
+}
+
+// WithPostFunc sets a custom Post implementation for a CustomNode.
+// The provided function will be called during the Post phase to process
+// results and determine the next action.
+//
+// Example:
+//
+//	flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+//	    shared.Set("output", execResult)
+//	    if success {
+//	        return "success", nil
+//	    }
+//	    return "retry", nil
+//	})
+func WithPostFunc(fn func(context.Context, *SharedStore, any, any) (Action, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.postFunc = fn
+		},
+	}
+}
+
+// WithExecFallbackFunc sets a custom ExecFallback implementation for a CustomNode.
+// The provided function will be called when Exec fails after all retries are exhausted.
+// This allows for custom error handling or returning a default value.
+//
+// Example:
+//
+//	flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+//	    log.Printf("Exec failed after retries: %v", err)
+//	    // Return nil to indicate failure, which can be handled in Post
+//	    return nil, nil
+//	})
+func WithExecFallbackFunc(fn func(any, error) (any, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.execFallbackFunc = fn
+		},
+	}
+}
+
+
+
+================================================
+FILE: flyt_test.go
+================================================
+package flyt
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+)
+
+// TestSharedStoreConcurrency tests concurrent access to SharedStore
+func TestSharedStoreConcurrency(t *testing.T) {
+	store := NewSharedStore()
+	var wg sync.WaitGroup
+
+	// Concurrent writes
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			store.Set(fmt.Sprintf("key%d", n), n)
+		}(i)
+	}
+
+	// Concurrent reads
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			store.Get(fmt.Sprintf("key%d", n))
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify all values
+	for i := 0; i < 100; i++ {
+		val, ok := store.Get(fmt.Sprintf("key%d", i))
+		if !ok {
+			t.Errorf("key%d not found", i)
+		}
+		if val != i {
+			t.Errorf("key%d: expected %d, got %v", i, i, val)
+		}
+	}
+}
+
+// TestSharedStoreGetAll tests GetAll returns a copy
+func TestSharedStoreGetAll(t *testing.T) {
+	store := NewSharedStore()
+	store.Set("key1", "value1")
+	store.Set("key2", "value2")
+
+	// Get all data
+	data := store.GetAll()
+
+	// Modify the returned map
+	data["key1"] = "modified"
+	data["key3"] = "new"
+
+	// Original store should be unchanged
+	val, _ := store.Get("key1")
+	if val != "value1" {
+		t.Errorf("store was modified: expected value1, got %v", val)
+	}
+
+	_, ok := store.Get("key3")
+	if ok {
+		t.Error("store has key3 which should not exist")
+	}
+}
+
+// TestSharedStoreMerge tests the Merge method
+func TestSharedStoreMerge(t *testing.T) {
+	store := NewSharedStore()
+	store.Set("key1", "value1")
+	store.Set("key2", "value2")
+
+	// Merge new data
+	newData := map[string]any{
+		"key2": "updated",
+		"key3": "new",
+	}
+	store.Merge(newData)
+
+	// Check results
+	val1, _ := store.Get("key1")
+	if val1 != "value1" {
+		t.Errorf("key1: expected value1, got %v", val1)
+	}
+
+	val2, _ := store.Get("key2")
+	if val2 != "updated" {
+		t.Errorf("key2: expected updated, got %v", val2)
+	}
+
+	val3, _ := store.Get("key3")
+	if val3 != "new" {
+		t.Errorf("key3: expected new, got %v", val3)
+	}
+}
+
+// SlowNode is a test node that takes time to execute
+type SlowNode struct {
+	*BaseNode
+	delay time.Duration
+}
+
+func (n *SlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	select {
+	case <-time.After(n.delay):
+		return "completed", nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestContextCancellation tests context cancellation
+func TestContextCancellation(t *testing.T) {
+	node := &SlowNode{
+		BaseNode: NewBaseNode(),
+		delay:    500 * time.Millisecond,
+	}
+	shared := NewSharedStore()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := Run(ctx, node, shared)
+	if err == nil {
+		t.Error("expected context cancellation error")
+	}
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got %v", err)
+	}
+}
+
+// TestContextCancellationDuringRetry tests cancellation during retry wait
+func TestContextCancellationDuringRetry(t *testing.T) {
+	attempts := 0
+	node := &RetryNode{
+		BaseNode: NewBaseNode(
+			WithMaxRetries(3),
+			WithWait(200*time.Millisecond),
+		),
+		onExec: func() error {
+			attempts++
+			return errors.New("retry me")
+		},
+	}
+
+	shared := NewSharedStore()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	_, err := Run(ctx, node, shared)
+	if err == nil {
+		t.Error("expected context cancellation error")
+	}
+
+	// Should have attempted once, then cancelled during wait
+	if attempts != 1 {
+		t.Errorf("expected 1 attempt, got %d", attempts)
+	}
+}
+
+// RetryNode is a test node for retry logic
+type RetryNode struct {
+	*BaseNode
+	attempts int
+	onExec   func() error
+}
+
+func (n *RetryNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	n.attempts++
+	if n.onExec != nil {
+		return nil, n.onExec()
+	}
+	if n.attempts < 3 {
+		return nil, errors.New("retry me")
+	}
+	return "success", nil
+}
+
+// TestRetryLogic tests retry functionality
+func TestRetryLogic(t *testing.T) {
+	node := &RetryNode{
+		BaseNode: NewBaseNode(
+			WithMaxRetries(3),
+			WithWait(10*time.Millisecond),
+		),
+	}
+
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	action, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if action != DefaultAction {
+		t.Errorf("expected DefaultAction, got %v", action)
+	}
+
+	if node.attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", node.attempts)
+	}
+}
+
+// TestBatchErrorAggregation tests error aggregation in batch operations
+func TestFlowExecution(t *testing.T) {
+	// Create nodes
+	node1 := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "node1",
+		action:   "next",
+	}
+	node2 := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "node2",
+		action:   DefaultAction,
+	}
+
+	// Create flow
+	flow := NewFlow(node1)
+	flow.Connect(node1, "next", node2)
+
+	// Execute
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	err := flow.Run(ctx, shared)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Check both nodes executed
+	if !node1.executed {
+		t.Error("node1 not executed")
+	}
+	if !node2.executed {
+		t.Error("node2 not executed")
+	}
+}
+
+// TestNode is a simple test node
+type TestNode struct {
+	*BaseNode
+	name     string
+	action   Action
+	executed bool
+	postFunc func(context.Context, *SharedStore, any, any) (Action, error)
+}
+
+func (n *TestNode) Exec(ctx context.Context, prepResult any) (any, error) {
+	n.executed = true
+	return n.name, nil
+}
+
+func (n *TestNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	if n.postFunc != nil {
+		return n.postFunc(ctx, shared, prepResult, execResult)
+	}
+	shared.Set(n.name+"_result", execResult)
+	return n.action, nil
+}
+
+// TestBatchFlowCustomCountKey tests batch flow with custom count key
+
+// TestNestedFlowExecution tests flows within flows
+func TestNestedFlowExecution(t *testing.T) {
+	// Create inner flow
+	innerNode := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "inner",
+		action:   DefaultAction,
+	}
+	innerFlow := NewFlow(innerNode)
+
+	// Create outer flow
+	outerNode := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "outer",
+		action:   "next",
+	}
+	outerFlow := NewFlow(outerNode)
+	outerFlow.Connect(outerNode, "next", innerFlow)
+
+	// Execute
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	err := outerFlow.Run(ctx, shared)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Check both nodes executed
+	if !outerNode.executed {
+		t.Error("outer node not executed")
+	}
+	if !innerNode.executed {
+		t.Error("inner node not executed")
+	}
+}
+
+// BenchmarkSharedStoreConcurrentAccess benchmarks concurrent store access
+func BenchmarkSharedStoreConcurrentAccess(b *testing.B) {
+	store := NewSharedStore()
+
+	// Pre-populate store
+	for i := 0; i < 100; i++ {
+		store.Set(fmt.Sprintf("key%d", i), i)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			if i%2 == 0 {
+				store.Get(fmt.Sprintf("key%d", i%100))
+			} else {
+				store.Set(fmt.Sprintf("key%d", i%100), i)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkBatchNodeProcessing benchmarks batch processing
+
+
+
+================================================
+FILE: go.mod
+================================================
+module github.com/mark3labs/flyt
+
+go 1.23
+
+
+================================================
+FILE: LICENSE
+================================================
+MIT License
+
+Copyright (c) 2025 Mark III Labs LLC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================
+FILE: www/README.md
+================================================
+# Flyt Documentation
+
+This directory contains the documentation website for Flyt, built with [Vocs](https://vocs.dev).
+
+## Development
+
+Install dependencies:
+
+```bash
+bun install
+# or
+npm install
+```
+
+Start the development server:
+
+```bash
+bun dev
+# or
+npm run dev
+```
+
+The documentation will be available at http://localhost:5173
+
+## Building
+
+Build the documentation for production:
+
+```bash
+bun build
+# or
+npm run build
+```
+
+Preview the production build:
+
+```bash
+bun preview
+# or
+npm run preview
+```
+
+## Structure
+
+```
+www/
+├── docs/
+│   ├── pages/           # Documentation pages (MDX)
+│   │   ├── index.mdx    # Landing page
+│   │   ├── getting-started/
+│   │   ├── concepts/
+│   │   ├── patterns/
+│   │   ├── advanced/
+│   │   └── examples/
+│   └── public/          # Static assets
+│       └── flyt-logo.png
+├── vocs.config.ts       # Vocs configuration
+├── package.json
+└── README.md
+```
+
+## Adding Documentation
+
+1. Create a new `.mdx` file in the appropriate directory under `docs/pages/`
+2. Add the page to the sidebar in `vocs.config.ts`
+3. Use MDX features for rich content (code blocks, components, etc.)
+
+## Deployment
+
+The documentation can be deployed to any static hosting service:
+
+- Vercel
+- Netlify
+- GitHub Pages
+- Cloudflare Pages
+
+Build the docs and deploy the `dist` directory.
+
+
+================================================
+FILE: www/package.json
+================================================
+{
+  "name": "www",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vocs dev",
+    "build": "vocs build",
+    "preview": "vocs preview"
+  },
+  "dependencies": {
+    "react": "latest",
+    "react-dom": "latest",
+    "vocs": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "typescript": "latest"
+  }
+}
+
+
+
+================================================
+FILE: www/tsconfig.json
+================================================
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["**/*.ts", "**/*.tsx"]
+}
+
+
+
+================================================
+FILE: www/vocs.config.ts
+================================================
+import { defineConfig } from 'vocs'
+
+export default defineConfig({
+  title: 'Flyt',
+  description: 'A minimalist workflow framework for Go with zero dependencies',
+  baseUrl: 'https://go-flyt.dev',
+  basePath: '/',
+  logoUrl: '/flyt-logo.png',
+  sidebar: [
+    {
+      text: 'Introduction',
+      link: '/',
+    },
+    {
+      text: 'Getting Started',
+      items: [
+        {
+          text: 'Installation',
+          link: '/getting-started/installation',
+        },
+        {
+          text: 'Quick Start',
+          link: '/getting-started/quick-start',
+        },
+        {
+          text: 'Project Template',
+          link: '/getting-started/template',
+        },
+      ],
+    },
+    {
+      text: 'Core Concepts',
+      items: [
+        {
+          text: 'Nodes',
+          link: '/concepts/nodes',
+        },
+        {
+          text: 'Actions',
+          link: '/concepts/actions',
+        },
+        {
+          text: 'Flows',
+          link: '/concepts/flows',
+        },
+        {
+          text: 'Shared Store',
+          link: '/concepts/shared-store',
+        },
+      ],
+    },
+    {
+      text: 'Patterns',
+      items: [
+        {
+          text: 'Configuration via Closures',
+          link: '/patterns/closures',
+        },
+        {
+          text: 'Error Handling & Retries',
+          link: '/patterns/error-handling',
+        },
+        {
+          text: 'Fallback on Failure',
+          link: '/patterns/fallback',
+        },
+        {
+          text: 'Conditional Branching',
+          link: '/patterns/branching',
+        },
+      ],
+    },
+    {
+      text: 'Advanced',
+      items: [
+        {
+          text: 'Custom Node Types',
+          link: '/advanced/custom-nodes',
+        },
+        {
+          text: 'Batch Processing',
+          link: '/advanced/batch-processing',
+        },
+        {
+          text: 'Batch Flows',
+          link: '/advanced/batch-flows',
+        },
+        {
+          text: 'Nested Flows',
+          link: '/advanced/nested-flows',
+        },
+        {
+          text: 'Flow as Node',
+          link: '/advanced/flow-as-node',
+        },
+        {
+          text: 'Worker Pool',
+          link: '/advanced/worker-pool',
+        },
+        {
+          text: 'Utilities',
+          link: '/advanced/utilities',
+        },
+      ],
+    },
+    {
+      text: 'Examples',
+      items: [
+        {
+          text: 'Agent',
+          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/agent',
+        },
+        {
+          text: 'Chat',
+          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/chat',
+        },
+        {
+          text: 'LLM Streaming',
+          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/llm-streaming',
+        },
+        {
+          text: 'MCP',
+          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/mcp',
+        },
+        {
+          text: 'SST Integration',
+          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/sst-integration',
+        },
+        {
+          text: 'Summarize',
+          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/summarize',
+        },
+        {
+          text: 'Tracing',
+          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/tracing',
+        },
+      ],
+    },
+    {
+      text: 'Best Practices',
+      link: '/best-practices',
+    },
+  ],
+  socials: [
+    {
+      icon: 'github',
+      link: 'https://github.com/mark3labs/flyt',
+    },
+  ],
+})
+
+
+
+================================================
+FILE: www/docs/pages/best-practices.mdx
+================================================
+# Best Practices
+
 Follow these guidelines to build robust, maintainable Flyt workflows.
 
-### Node Design
+## Node Design
 
-#### Single Responsibility
+### Single Responsibility
 
 Each node should do one thing well:
 
@@ -42,7 +3171,7 @@ flow.Connect(validateNode, "valid", transformNode)
 flow.Connect(transformNode, flyt.DefaultAction, saveNode)
 ```
 
-#### Idempotency
+### Idempotency
 
 Design nodes to be safely retryable:
 
@@ -61,7 +3190,7 @@ func (n *SaveNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-#### Error Handling
+### Error Handling
 
 Return clear, actionable errors:
 
@@ -73,9 +3202,9 @@ return nil, errors.New("failed")
 return nil, fmt.Errorf("failed to fetch user %d: %w", userID, err)
 ```
 
-### Flow Design
+## Flow Design
 
-#### Modular Flows
+### Modular Flows
 
 Create reusable sub-flows:
 
@@ -95,7 +3224,7 @@ mainFlow.Connect(fetchNode, flyt.DefaultAction, createValidationFlow())
 apiFlow.Connect(parseNode, flyt.DefaultAction, createValidationFlow())
 ```
 
-#### Error Boundaries
+### Error Boundaries
 
 Centralize error handling:
 
@@ -113,9 +3242,9 @@ func createFlowWithErrorHandling() *flyt.Flow {
 }
 ```
 
-### Context Handling
+## Context Handling
 
-#### Respect Cancellation
+### Respect Cancellation
 
 Always check context in long-running operations:
 
@@ -140,7 +3269,7 @@ func (n *ProcessNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-#### Timeout Management
+### Timeout Management
 
 Set appropriate timeouts:
 
@@ -154,9 +3283,9 @@ func (n *APINode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-### Concurrency Safety
+## Concurrency Safety
 
-#### Thread-Safe Nodes
+### Thread-Safe Nodes
 
 Protect shared state in nodes:
 
@@ -177,7 +3306,7 @@ func (n *CounterNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-#### Avoid Shared Node Instances
+### Avoid Shared Node Instances
 
 Create new instances for concurrent use:
 
@@ -194,9 +3323,9 @@ for i := 0; i < 10; i++ {
 }
 ```
 
-### Resource Management
+## Resource Management
 
-#### Clean Up Resources
+### Clean Up Resources
 
 Use defer for cleanup:
 
@@ -213,7 +3342,7 @@ func (n *FileNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-#### Connection Pooling
+### Connection Pooling
 
 Reuse expensive resources:
 
@@ -234,9 +3363,9 @@ func (f *DatabaseFlow) CreateNode() flyt.Node {
 }
 ```
 
-### Testing
+## Testing
 
-#### Unit Test Nodes
+### Unit Test Nodes
 
 Test nodes in isolation:
 
@@ -256,7 +3385,7 @@ func TestProcessNode(t *testing.T) {
 }
 ```
 
-#### Integration Test Flows
+### Integration Test Flows
 
 Test complete workflows:
 
@@ -276,9 +3405,9 @@ func TestCompleteFlow(t *testing.T) {
 }
 ```
 
-### Documentation
+## Documentation
 
-#### Document Node Behavior
+### Document Node Behavior
 
 ```go
 // FetchUserNode fetches user data from the API.
@@ -296,7 +3425,7 @@ type FetchUserNode struct {
 }
 ```
 
-#### Document Flow Structure
+### Document Flow Structure
 
 ```go
 // CreateOrderFlow processes new orders:
@@ -318,9 +3447,9 @@ func CreateOrderFlow() *flyt.Flow {
 }
 ```
 
-### Performance
+## Performance
 
-#### Batch Operations
+### Batch Operations
 
 Process items in batches when possible:
 
@@ -335,7 +3464,7 @@ batchNode := flyt.NewBatchNode(processFunc, true)
 shared.Set("items", items)
 ```
 
-#### Lazy Loading
+### Lazy Loading
 
 Load data only when needed:
 
@@ -350,9 +3479,9 @@ func (n *ProcessNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, 
 }
 ```
 
-### Monitoring
+## Monitoring
 
-#### Add Observability
+### Add Observability
 
 Log important events:
 
@@ -374,18 +3503,240 @@ func (n *ProcessNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-### Next Steps
+## Next Steps
 
-* [Examples](https://github.com/mark3labs/flyt/tree/main/cookbook) - See best practices in action
-* [Advanced Usage](/advanced/custom-nodes) - Advanced patterns
-* [Core Concepts](/concepts/nodes) - Review fundamentals
+- [Examples](https://github.com/mark3labs/flyt/tree/main/cookbook) - See best practices in action
+- [Advanced Usage](/advanced/custom-nodes) - Advanced patterns
+- [Core Concepts](/concepts/nodes) - Review fundamentals
 
 
-## Batch Flows
+================================================
+FILE: www/docs/pages/index.mdx
+================================================
+---
+layout: landing
+---
+
+import { HomePage } from 'vocs/components'
+
+<HomePage.Root>
+  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '1rem' }}>
+    <img src="/flyt-logo.png" alt="Flyt Logo" style={{ width: '280px', height: 'auto' }} />
+    <p style={{ fontStyle: 'italic', color: 'var(--vocs-color_text2)', marginTop: '0.5rem', fontSize: '0.95rem' }}>
+      Norwegian for "flow" • Pronounced "fleet"
+    </p>
+  </div>
+  <HomePage.Tagline>A minimalist workflow framework for Go</HomePage.Tagline>
+  
+  ```bash
+  go get github.com/mark3labs/flyt
+  ```
+  
+  <HomePage.Description>
+    Build powerful, composable workflows with zero dependencies. Flyt provides a simple yet flexible 
+    graph-based abstraction for orchestrating tasks in Go.
+  </HomePage.Description>
+  
+  <HomePage.Buttons>
+    <HomePage.Button href="/getting-started/quick-start" variant="accent">Get Started</HomePage.Button>
+    <HomePage.Button href="https://github.com/mark3labs/flyt">GitHub</HomePage.Button>
+  </HomePage.Buttons>
+</HomePage.Root>
+
+<div style={{ marginTop: '4rem' }}>
+
+## Features
+
+<div style={{ 
+  display: 'grid', 
+  gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+  gap: '1.5rem',
+  marginTop: '2rem'
+}}>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🚀 Zero Dependencies</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Pure Go standard library - no external dependencies required</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🔄 Composable Workflows</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Build complex flows from simple, reusable nodes</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🎯 Action-Based Routing</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Dynamic flow control based on runtime results</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🔁 Built-in Retry Logic</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Handle transient failures with configurable retries</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>🔒 Thread-Safe</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Concurrent batch processing with safe shared state</p>
+  </div>
+  <div>
+    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>📦 Batch Processing</h3>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.95rem' }}>Process collections efficiently with built-in patterns</p>
+  </div>
+</div>
+
+</div>
+
+<div style={{ marginTop: '3rem' }}>
+
+## Quick Example
+
+<div style={{ marginTop: '1.5rem' }}>
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/mark3labs/flyt"
+)
+
+func main() {
+    // Create nodes that share data via SharedStore
+    fetchNode := flyt.NewNode(
+        flyt.WithExecFunc(func(ctx context.Context, _ any) (any, error) {
+            fmt.Println("Fetching data...")
+            return map[string]int{"value": 42}, nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
+            shared.Set("data", execResult)
+            return flyt.DefaultAction, nil
+        }),
+    )
+    
+    processNode := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            data, _ := shared.Get("data")
+            return data, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, data any) (any, error) {
+            val := data.(map[string]int)["value"]
+            fmt.Printf("Processing: %d\n", val)
+            return val * 2, nil
+        }),
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
+            shared.Set("result", execResult)
+            return flyt.DefaultAction, nil
+        }),
+    )
+    
+    saveNode := flyt.NewNode(
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+            result, _ := shared.Get("result")
+            return result, nil
+        }),
+        flyt.WithExecFunc(func(ctx context.Context, result any) (any, error) {
+            fmt.Printf("Saving result: %d\n", result)
+            return nil, nil
+        }),
+    )
+    
+    // Build and run flow
+    flow := flyt.NewFlow(fetchNode)
+    flow.Connect(fetchNode, flyt.DefaultAction, processNode)
+    flow.Connect(processNode, flyt.DefaultAction, saveNode)
+    
+    err := flow.Run(context.Background(), flyt.NewSharedStore())
+    if err != nil {
+        panic(err)
+    }
+}
+```
+
+</div>
+</div>
+
+<div style={{ marginTop: '3rem' }}>
+
+## Why Flyt?
+
+<p style={{ fontSize: '1.05rem', lineHeight: '1.7', color: 'var(--vocs-color_text2)', marginTop: '1rem' }}>
+Flyt was inspired by <a href="https://github.com/The-Pocket/PocketFlow" style={{ color: 'var(--vocs-color_link)' }}>Pocket Flow</a> and 
+designed to provide a simple, dependency-free solution for workflow orchestration in Go. Whether you're building 
+data pipelines, API orchestration, or complex business logic, Flyt gives you the tools to create maintainable, 
+testable workflows.
+</p>
+
+<h3 style={{ marginTop: '2rem', marginBottom: '1.5rem' }}>Perfect for</h3>
+
+<div style={{ 
+  display: 'grid', 
+  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+  gap: '1rem'
+}}>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>Data Processing Pipelines</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      ETL workflows with built-in error handling
+    </p>
+  </div>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>API Orchestration</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      Chain multiple API calls with automatic retries
+    </p>
+  </div>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>Business Logic Flows</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      Complex decision trees and state machines
+    </p>
+  </div>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>Batch Operations</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      Process large datasets concurrently
+    </p>
+  </div>
+  <div style={{ 
+    padding: '1rem',
+    backgroundColor: 'var(--vocs-color_backgroundDark)',
+    borderRadius: '6px',
+    border: '1px solid var(--vocs-color_border)'
+  }}>
+    <strong>AI/LLM Workflows</strong>
+    <p style={{ color: 'var(--vocs-color_text2)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+      Build agent systems and conversation flows
+    </p>
+  </div>
+</div>
+
+</div>
+
+
+================================================
+FILE: www/docs/pages/advanced/batch-flows.mdx
+================================================
+# Batch Flows
 
 Run the same flow multiple times with different parameters, perfect for processing multiple entities or parallel workflows.
 
-### Basic Batch Flow
+## Basic Batch Flow
 
 Run a flow for each set of inputs:
 
@@ -424,7 +3775,7 @@ shared := flyt.NewSharedStore()
 err := batchFlow.Run(ctx, shared)
 ```
 
-### Sequential vs Concurrent Execution
+## Sequential vs Concurrent Execution
 
 Control how flows are executed:
 
@@ -436,7 +3787,7 @@ sequentialBatch := flyt.NewBatchFlow(flowFactory, batchFunc, false)
 concurrentBatch := flyt.NewBatchFlow(flowFactory, batchFunc, true)
 ```
 
-### Dynamic Input Generation
+## Dynamic Input Generation
 
 Generate inputs based on runtime data:
 
@@ -466,7 +3817,7 @@ batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInp
 }
 ```
 
-### Complex Flow Factory
+## Complex Flow Factory
 
 Create sophisticated flows for each batch:
 
@@ -491,7 +3842,7 @@ flowFactory := func() *flyt.Flow {
 }
 ```
 
-### Batch Flow with Configuration
+## Batch Flow with Configuration
 
 Pass configuration to batch flows:
 
@@ -526,7 +3877,7 @@ func createConfiguredBatchFlow(config Config) *flyt.Flow {
 }
 ```
 
-### Result Aggregation
+## Result Aggregation
 
 Collect results from all flows:
 
@@ -561,7 +3912,7 @@ func createAggregatingBatchFlow(collector *ResultCollector) *flyt.Flow {
 }
 ```
 
-### Batch Flow with Progress
+## Batch Flow with Progress
 
 Track progress across batch execution:
 
@@ -603,7 +3954,7 @@ func createProgressBatchFlow(tracker *ProgressTracker) *flyt.Flow {
 }
 ```
 
-### Conditional Batch Processing
+## Conditional Batch Processing
 
 Process batches based on conditions:
 
@@ -636,7 +3987,7 @@ batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInp
 }
 ```
 
-### Nested Batch Flows
+## Nested Batch Flows
 
 Batch flows within batch flows:
 
@@ -663,7 +4014,7 @@ outerFlowFactory := func() *flyt.Flow {
 outerBatchFlow := flyt.NewBatchFlow(outerFlowFactory, outerBatchFunc, false)
 ```
 
-### Error Recovery
+## Error Recovery
 
 Handle failures in batch flows:
 
@@ -694,7 +4045,7 @@ flowFactory := func() *flyt.Flow {
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Isolate Flows**: Each flow instance should be independent
 2. **Manage Resources**: Be mindful of resource usage with concurrent flows
@@ -703,18 +4054,21 @@ flowFactory := func() *flyt.Flow {
 5. **Limit Concurrency**: Set reasonable concurrency limits
 6. **Test Thoroughly**: Test with various batch sizes and failure scenarios
 
-### Next Steps
+## Next Steps
 
-* [Batch Processing](/advanced/batch-processing) - Process items within a single node
-* [Nested Flows](/advanced/nested-flows) - Compose complex workflows
-* [Worker Pool](/advanced/worker-pool) - Fine-grained concurrency control
+- [Batch Processing](/advanced/batch-processing) - Process items within a single node
+- [Nested Flows](/advanced/nested-flows) - Compose complex workflows
+- [Worker Pool](/advanced/worker-pool) - Fine-grained concurrency control
 
 
-## Batch Processing
+================================================
+FILE: www/docs/pages/advanced/batch-processing.mdx
+================================================
+# Batch Processing
 
 Process collections of items efficiently with concurrent or sequential execution.
 
-### Basic Batch Processing
+## Basic Batch Processing
 
 Process items with a simple function:
 
@@ -741,7 +4095,7 @@ results, _ := shared.Get("results")
 fmt.Println(results) // ["processed: item1", "processed: item2", "processed: item3"]
 ```
 
-### Sequential vs Concurrent
+## Sequential vs Concurrent
 
 Choose the right execution mode:
 
@@ -753,7 +4107,7 @@ sequentialNode := flyt.NewBatchNode(processFunc, false)
 concurrentNode := flyt.NewBatchNode(processFunc, true)
 ```
 
-### Custom Keys
+## Custom Keys
 
 Use custom keys for input and output:
 
@@ -769,7 +4123,7 @@ shared.Set("input_data", items)
 // Results will be in "output_data"
 ```
 
-### Advanced Configuration
+## Advanced Configuration
 
 Fine-tune batch processing with BatchConfig:
 
@@ -791,7 +4145,7 @@ processFunc := func(ctx context.Context, item any) (any, error) {
 batchNode := flyt.NewBatchNodeWithConfig(processFunc, true, config)
 ```
 
-### Error Handling
+## Error Handling
 
 Handle errors in batch operations:
 
@@ -821,9 +4175,9 @@ if err != nil {
 }
 ```
 
-### Batch Processing Patterns
+## Batch Processing Patterns
 
-#### Map Pattern
+### Map Pattern
 
 Transform each item:
 
@@ -840,7 +4194,7 @@ mapFunc := func(ctx context.Context, item any) (any, error) {
 mapNode := flyt.NewBatchNode(mapFunc, true)
 ```
 
-#### Filter Pattern
+### Filter Pattern
 
 Process only matching items:
 
@@ -856,7 +4210,7 @@ filterFunc := func(ctx context.Context, item any) (any, error) {
 filterNode := flyt.NewBatchNode(filterFunc, true)
 ```
 
-#### Reduce Pattern
+### Reduce Pattern
 
 Aggregate results:
 
@@ -880,7 +4234,7 @@ func (n *SumNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-### Chunked Processing
+## Chunked Processing
 
 Process large datasets in chunks:
 
@@ -913,7 +4267,7 @@ func createChunkedProcessor(chunkSize int) flyt.Node {
 }
 ```
 
-### Progress Tracking
+## Progress Tracking
 
 Monitor batch processing progress:
 
@@ -952,7 +4306,7 @@ func (n *ProgressBatchNode) processWithProgress(ctx context.Context, items []any
 }
 ```
 
-### Rate-Limited Batch Processing
+## Rate-Limited Batch Processing
 
 Control processing rate:
 
@@ -974,7 +4328,7 @@ func createRateLimitedBatchNode(rps int) flyt.Node {
 }
 ```
 
-### Batch with Timeout
+## Batch with Timeout
 
 Set timeouts for batch operations:
 
@@ -1011,7 +4365,7 @@ func createTimeoutBatchNode(timeout time.Duration) flyt.Node {
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Choose Concurrency Wisely**: Use concurrent for I/O-bound, sequential for order-dependent
 2. **Handle Errors Gracefully**: Decide whether to fail fast or collect all errors
@@ -1020,18 +4374,21 @@ func createTimeoutBatchNode(timeout time.Duration) flyt.Node {
 5. **Test with Real Data**: Test with production-like data volumes
 6. **Consider Memory Usage**: Be mindful of memory when processing large batches
 
-### Next Steps
+## Next Steps
 
-* [Batch Flows](/advanced/batch-flows) - Run flows with multiple inputs
-* [Worker Pool](/advanced/worker-pool) - Custom concurrent processing
-* [Error Handling](/patterns/error-handling) - Handle batch errors
+- [Batch Flows](/advanced/batch-flows) - Run flows with multiple inputs
+- [Worker Pool](/advanced/worker-pool) - Custom concurrent processing
+- [Error Handling](/patterns/error-handling) - Handle batch errors
 
 
-## Custom Node Types
+================================================
+FILE: www/docs/pages/advanced/custom-nodes.mdx
+================================================
+# Custom Node Types
 
 Create sophisticated nodes with custom behavior, state management, and advanced features.
 
-### Basic Custom Node
+## Basic Custom Node
 
 Extend BaseNode for custom functionality:
 
@@ -1075,7 +4432,7 @@ func (n *CustomNode) Post(ctx context.Context, shared *flyt.SharedStore, prepRes
 }
 ```
 
-### Stateful Nodes
+## Stateful Nodes
 
 Maintain state across executions:
 
@@ -1122,7 +4479,7 @@ func (n *AccumulatorNode) processBatch(values []any) any {
 }
 ```
 
-### Resource-Managing Nodes
+## Resource-Managing Nodes
 
 Handle external resources:
 
@@ -1206,7 +4563,7 @@ func (n *DatabaseNode) Close() error {
 }
 ```
 
-### RetryableNode Implementation
+## RetryableNode Implementation
 
 Custom retry logic:
 
@@ -1272,7 +4629,7 @@ func (n *SmartRetryNode) Exec(ctx context.Context, prepResult any) (any, error) 
 }
 ```
 
-### Composite Nodes
+## Composite Nodes
 
 Combine multiple operations:
 
@@ -1310,7 +4667,7 @@ func (n *PipelineNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-### Monitoring Nodes
+## Monitoring Nodes
 
 Add observability:
 
@@ -1367,7 +4724,7 @@ func (n *MonitoredNode) GetMetrics() map[string]any {
 }
 ```
 
-### Async Nodes
+## Async Nodes
 
 Handle asynchronous operations:
 
@@ -1433,7 +4790,7 @@ func (n *AsyncNode) Close() {
 }
 ```
 
-### Validation Nodes
+## Validation Nodes
 
 Ensure data integrity:
 
@@ -1479,7 +4836,7 @@ func (n *ValidationNode) Post(ctx context.Context, shared *flyt.SharedStore, pre
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Clear Interfaces**: Define clear interfaces for custom nodes
 2. **Thread Safety**: Ensure nodes are thread-safe for concurrent use
@@ -1489,18 +4846,21 @@ func (n *ValidationNode) Post(ctx context.Context, shared *flyt.SharedStore, pre
 6. **Documentation**: Document node behavior and requirements
 7. **Monitoring**: Add metrics and logging for observability
 
-### Next Steps
+## Next Steps
 
-* [RetryableNode Interface](/concepts/nodes#retryablenode-interface) - Custom retry logic
-* [FallbackNode Interface](/patterns/fallback) - Graceful degradation
-* [Worker Pool](/advanced/worker-pool) - Concurrent task management
+- [RetryableNode Interface](/concepts/nodes#retryablenode-interface) - Custom retry logic
+- [FallbackNode Interface](/patterns/fallback) - Graceful degradation
+- [Worker Pool](/advanced/worker-pool) - Concurrent task management
 
 
-## Flow as Node
+================================================
+FILE: www/docs/pages/advanced/flow-as-node.mdx
+================================================
+# Flow as Node
 
 Flows implement the Node interface, allowing them to be used anywhere a node is expected. This enables powerful composition patterns.
 
-### The Node Interface
+## The Node Interface
 
 Flows implement all Node methods:
 
@@ -1515,7 +4875,7 @@ type Node interface {
 var _ Node = (*Flow)(nil)
 ```
 
-### Basic Usage
+## Basic Usage
 
 Use a flow wherever a node is expected:
 
@@ -1531,7 +4891,7 @@ mainFlow.Connect(fetchNode, flyt.DefaultAction, processingFlow) // Flow used as 
 mainFlow.Connect(processingFlow, flyt.DefaultAction, saveNode)
 ```
 
-### Flow Lifecycle as Node
+## Flow Lifecycle as Node
 
 Understanding how flows behave as nodes:
 
@@ -1555,7 +4915,7 @@ func demonstrateFlowLifecycle() {
 }
 ```
 
-### Composable Workflows
+## Composable Workflows
 
 Build complex workflows from simpler ones:
 
@@ -1602,7 +4962,7 @@ func createApplicationFlow() *flyt.Flow {
 }
 ```
 
-### Dynamic Flow Selection
+## Dynamic Flow Selection
 
 Choose flows at runtime:
 
@@ -1647,7 +5007,7 @@ selector := &FlowSelector{
 dynamicFlow := selector.BuildDynamicFlow()
 ```
 
-### Flow Factories
+## Flow Factories
 
 Create flows on demand:
 
@@ -1691,7 +5051,7 @@ func createDynamicPipeline(factory FlowFactory, configs []FlowConfig) *flyt.Flow
 }
 ```
 
-### Recursive Flow Patterns
+## Recursive Flow Patterns
 
 Flows containing themselves:
 
@@ -1734,7 +5094,7 @@ func createRecursiveProcessingFlow(maxDepth int) *flyt.Flow {
 }
 ```
 
-### Flow Middleware
+## Flow Middleware
 
 Wrap flows with additional behavior:
 
@@ -1766,7 +5126,7 @@ processFlow := createProcessingFlow()
 loggedFlow := withLogging("ProcessingPipeline", processFlow)
 ```
 
-### Testing Flows as Nodes
+## Testing Flows as Nodes
 
 Test flow behavior when used as nodes:
 
@@ -1798,7 +5158,7 @@ func TestFlowAsNode(t *testing.T) {
 }
 ```
 
-### Performance Considerations
+## Performance Considerations
 
 Using flows as nodes:
 
@@ -1835,7 +5195,7 @@ func createOptimizedNode() flyt.Node {
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Keep Flows Focused**: Flows used as nodes should have clear, single purposes
 2. **Document Behavior**: Clearly document what the flow expects and returns
@@ -1844,18 +5204,21 @@ func createOptimizedNode() flyt.Node {
 5. **Use Meaningful Names**: Name flows to indicate they're used as nodes
 6. **Handle Errors**: Ensure proper error propagation through nested flows
 
-### Next Steps
+## Next Steps
 
-* [Nested Flows](/advanced/nested-flows) - Complex flow composition
-* [Nodes](/concepts/nodes) - Node interface details
-* [Flows](/concepts/flows) - Flow fundamentals
+- [Nested Flows](/advanced/nested-flows) - Complex flow composition
+- [Nodes](/concepts/nodes) - Node interface details
+- [Flows](/concepts/flows) - Flow fundamentals
 
 
-## Nested Flows
+================================================
+FILE: www/docs/pages/advanced/nested-flows.mdx
+================================================
+# Nested Flows
 
 Compose complex workflows by nesting flows within flows, creating modular and reusable workflow components.
 
-### Basic Nested Flow
+## Basic Nested Flow
 
 Use a flow as a node in another flow:
 
@@ -1878,7 +5241,7 @@ mainFlow.Connect(fetchNode, flyt.DefaultAction, validationFlow)
 mainFlow.Connect(validationFlow, flyt.DefaultAction, processNode)
 ```
 
-### Reusable Flow Components
+## Reusable Flow Components
 
 Create modular flow components:
 
@@ -1914,7 +5277,7 @@ adminFlow := flyt.NewFlow(adminNode)
 adminFlow.Connect(adminNode, flyt.DefaultAction, createAuthFlow())
 ```
 
-### Hierarchical Workflows
+## Hierarchical Workflows
 
 Build multi-level workflow hierarchies:
 
@@ -1959,7 +5322,7 @@ func createApplicationFlow() *flyt.Flow {
 }
 ```
 
-### Conditional Nesting
+## Conditional Nesting
 
 Dynamically choose nested flows:
 
@@ -1980,7 +5343,7 @@ mainFlow.Connect(routerNode, "admin", createAdminFlow())
 mainFlow.Connect(routerNode, "api", createAPIFlow())
 ```
 
-### Shared Context in Nested Flows
+## Shared Context in Nested Flows
 
 Pass context through nested flows:
 
@@ -2007,7 +5370,7 @@ func createNestedFlowWithContext(parentContext map[string]any) *flyt.Flow {
 }
 ```
 
-### Error Propagation
+## Error Propagation
 
 Handle errors across nested flows:
 
@@ -2029,7 +5392,7 @@ func createErrorHandlingFlow() *flyt.Flow {
 }
 ```
 
-### Recursive Flows
+## Recursive Flows
 
 Create recursive workflow patterns:
 
@@ -2070,7 +5433,7 @@ func createRecursiveFlow(maxDepth int) *flyt.Flow {
 }
 ```
 
-### Parallel Nested Flows
+## Parallel Nested Flows
 
 Execute nested flows in parallel:
 
@@ -2117,7 +5480,7 @@ func createParallelNestedFlow() *flyt.Flow {
 }
 ```
 
-### Dynamic Flow Composition
+## Dynamic Flow Composition
 
 Build flows at runtime:
 
@@ -2150,7 +5513,7 @@ func createDynamicFlow(config FlowConfig) *flyt.Flow {
 }
 ```
 
-### Testing Nested Flows
+## Testing Nested Flows
 
 Test nested flows in isolation:
 
@@ -2179,7 +5542,7 @@ func TestNestedFlow(t *testing.T) {
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Keep Flows Focused**: Each flow should have a single, clear purpose
 2. **Minimize Coupling**: Flows should communicate through well-defined interfaces
@@ -2188,18 +5551,21 @@ func TestNestedFlow(t *testing.T) {
 5. **Avoid Deep Nesting**: Too many levels make debugging difficult
 6. **Use Meaningful Names**: Name flows based on their business function
 
-### Next Steps
+## Next Steps
 
-* [Flow as Node](/advanced/flow-as-node) - Flows implementing Node interface
-* [Batch Flows](/advanced/batch-flows) - Running flows in batches
-* [Flows](/concepts/flows) - Flow fundamentals
+- [Flow as Node](/advanced/flow-as-node) - Flows implementing Node interface
+- [Batch Flows](/advanced/batch-flows) - Running flows in batches
+- [Flows](/concepts/flows) - Flow fundamentals
 
 
-## Utilities
+================================================
+FILE: www/docs/pages/advanced/utilities.mdx
+================================================
+# Utilities
 
 Helper functions and utilities to simplify common tasks in Flyt workflows.
 
-### ToSlice
+## ToSlice
 
 Convert various types to slices for batch processing:
 
@@ -2214,7 +5580,7 @@ nilValue := flyt.ToSlice(nil) // Returns empty []any{}
 shared.Set("items", flyt.ToSlice(data))
 ```
 
-#### Implementation Details
+### Implementation Details
 
 ```go
 func ToSlice(v any) []any {
@@ -2236,11 +5602,11 @@ func ToSlice(v any) []any {
 }
 ```
 
-### Custom Utility Functions
+## Custom Utility Functions
 
 Create your own utilities:
 
-#### Retry Helper
+### Retry Helper
 
 ```go
 func RetryOperation(operation func() error, maxRetries int, backoff time.Duration) error {
@@ -2274,7 +5640,7 @@ func (n *MyNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-#### Parallel Map
+### Parallel Map
 
 ```go
 func ParallelMap[T any, R any](items []T, fn func(T) R, workers int) []R {
@@ -2303,7 +5669,7 @@ func ParallelMap[T any, R any](items []T, fn func(T) R, workers int) []R {
 results := ParallelMap(items, processItem, 10)
 ```
 
-#### Safe Type Assertion
+### Safe Type Assertion
 
 ```go
 func SafeGet[T any](shared *flyt.SharedStore, key string) (T, bool) {
@@ -2328,7 +5694,7 @@ if userID, ok := SafeGet[int](shared, "user_id"); ok {
 }
 ```
 
-#### Chunk Slice
+### Chunk Slice
 
 ```go
 func ChunkSlice[T any](slice []T, chunkSize int) [][]T {
@@ -2352,7 +5718,7 @@ for _, chunk := range chunks {
 }
 ```
 
-#### Merge Maps
+### Merge Maps
 
 ```go
 func MergeMaps(maps ...map[string]any) map[string]any {
@@ -2371,7 +5737,7 @@ func MergeMaps(maps ...map[string]any) map[string]any {
 config := MergeMaps(defaultConfig, userConfig, overrides)
 ```
 
-#### Filter Slice
+### Filter Slice
 
 ```go
 func FilterSlice[T any](slice []T, predicate func(T) bool) []T {
@@ -2392,7 +5758,7 @@ validItems := FilterSlice(items, func(item Item) bool {
 })
 ```
 
-#### Timeout Wrapper
+### Timeout Wrapper
 
 ```go
 func WithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {
@@ -2426,7 +5792,7 @@ result, err := WithTimeout(ctx, 5*time.Second, func(ctx context.Context) (string
 })
 ```
 
-#### Pipeline Builder
+### Pipeline Builder
 
 ```go
 type Pipeline[T any] struct {
@@ -2464,7 +5830,7 @@ result := pipeline.Execute("  Hello World  ")
 // Result: "hello_world"
 ```
 
-#### Error Aggregator
+### Error Aggregator
 
 ```go
 type ErrorAggregator struct {
@@ -2511,7 +5877,7 @@ if err := aggregator.Error(); err != nil {
 }
 ```
 
-#### Context Values Helper
+### Context Values Helper
 
 ```go
 type ContextKey string
@@ -2539,7 +5905,7 @@ func (n *LoggingNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-#### Debounce Function
+### Debounce Function
 
 ```go
 func Debounce(fn func(), delay time.Duration) func() {
@@ -2569,9 +5935,9 @@ saveDebounced()
 saveDebounced()
 ```
 
-### Testing Utilities
+## Testing Utilities
 
-#### Mock SharedStore
+### Mock SharedStore
 
 ```go
 type MockSharedStore struct {
@@ -2599,7 +5965,7 @@ func (m *MockSharedStore) Set(key string, value any) {
 }
 ```
 
-#### Test Node Builder
+### Test Node Builder
 
 ```go
 func TestNode(execFn func(context.Context, any) (any, error)) flyt.Node {
@@ -2614,7 +5980,7 @@ node := TestNode(func(ctx context.Context, input any) (any, error) {
 })
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Keep Utilities Generic**: Make them reusable across projects
 2. **Document Usage**: Provide clear examples
@@ -2623,18 +5989,21 @@ node := TestNode(func(ctx context.Context, input any) (any, error) {
 5. **Use Type Parameters**: Leverage Go generics where appropriate
 6. **Thread Safety**: Ensure utilities are safe for concurrent use
 
-### Next Steps
+## Next Steps
 
-* [Custom Nodes](/advanced/custom-nodes) - Build sophisticated nodes
-* [Best Practices](/best-practices) - General guidelines
-* [Examples](https://github.com/mark3labs/flyt/tree/main/cookbook) - See utilities in action
+- [Custom Nodes](/advanced/custom-nodes) - Build sophisticated nodes
+- [Best Practices](/best-practices) - General guidelines
+- [Examples](https://github.com/mark3labs/flyt/tree/main/cookbook) - See utilities in action
 
 
-## Worker Pool
+================================================
+FILE: www/docs/pages/advanced/worker-pool.mdx
+================================================
+# Worker Pool
 
 Manage concurrent task execution with fine-grained control using the WorkerPool utility.
 
-### Basic Worker Pool
+## Basic Worker Pool
 
 Create and use a worker pool:
 
@@ -2659,7 +6028,7 @@ pool.Wait()
 pool.Close()
 ```
 
-### Worker Pool with Results
+## Worker Pool with Results
 
 Collect results from worker pool:
 
@@ -2695,7 +6064,7 @@ func processWithWorkerPool(items []Item) []Result {
 }
 ```
 
-### Dynamic Worker Scaling
+## Dynamic Worker Scaling
 
 Adjust worker count based on load:
 
@@ -2750,7 +6119,7 @@ func (p *DynamicWorkerPool) scaleUp() {
 }
 ```
 
-### Rate-Limited Worker Pool
+## Rate-Limited Worker Pool
 
 Control processing rate:
 
@@ -2781,7 +6150,7 @@ func (p *RateLimitedPool) Submit(ctx context.Context, task func()) error {
 }
 ```
 
-### Priority Queue Worker Pool
+## Priority Queue Worker Pool
 
 Process tasks by priority:
 
@@ -2832,7 +6201,7 @@ func (p *PriorityWorkerPool) dispatch() {
 }
 ```
 
-### Worker Pool with Timeout
+## Worker Pool with Timeout
 
 Handle task timeouts:
 
@@ -2871,7 +6240,7 @@ func (p *TimeoutPool) Submit(task func() error) error {
 }
 ```
 
-### Worker Pool in Nodes
+## Worker Pool in Nodes
 
 Use worker pools within nodes:
 
@@ -2935,7 +6304,7 @@ func (n *ParallelProcessingNode) Close() {
 }
 ```
 
-### Batch Processing with Worker Pool
+## Batch Processing with Worker Pool
 
 Process batches efficiently:
 
@@ -2967,7 +6336,7 @@ func processBatchesWithPool(items []Item, batchSize int, workers int) []Result {
 }
 ```
 
-### Monitoring Worker Pool
+## Monitoring Worker Pool
 
 Track pool performance:
 
@@ -3010,7 +6379,7 @@ func (p *MonitoredPool) GetStats() map[string]int64 {
 }
 ```
 
-### Circuit Breaker Pool
+## Circuit Breaker Pool
 
 Prevent overload with circuit breaker:
 
@@ -3065,7 +6434,7 @@ func (p *CircuitBreakerPool) isOpen() bool {
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Size Appropriately**: Set worker count based on workload and resources
 2. **Handle Panics**: Recover from panics in worker goroutines
@@ -3074,18 +6443,21 @@ func (p *CircuitBreakerPool) isOpen() bool {
 5. **Avoid Blocking**: Don't block workers with long waits
 6. **Test Concurrency**: Test with various worker counts and loads
 
-### Next Steps
+## Next Steps
 
-* [Batch Processing](/advanced/batch-processing) - High-level batch operations
-* [Custom Nodes](/advanced/custom-nodes) - Build nodes with worker pools
-* [Best Practices](/best-practices) - General guidelines
+- [Batch Processing](/advanced/batch-processing) - High-level batch operations
+- [Custom Nodes](/advanced/custom-nodes) - Build nodes with worker pools
+- [Best Practices](/best-practices) - General guidelines
 
 
-## Actions
+================================================
+FILE: www/docs/pages/concepts/actions.mdx
+================================================
+# Actions
 
 Actions are strings returned by a node's Post phase that determine the next step in a workflow. They provide dynamic, runtime control over flow execution.
 
-### How Actions Work
+## How Actions Work
 
 When a node completes, its Post phase returns an action:
 
@@ -3106,7 +6478,7 @@ flow.Connect(startNode, "continue", processNode)
 flow.Connect(startNode, "retry", retryNode)
 ```
 
-### Default Action
+## Default Action
 
 The most common action is `flyt.DefaultAction`:
 
@@ -3118,9 +6490,9 @@ return flyt.DefaultAction, nil  // Returns "default"
 flow.Connect(node1, flyt.DefaultAction, node2)
 ```
 
-### Action-Based Routing
+## Action-Based Routing
 
-#### Simple Branching
+### Simple Branching
 
 ```go
 validationNode := flyt.NewNode(
@@ -3141,7 +6513,7 @@ flow.Connect(validationNode, "valid", processNode)
 flow.Connect(validationNode, "invalid", errorNode)
 ```
 
-#### Multi-Way Branching
+### Multi-Way Branching
 
 ```go
 categoryNode := flyt.NewNode(
@@ -3165,7 +6537,7 @@ flow.Connect(categoryNode, "medium", mediumHandler)
 flow.Connect(categoryNode, "large", largeHandler)
 ```
 
-### Flow Termination
+## Flow Termination
 
 If no connection exists for an action, the flow terminates:
 
@@ -3181,9 +6553,9 @@ Explicitly terminate by connecting to nil:
 flow.Connect(finalNode, "done", nil)
 ```
 
-### Common Patterns
+## Common Patterns
 
-#### Success/Failure Pattern
+### Success/Failure Pattern
 
 ```go
 func makeDecisionPost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
@@ -3194,7 +6566,7 @@ func makeDecisionPost(ctx context.Context, shared *flyt.SharedStore, prepResult,
 }
 ```
 
-#### Retry Pattern
+### Retry Pattern
 
 ```go
 func retryablePost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
@@ -3209,7 +6581,7 @@ func retryablePost(ctx context.Context, shared *flyt.SharedStore, prepResult, ex
 }
 ```
 
-#### State Machine Pattern
+### State Machine Pattern
 
 ```go
 func statePost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
@@ -3228,7 +6600,7 @@ func statePost(ctx context.Context, shared *flyt.SharedStore, prepResult, execRe
 }
 ```
 
-### Dynamic Actions
+## Dynamic Actions
 
 Actions can be computed at runtime:
 
@@ -3240,7 +6612,7 @@ func dynamicPost(ctx context.Context, shared *flyt.SharedStore, prepResult, exec
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Use Descriptive Names**: Actions should clearly indicate their purpose
 2. **Document Actions**: List all possible actions a node can return
@@ -3257,18 +6629,21 @@ const (
 )
 ```
 
-### Next Steps
+## Next Steps
 
-* [Flows](/concepts/flows) - Connect nodes with actions
-* [Conditional Branching](/patterns/branching) - Advanced routing patterns
-* [Nested Flows](/advanced/nested-flows) - Compose complex workflows
+- [Flows](/concepts/flows) - Connect nodes with actions
+- [Conditional Branching](/patterns/branching) - Advanced routing patterns
+- [Nested Flows](/advanced/nested-flows) - Compose complex workflows
 
 
-## Flows
+================================================
+FILE: www/docs/pages/concepts/flows.mdx
+================================================
+# Flows
 
 Flows connect nodes together to create workflows. They define the execution path based on actions returned by nodes.
 
-### Creating Flows
+## Creating Flows
 
 Start with a single node and build connections:
 
@@ -3284,7 +6659,7 @@ flow.Connect(startNode, flyt.DefaultAction, processNode)
 flow.Connect(processNode, flyt.DefaultAction, endNode)
 ```
 
-### Running Flows
+## Running Flows
 
 Execute a flow with a context and SharedStore:
 
@@ -3305,9 +6680,9 @@ if err != nil {
 result, _ := shared.Get("output")
 ```
 
-### Flow Connections
+## Flow Connections
 
-#### Linear Flow
+### Linear Flow
 
 Simple sequential execution:
 
@@ -3318,7 +6693,7 @@ flow.Connect(node2, flyt.DefaultAction, node3)
 flow.Connect(node3, flyt.DefaultAction, nil) // Terminate
 ```
 
-#### Branching Flow
+### Branching Flow
 
 Multiple paths based on actions:
 
@@ -3330,7 +6705,7 @@ flow.Connect(nodeA, flyt.DefaultAction, mergeNode)
 flow.Connect(nodeB, flyt.DefaultAction, mergeNode)
 ```
 
-#### Loop Flow
+### Loop Flow
 
 Create cycles for retry or iteration:
 
@@ -3341,7 +6716,7 @@ flow.Connect(processNode, "retry", startNode)    // Loop back
 flow.Connect(processNode, "success", endNode)
 ```
 
-### Flow as Node
+## Flow as Node
 
 Flows implement the Node interface and can be used as nodes:
 
@@ -3356,9 +6731,9 @@ mainFlow.Connect(fetchNode, flyt.DefaultAction, subFlow)
 mainFlow.Connect(subFlow, flyt.DefaultAction, saveNode)
 ```
 
-### Complex Flow Patterns
+## Complex Flow Patterns
 
-#### Diamond Pattern
+### Diamond Pattern
 
 Split and merge execution paths:
 
@@ -3370,7 +6745,7 @@ flow.Connect(process1, flyt.DefaultAction, mergeNode)
 flow.Connect(process2, flyt.DefaultAction, mergeNode)
 ```
 
-#### Error Handling Flow
+### Error Handling Flow
 
 Centralized error handling:
 
@@ -3383,7 +6758,7 @@ flow.Connect(processNode, flyt.DefaultAction, saveNode)
 flow.Connect(saveNode, "error", errorHandler)
 ```
 
-#### Pipeline Pattern
+### Pipeline Pattern
 
 Data transformation pipeline:
 
@@ -3396,7 +6771,7 @@ flow.Connect(transformNode, flyt.DefaultAction, enrichNode)
 flow.Connect(enrichNode, flyt.DefaultAction, saveNode)
 ```
 
-### Flow Composition
+## Flow Composition
 
 Build complex flows from simpler ones:
 
@@ -3422,7 +6797,7 @@ func createMainFlow() *flyt.Flow {
 }
 ```
 
-### Debugging Flows
+## Debugging Flows
 
 Add logging nodes for debugging:
 
@@ -3449,7 +6824,7 @@ flow.Connect(node1, flyt.DefaultAction, createLoggingNode("debug"))
 flow.Connect(createLoggingNode("debug"), flyt.DefaultAction, node2)
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Start Simple**: Build flows incrementally, testing as you go
 2. **Name Nodes**: Give nodes descriptive names for easier debugging
@@ -3457,7 +6832,7 @@ flow.Connect(createLoggingNode("debug"), flyt.DefaultAction, node2)
 4. **Reuse Flows**: Extract common patterns into reusable sub-flows
 5. **Test Flows**: Write tests for different execution paths
 
-### Visualizing Flows
+## Visualizing Flows
 
 Document your flows with clear structure:
 
@@ -3473,22 +6848,25 @@ flow.Connect(validateNode, "invalid", errorNode)
 flow.Connect(processNode, flyt.DefaultAction, saveNode)
 ```
 
-### Next Steps
+## Next Steps
 
-* [Shared Store](/concepts/shared-store) - Share data between nodes
-* [Nested Flows](/advanced/nested-flows) - Advanced composition
-* [Batch Flows](/advanced/batch-flows) - Process multiple inputs
+- [Shared Store](/concepts/shared-store) - Share data between nodes
+- [Nested Flows](/advanced/nested-flows) - Advanced composition
+- [Batch Flows](/advanced/batch-flows) - Process multiple inputs
 
 
-## Nodes
+================================================
+FILE: www/docs/pages/concepts/nodes.mdx
+================================================
+# Nodes
 
 Nodes are the fundamental building blocks of Flyt workflows. Each node represents a single unit of work with a well-defined lifecycle.
 
-### Node Lifecycle
+## Node Lifecycle
 
 Every node has three phases that execute in order:
 
-#### 1. Prep Phase
+### 1. Prep Phase
 
 The preparation phase reads from the SharedStore and prepares data for execution.
 
@@ -3506,7 +6884,7 @@ func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error
 }
 ```
 
-#### 2. Exec Phase
+### 2. Exec Phase
 
 The execution phase performs the main work. This phase can be retried on failure.
 
@@ -3524,7 +6902,7 @@ func (n *MyNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-#### 3. Post Phase
+### 3. Post Phase
 
 The post-processing phase handles results and determines the next action.
 
@@ -3541,9 +6919,9 @@ func (n *MyNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult,
 }
 ```
 
-### Creating Nodes
+## Creating Nodes
 
-#### Using Helper Functions
+### Using Helper Functions
 
 The simplest way to create a node:
 
@@ -3564,7 +6942,7 @@ node := flyt.NewNode(
 )
 ```
 
-#### Custom Node Types
+### Custom Node Types
 
 For complex nodes with state:
 
@@ -3594,7 +6972,7 @@ func (n *DatabaseNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-### Node Options
+## Node Options
 
 Configure node behavior with options:
 
@@ -3606,7 +6984,7 @@ node := flyt.NewNode(
 )
 ```
 
-### BaseNode
+## BaseNode
 
 The `BaseNode` provides default implementations:
 
@@ -3632,7 +7010,7 @@ func (n *MyNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-### Thread Safety
+## Thread Safety
 
 Nodes should be thread-safe if used in concurrent batch operations:
 
@@ -3653,7 +7031,7 @@ func (n *SafeNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Single Responsibility**: Each node should do one thing well
 2. **Idempotency**: Design nodes to be safely retryable
@@ -3661,26 +7039,29 @@ func (n *SafeNode) Exec(ctx context.Context, prepResult any) (any, error) {
 4. **Error Handling**: Return clear, actionable errors
 5. **Resource Management**: Clean up resources in defer blocks
 
-### Next Steps
+## Next Steps
 
-* [Actions](/concepts/actions) - Control flow with actions
-* [Flows](/concepts/flows) - Connect nodes into workflows
-* [Custom Node Types](/advanced/custom-nodes) - Advanced node patterns
+- [Actions](/concepts/actions) - Control flow with actions
+- [Flows](/concepts/flows) - Connect nodes into workflows
+- [Custom Node Types](/advanced/custom-nodes) - Advanced node patterns
 
 
-## Shared Store
+================================================
+FILE: www/docs/pages/concepts/shared-store.mdx
+================================================
+# Shared Store
 
 The SharedStore provides thread-safe data sharing between nodes in a flow. It acts as a key-value store that persists throughout flow execution.
 
-### Creating a SharedStore
+## Creating a SharedStore
 
 ```go
 shared := flyt.NewSharedStore()
 ```
 
-### Basic Operations
+## Basic Operations
 
-#### Set and Get
+### Set and Get
 
 Store and retrieve individual values:
 
@@ -3696,7 +7077,7 @@ if value, ok := shared.Get("user_id"); ok {
 }
 ```
 
-#### GetAll
+### GetAll
 
 Get a copy of all stored data:
 
@@ -3707,7 +7088,7 @@ for key, value := range allData {
 }
 ```
 
-#### Merge
+### Merge
 
 Merge multiple values at once:
 
@@ -3722,7 +7103,7 @@ shared.Merge(map[string]any{
 })
 ```
 
-### Thread Safety
+## Thread Safety
 
 SharedStore is safe for concurrent access:
 
@@ -3741,9 +7122,9 @@ for i := 0; i < 10; i++ {
 wg.Wait()
 ```
 
-### Common Patterns
+## Common Patterns
 
-#### Configuration Storage
+### Configuration Storage
 
 Store configuration that multiple nodes need:
 
@@ -3762,7 +7143,7 @@ func (n *APINode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, erro
 }
 ```
 
-#### Accumulating Results
+### Accumulating Results
 
 Collect results from multiple nodes:
 
@@ -3782,7 +7163,7 @@ func (n *Node1) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, 
 }
 ```
 
-#### State Management
+### State Management
 
 Track workflow state:
 
@@ -3799,7 +7180,7 @@ func updateState(shared *flyt.SharedStore, newState string) {
 }
 ```
 
-#### Error Context
+### Error Context
 
 Store error information for debugging:
 
@@ -3818,7 +7199,7 @@ func (n *ErrorHandler) Post(ctx context.Context, shared *flyt.SharedStore, prepR
 }
 ```
 
-### Batch Processing
+## Batch Processing
 
 SharedStore in batch operations:
 
@@ -3838,7 +7219,7 @@ results, _ := shared.Get("results")
 errors, _ := shared.Get("errors")
 ```
 
-### Isolation in Batch Flows
+## Isolation in Batch Flows
 
 Each flow in a batch has its own SharedStore:
 
@@ -3854,9 +7235,9 @@ batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInp
 }
 ```
 
-### Best Practices
+## Best Practices
 
-#### 1. Type Safety
+### 1. Type Safety
 
 Use type assertions carefully:
 
@@ -3871,7 +7252,7 @@ if value, ok := shared.Get("count"); ok {
 }
 ```
 
-#### 2. Key Naming
+### 2. Key Naming
 
 Use consistent, descriptive keys:
 
@@ -3884,7 +7265,7 @@ const (
 )
 ```
 
-#### 3. Data Structure
+### 3. Data Structure
 
 Store structured data for clarity:
 
@@ -3904,7 +7285,7 @@ shared.Set("context", WorkflowContext{
 })
 ```
 
-#### 4. Cleanup
+### 4. Cleanup
 
 Clear sensitive data when done:
 
@@ -3916,7 +7297,7 @@ defer func() {
 }()
 ```
 
-#### 5. Documentation
+### 5. Documentation
 
 Document expected keys:
 
@@ -3928,7 +7309,7 @@ Document expected keys:
 // - "errors": []error - Collection of errors
 ```
 
-### Debugging
+## Debugging
 
 Use GetAll for debugging:
 
@@ -3943,30 +7324,33 @@ func debugSharedStore(shared *flyt.SharedStore) {
 }
 ```
 
-### Next Steps
+## Next Steps
 
-* [Nodes](/concepts/nodes) - Use SharedStore in node lifecycle
-* [Batch Processing](/advanced/batch-processing) - SharedStore in batch operations
-* [Best Practices](/best-practices) - General Flyt best practices
+- [Nodes](/concepts/nodes) - Use SharedStore in node lifecycle
+- [Batch Processing](/advanced/batch-processing) - SharedStore in batch operations
+- [Best Practices](/best-practices) - General Flyt best practices
 
 
-## Installation
+================================================
+FILE: www/docs/pages/getting-started/installation.mdx
+================================================
+# Installation
 
 Flyt requires Go 1.21 or later.
 
-### Install with go get
+## Install with go get
 
 ```bash
 go get github.com/mark3labs/flyt
 ```
 
-### Import in your code
+## Import in your code
 
 ```go
 import "github.com/mark3labs/flyt"
 ```
 
-### Verify installation
+## Verify installation
 
 Create a simple test file to verify the installation:
 
@@ -3995,23 +7379,25 @@ go run main.go
 ```
 
 You should see:
-
 ```
 Flyt installed successfully! Value: success
 ```
 
-### Next Steps
+## Next Steps
 
-* [Quick Start Guide](/getting-started/quick-start) - Build your first workflow
-* [Project Template](/getting-started/template) - Start with a pre-configured project
-* [Core Concepts](/concepts/nodes) - Understand the fundamentals
+- [Quick Start Guide](/getting-started/quick-start) - Build your first workflow
+- [Project Template](/getting-started/template) - Start with a pre-configured project
+- [Core Concepts](/concepts/nodes) - Understand the fundamentals
 
 
-## Quick Start
+================================================
+FILE: www/docs/pages/getting-started/quick-start.mdx
+================================================
+# Quick Start
 
 This guide will help you build your first Flyt workflow in 5 minutes.
 
-### Your First Node
+## Your First Node
 
 Let's start with a simple node that processes data:
 
@@ -4047,7 +7433,7 @@ func main() {
 }
 ```
 
-### Building a Flow
+## Building a Flow
 
 Now let's create a simple workflow with multiple nodes:
 
@@ -4102,7 +7488,7 @@ func main() {
 }
 ```
 
-### Adding Error Handling
+## Adding Error Handling
 
 Let's add retry logic and error handling:
 
@@ -4128,7 +7514,7 @@ func createRobustNode() flyt.Node {
 }
 ```
 
-### Using Shared Store
+## Using Shared Store
 
 The SharedStore allows nodes to communicate:
 
@@ -4159,21 +7545,24 @@ func main() {
 }
 ```
 
-### Next Steps
+## Next Steps
 
 Now that you've built your first workflow, explore:
 
-* [Nodes](/concepts/nodes) - Deep dive into node lifecycle
-* [Actions](/concepts/actions) - Control flow with actions
-* [Error Handling](/patterns/error-handling) - Build resilient workflows
-* [Examples](https://github.com/mark3labs/flyt/tree/main/cookbook) - Real-world use cases
+- [Nodes](/concepts/nodes) - Deep dive into node lifecycle
+- [Actions](/concepts/actions) - Control flow with actions
+- [Error Handling](/patterns/error-handling) - Build resilient workflows
+- [Examples](https://github.com/mark3labs/flyt/tree/main/cookbook) - Real-world use cases
 
 
-## Project Template
+================================================
+FILE: www/docs/pages/getting-started/template.mdx
+================================================
+# Project Template
 
 The fastest way to start a new Flyt project is using the official template.
 
-### Quick Setup
+## Quick Setup
 
 ```bash
 # Clone the template
@@ -4191,11 +7580,11 @@ go mod tidy
 go run main.go
 ```
 
-### What's Included
+## What's Included
 
 The template provides:
 
-#### Project Structure
+### Project Structure
 
 ```
 my-flyt-project/
@@ -4210,17 +7599,17 @@ my-flyt-project/
 └── README.md         # Project documentation
 ```
 
-#### Example Code
+### Example Code
 
 The template includes a working example that demonstrates:
 
-* Creating custom nodes
-* Building flows
-* Using the SharedStore
-* Error handling with retries
-* Action-based routing
+- Creating custom nodes
+- Building flows
+- Using the SharedStore
+- Error handling with retries
+- Action-based routing
 
-#### main.go
+### main.go
 
 ```go
 package main
@@ -4254,9 +7643,9 @@ func main() {
 }
 ```
 
-### Customizing the Template
+## Customizing the Template
 
-#### Adding New Nodes
+### Adding New Nodes
 
 Create a new file in the `nodes/` directory:
 
@@ -4279,7 +7668,7 @@ func CreateCustomNode() flyt.Node {
 }
 ```
 
-#### Creating New Flows
+### Creating New Flows
 
 Add flows to the `flows/` directory:
 
@@ -4305,7 +7694,7 @@ func CreateCustomFlow() *flyt.Flow {
 }
 ```
 
-### Best Practices
+## Best Practices
 
 When using the template:
 
@@ -4315,7 +7704,7 @@ When using the template:
 4. **Document Your Nodes**: Add comments explaining what each node does
 5. **Version Control**: Initialize git and commit regularly
 
-### Deployment
+## Deployment
 
 The template is ready for deployment:
 
@@ -4331,18 +7720,21 @@ docker build -t myapp .
 docker run myapp
 ```
 
-### Next Steps
+## Next Steps
 
-* [Core Concepts](/concepts/nodes) - Understand Flyt fundamentals
-* [Patterns](/patterns/closures) - Learn common patterns
-* [Examples](https://github.com/mark3labs/flyt/tree/main/cookbook) - See real-world implementations
+- [Core Concepts](/concepts/nodes) - Understand Flyt fundamentals
+- [Patterns](/patterns/closures) - Learn common patterns
+- [Examples](https://github.com/mark3labs/flyt/tree/main/cookbook) - See real-world implementations
 
 
-## Conditional Branching
+================================================
+FILE: www/docs/pages/patterns/branching.mdx
+================================================
+# Conditional Branching
 
 Control flow execution dynamically based on runtime conditions using action-based routing.
 
-### Simple Binary Branching
+## Simple Binary Branching
 
 Make yes/no decisions:
 
@@ -4366,7 +7758,7 @@ flow.Connect(validationNode, "valid", processNode)
 flow.Connect(validationNode, "invalid", errorNode)
 ```
 
-### Multi-Way Branching
+## Multi-Way Branching
 
 Route to multiple paths:
 
@@ -4398,7 +7790,7 @@ flow.Connect(categoryNode, "large", largeHandler)
 flow.Connect(categoryNode, "xlarge", xlargeHandler)
 ```
 
-### State Machine Pattern
+## State Machine Pattern
 
 Implement state transitions:
 
@@ -4451,7 +7843,7 @@ func (n *StateMachine) transition(state, event string) string {
 }
 ```
 
-### Dynamic Routing
+## Dynamic Routing
 
 Route based on external configuration:
 
@@ -4486,7 +7878,7 @@ func (n *DynamicRouter) Post(ctx context.Context, shared *flyt.SharedStore, prep
 }
 ```
 
-### Weighted Routing
+## Weighted Routing
 
 Distribute load across paths:
 
@@ -4539,7 +7931,7 @@ balancer := NewLoadBalancer(map[string]int{
 })
 ```
 
-### Conditional Loops
+## Conditional Loops
 
 Create loops with exit conditions:
 
@@ -4594,7 +7986,7 @@ flow.Connect(retryNode, "success", successNode)
 flow.Connect(retryNode, "failed", failureNode)
 ```
 
-### Pipeline Branching
+## Pipeline Branching
 
 Branch and merge pipelines:
 
@@ -4641,7 +8033,7 @@ flow.Connect(enrichNode, "skip_validate", mergeNode)
 flow.Connect(splitNode, "skip", mergeNode)
 ```
 
-### Feature Flags
+## Feature Flags
 
 Control flow with feature toggles:
 
@@ -4677,7 +8069,7 @@ flow.Connect(flagNode, "new_algorithm_enabled", newAlgorithmNode)
 flow.Connect(flagNode, "new_algorithm_disabled", oldAlgorithmNode)
 ```
 
-### A/B Testing
+## A/B Testing
 
 Route based on experiment groups:
 
@@ -4725,7 +8117,7 @@ abNode := createABTestNode("checkout_flow", map[string]int{
 })
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Clear Action Names**: Use descriptive action names that indicate the path
 2. **Document Branches**: Comment all possible branches and their conditions
@@ -4734,18 +8126,21 @@ abNode := createABTestNode("checkout_flow", map[string]int{
 5. **Test All Paths**: Write tests for each branch condition
 6. **Monitor Branch Usage**: Track which paths are taken most frequently
 
-### Next Steps
+## Next Steps
 
-* [Actions](/concepts/actions) - Deep dive into action system
-* [Flows](/concepts/flows) - Building complex workflows
-* [State Machines](/patterns/branching#state-machine-pattern) - Advanced state management
+- [Actions](/concepts/actions) - Deep dive into action system
+- [Flows](/concepts/flows) - Building complex workflows
+- [State Machines](/patterns/branching#state-machine-pattern) - Advanced state management
 
 
-## Configuration via Closures
+================================================
+FILE: www/docs/pages/patterns/closures.mdx
+================================================
+# Configuration via Closures
 
 Use closures to create configurable, reusable nodes with encapsulated state and configuration.
 
-### Basic Closure Pattern
+## Basic Closure Pattern
 
 Pass configuration to nodes using closures:
 
@@ -4776,7 +8171,7 @@ func createAPINode(apiKey string, baseURL string) flyt.Node {
 apiNode := createAPINode("secret-key-123", "https://api.example.com")
 ```
 
-### Stateful Nodes
+## Stateful Nodes
 
 Maintain state across executions:
 
@@ -4798,7 +8193,7 @@ func createCounterNode() flyt.Node {
 }
 ```
 
-### Configuration Objects
+## Configuration Objects
 
 Use structs for complex configuration:
 
@@ -4847,7 +8242,7 @@ dbNode := createDatabaseNode(DatabaseConfig{
 })
 ```
 
-### Factory Functions
+## Factory Functions
 
 Create specialized node variants:
 
@@ -4901,7 +8296,7 @@ postNode := createHTTPNode("POST", map[string]string{
 })
 ```
 
-### Resource Management
+## Resource Management
 
 Manage shared resources:
 
@@ -4933,7 +8328,7 @@ func createFileProcessorNode(bufferSize int) flyt.Node {
 }
 ```
 
-### Middleware Pattern
+## Middleware Pattern
 
 Wrap nodes with additional behavior:
 
@@ -4962,7 +8357,7 @@ func withLogging(name string, node flyt.Node) flyt.Node {
 processNode := withLogging("processor", createProcessNode())
 ```
 
-### Dynamic Configuration
+## Dynamic Configuration
 
 Load configuration at runtime:
 
@@ -4989,7 +8384,7 @@ func createConfigurableNode(configPath string) flyt.Node {
 }
 ```
 
-### Dependency Injection
+## Dependency Injection
 
 Inject dependencies through closures:
 
@@ -5029,7 +8424,7 @@ func createServiceNode(deps Dependencies) flyt.Node {
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Immutable Configuration**: Don't modify captured variables after node creation
 2. **Thread Safety**: Use mutexes for shared state in concurrent scenarios
@@ -5037,18 +8432,21 @@ func createServiceNode(deps Dependencies) flyt.Node {
 4. **Error Handling**: Handle configuration errors gracefully
 5. **Documentation**: Document required configuration clearly
 
-### Next Steps
+## Next Steps
 
-* [Error Handling](/patterns/error-handling) - Build resilient nodes
-* [Custom Node Types](/advanced/custom-nodes) - Advanced node patterns
-* [Best Practices](/best-practices) - General guidelines
+- [Error Handling](/patterns/error-handling) - Build resilient nodes
+- [Custom Node Types](/advanced/custom-nodes) - Advanced node patterns
+- [Best Practices](/best-practices) - General guidelines
 
 
-## Error Handling & Retries
+================================================
+FILE: www/docs/pages/patterns/error-handling.mdx
+================================================
+# Error Handling & Retries
 
 Build resilient workflows with proper error handling and retry strategies.
 
-### Basic Retry Configuration
+## Basic Retry Configuration
 
 Configure retries at the node level:
 
@@ -5068,7 +8466,7 @@ node := flyt.NewNode(
 )
 ```
 
-### Exponential Backoff
+## Exponential Backoff
 
 Implement exponential backoff with RetryableNode:
 
@@ -5099,7 +8497,7 @@ func (n *BackoffNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-### Circuit Breaker Pattern
+## Circuit Breaker Pattern
 
 Prevent cascading failures:
 
@@ -5142,7 +8540,7 @@ func (n *CircuitBreakerNode) Exec(ctx context.Context, prepResult any) (any, err
 }
 ```
 
-### Fallback on Failure
+## Fallback on Failure
 
 Implement the FallbackNode interface for graceful degradation:
 
@@ -5183,7 +8581,7 @@ func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
 }
 ```
 
-### Error Aggregation
+## Error Aggregation
 
 Collect errors from batch operations:
 
@@ -5208,7 +8606,7 @@ func processBatch(ctx context.Context, items []Item) error {
 }
 ```
 
-### Retry with Jitter
+## Retry with Jitter
 
 Add randomization to prevent thundering herd:
 
@@ -5220,7 +8618,7 @@ func (n *JitterNode) GetWait() time.Duration {
 }
 ```
 
-### Selective Retry
+## Selective Retry
 
 Only retry specific errors:
 
@@ -5247,7 +8645,7 @@ func (n *SelectiveRetryNode) GetMaxRetries() int {
 }
 ```
 
-### Error Context
+## Error Context
 
 Provide context for debugging:
 
@@ -5284,7 +8682,7 @@ func (n *DetailedErrorNode) Post(ctx context.Context, shared *flyt.SharedStore, 
 }
 ```
 
-### Timeout Handling
+## Timeout Handling
 
 Prevent hanging operations:
 
@@ -5317,7 +8715,7 @@ func (n *TimeoutNode) Exec(ctx context.Context, prepResult any) (any, error) {
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Identify Transient vs Permanent Errors**: Only retry transient failures
 2. **Set Reasonable Limits**: Don't retry indefinitely
@@ -5326,18 +8724,21 @@ func (n *TimeoutNode) Exec(ctx context.Context, prepResult any) (any, error) {
 5. **Provide Fallbacks**: Gracefully degrade when possible
 6. **Monitor Retry Rates**: High retry rates indicate problems
 
-### Next Steps
+## Next Steps
 
-* [Fallback on Failure](/patterns/fallback) - Graceful degradation
-* [Batch Error Handling](/advanced/batch-processing#batch-error-handling) - Handle batch failures
-* [Best Practices](/best-practices) - General guidelines
+- [Fallback on Failure](/patterns/fallback) - Graceful degradation
+- [Batch Error Handling](/advanced/batch-processing#batch-error-handling) - Handle batch failures
+- [Best Practices](/best-practices) - General guidelines
 
 
-## Fallback on Failure
+================================================
+FILE: www/docs/pages/patterns/fallback.mdx
+================================================
+# Fallback on Failure
 
 Implement graceful degradation when operations fail, ensuring your workflows remain resilient and provide the best possible user experience even during failures.
 
-### FallbackNode Interface
+## FallbackNode Interface
 
 The `FallbackNode` interface allows custom fallback behavior:
 
@@ -5348,7 +8749,7 @@ type FallbackNode interface {
 }
 ```
 
-### Basic Fallback
+## Basic Fallback
 
 Return default values on failure:
 
@@ -5378,7 +8779,7 @@ func (n *DefaultValueNode) ExecFallback(prepResult any, err error) (any, error) 
 }
 ```
 
-### Cached Fallback
+## Cached Fallback
 
 Use cached data when fresh data is unavailable:
 
@@ -5438,7 +8839,7 @@ func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
 }
 ```
 
-### Multi-Level Fallback
+## Multi-Level Fallback
 
 Try multiple fallback strategies:
 
@@ -5484,7 +8885,7 @@ func (n *MultiLevelFallbackNode) ExecFallback(prepResult any, primaryErr error) 
 }
 ```
 
-### Partial Fallback
+## Partial Fallback
 
 Return partial results when complete processing fails:
 
@@ -5528,7 +8929,7 @@ func (n *BatchProcessorNode) ExecFallback(prepResult any, err error) (any, error
 }
 ```
 
-### Circuit Breaker Fallback
+## Circuit Breaker Fallback
 
 Prevent cascading failures:
 
@@ -5590,7 +8991,7 @@ func (n *CircuitBreakerNode) reset() {
 }
 ```
 
-### Fallback with Metrics
+## Fallback with Metrics
 
 Track fallback usage:
 
@@ -5618,7 +9019,7 @@ func (n *MetricsFallbackNode) ExecFallback(prepResult any, err error) (any, erro
 }
 ```
 
-### Conditional Fallback
+## Conditional Fallback
 
 Different fallbacks based on error type:
 
@@ -5653,7 +9054,7 @@ func (n *ConditionalFallbackNode) ExecFallback(prepResult any, err error) (any, 
 }
 ```
 
-### Best Practices
+## Best Practices
 
 1. **Log Fallback Usage**: Track when and why fallbacks are triggered
 2. **Monitor Fallback Rates**: High rates indicate system issues
@@ -5663,9 +9064,107 @@ func (n *ConditionalFallbackNode) ExecFallback(prepResult any, err error) (any, 
 6. **Test Fallback Paths**: Ensure fallbacks work correctly
 7. **Consider User Experience**: Degraded service is better than no service
 
-### Next Steps
+## Next Steps
 
-* [Error Handling](/patterns/error-handling) - Comprehensive error strategies
-* [Conditional Branching](/patterns/branching) - Dynamic flow control
-* [Circuit Breaker Pattern](/patterns/error-handling#circuit-breaker-pattern) - Prevent cascading failures
+- [Error Handling](/patterns/error-handling) - Comprehensive error strategies
+- [Conditional Branching](/patterns/branching) - Dynamic flow control
+- [Circuit Breaker Pattern](/patterns/error-handling#circuit-breaker-pattern) - Prevent cascading failures
+
+
+================================================
+FILE: www/docs/public/site.webmanifest
+================================================
+{"name":"","short_name":"","icons":[{"src":"/android-chrome-192x192.png","sizes":"192x192","type":"image/png"},{"src":"/android-chrome-512x512.png","sizes":"512x512","type":"image/png"}],"theme_color":"#ffffff","background_color":"#ffffff","display":"standalone"}
+
+
+================================================
+FILE: .github/workflows/pages.yml
+================================================
+name: Build and Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]  # or your default branch
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest  # or specify a version like '1.0.0'
+
+      - name: Install Dependencies
+        working-directory: ./www
+        run: bun install
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Generate Full Documentation
+        run: uvx gitingest -e cookbook -o www/docs/public/full-docs.txt
+
+      - name: Build
+        working-directory: ./www
+        run: bun run build
+
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: www/docs/dist  # Your build output directory
+          branch: gh-pages  # The branch the action should deploy to
+
+
+================================================
+FILE: .github/workflows/release.yml
+================================================
+name: "Create Release on Tag Push"
+on:
+  push:
+    tags:
+      - '*'  
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+
+================================================
+FILE: .github/workflows/test.yml
+================================================
+name: go
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+    - run: go test ./... -race
 
