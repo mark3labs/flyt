@@ -21,6 +21,12 @@ jobs:
         working-directory: ./www
         run: bun install
 
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Generate Full Documentation
+        run: uvx gitingest -e cookbook -o www/docs/public/full-docs.txt
+
       - name: Build
         working-directory: ./www
         run: bun run build
