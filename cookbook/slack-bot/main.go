@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/mark3labs/flyt"
-	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 )
@@ -32,18 +30,11 @@ func main() {
 		log.Fatal("Missing required environment variables: SLACK_BOT_TOKEN, SLACK_APP_TOKEN, or OPENAI_API_KEY")
 	}
 
-	// Create Slack clients
-	api := slack.New(
-		botToken,
-		slack.OptionDebug(false),
-		slack.OptionAppLevelToken(appToken),
-	)
-
-	// Create Socket Mode client
-	client := socketmode.New(
-		api,
-		socketmode.OptionDebug(false),
-	)
+	// Create Slack service
+	slackService, err := NewSlackService(botToken, appToken)
+	if err != nil {
+		log.Fatalf("Failed to create Slack service: %v", err)
+	}
 
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -61,10 +52,9 @@ func main() {
 
 	// Start the bot
 	bot := &SlackBot{
-		client:       api,
-		socketClient: client,
-		openAIKey:    openAIKey,
-		llmServices:  make(map[string]*LLMService),
+		slack:       slackService,
+		openAIKey:   openAIKey,
+		llmServices: make(map[string]*LLMService),
 	}
 
 	log.Println("🤖 Slack Bot with Flyt starting...")
@@ -74,23 +64,13 @@ func main() {
 }
 
 type SlackBot struct {
-	client       *slack.Client
-	socketClient *socketmode.Client
-	openAIKey    string
-	botUserID    string
-	llmServices  map[string]*LLMService
-	mu           sync.RWMutex
+	slack       *SlackService
+	openAIKey   string
+	llmServices map[string]*LLMService
+	mu          sync.RWMutex
 }
 
 func (b *SlackBot) Start(ctx context.Context) error {
-	// Get bot user ID
-	authResp, err := b.client.AuthTest()
-	if err != nil {
-		return fmt.Errorf("auth test failed: %w", err)
-	}
-	b.botUserID = authResp.UserID
-	log.Printf("Bot authenticated as %s (ID: %s)", authResp.User, b.botUserID)
-
 	// Start event handler
 	go b.handleEvents(ctx)
 
@@ -99,9 +79,8 @@ func (b *SlackBot) Start(ctx context.Context) error {
 
 	// Run Socket Mode client
 	log.Println("Connected to Slack with Socket Mode")
-	return b.socketClient.RunContext(ctx)
+	return b.slack.RunSocketMode(ctx)
 }
-
 func (b *SlackBot) cleanupOldConversations(ctx context.Context, maxAge time.Duration) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -128,7 +107,7 @@ func (b *SlackBot) handleEvents(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case evt := <-b.socketClient.Events:
+		case evt := <-b.slack.GetEvents():
 			switch evt.Type {
 			case socketmode.EventTypeConnecting:
 				log.Println("Connecting to Slack...")
@@ -151,7 +130,7 @@ func (b *SlackBot) handleEventAPI(ctx context.Context, evt socketmode.Event) {
 	}
 
 	// Acknowledge the event
-	b.socketClient.Ack(*evt.Request)
+	b.slack.AckEvent(*evt.Request)
 
 	switch eventsAPIEvent.Type {
 	case slackevents.CallbackEvent:
@@ -159,11 +138,15 @@ func (b *SlackBot) handleEventAPI(ctx context.Context, evt socketmode.Event) {
 		switch ev := innerEvent.Data.(type) {
 		case *slackevents.MessageEvent:
 			// Skip bot's own messages
-			if ev.User == b.botUserID || ev.BotID != "" {
+			if b.slack.IsBotMessage(ev) {
 				return
 			}
 			b.handleMessage(ctx, ev)
 		case *slackevents.AppMentionEvent:
+			// Skip bot's own mentions
+			if b.slack.IsBotMention(ev) {
+				return
+			}
 			b.handleMention(ctx, ev)
 		}
 	}
@@ -235,13 +218,19 @@ func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, thread
 
 func (b *SlackBot) createWorkflow(llmService *LLMService) *flyt.Flow {
 	// Create nodes with injected dependencies
-	parseNode := &ParseMessageNode{BaseNode: flyt.NewBaseNode()}
+	parseNode := &ParseMessageNode{
+		BaseNode: flyt.NewBaseNode(),
+		slack:    b.slack,
+	}
 	llmNode := &LLMNode{
 		BaseNode: flyt.NewBaseNode(),
 		llm:      llmService,
 	}
 	toolNode := &ToolExecutorNode{BaseNode: flyt.NewBaseNode()}
-	formatNode := &FormatResponseNode{BaseNode: flyt.NewBaseNode()}
+	formatNode := &FormatResponseNode{
+		BaseNode: flyt.NewBaseNode(),
+		slack:    b.slack,
+	}
 
 	// Create flow
 	flow := flyt.NewFlow(parseNode)
@@ -255,16 +244,7 @@ func (b *SlackBot) createWorkflow(llmService *LLMService) *flyt.Flow {
 }
 
 func (b *SlackBot) sendMessage(channel, text, threadTS string) {
-	options := []slack.MsgOption{
-		slack.MsgOptionText(text, false),
-	}
-
-	if threadTS != "" {
-		options = append(options, slack.MsgOptionTS(threadTS))
-	}
-
-	_, _, err := b.client.PostMessage(channel, options...)
-	if err != nil {
+	if err := b.slack.SendMessage(channel, text, threadTS); err != nil {
 		log.Printf("Failed to send message: %v", err)
 	}
 }

@@ -30,10 +30,12 @@ User Message → Parse → LLM → Tool Execution (if needed) → Format → Res
 
 ### Key Design Features
 
-- **Dependency Injection**: LLM service is injected into nodes that need it, not passed through SharedStore
+- **Service Abstraction**: Both Slack and LLM operations are encapsulated in service objects
+- **Dependency Injection**: Services are injected into nodes that need them, not passed through SharedStore
 - **Per-Thread Conversations**: Each Slack thread maintains its own conversation history
 - **Memory Management**: Automatic cleanup of old conversations after 30 minutes of inactivity
-- **Clean Separation**: Configuration (API keys) separate from workflow data
+- **Clean Separation**: Configuration (API keys) and external services separate from workflow data
+- **Testability**: Services can be easily mocked for unit testing
 
 ## Prerequisites
 
@@ -241,8 +243,9 @@ Bot: I'll calculate 2^10 and get you a Chuck Norris fact.
 
 ```
 slack-bot/
-├── main.go       # Entry point and Slack integration
-├── llm.go        # OpenAI GPT-4 integration with function calling
+├── main.go       # Entry point and bot orchestration
+├── slack.go      # Slack service abstraction
+├── llm.go        # LLM service with OpenAI GPT-4.1 integration
 ├── tools.go      # Tool implementations (calculator, Chuck Norris)
 ├── nodes.go      # Flyt node implementations
 ├── manifest.yml  # Slack app manifest for easy setup
@@ -255,15 +258,22 @@ slack-bot/
 ### Key Components
 
 **main.go**
-- Slack client initialization
-- Socket Mode event handling
-- Workflow orchestration
+- Bot orchestration and lifecycle management
+- Per-thread LLM service management
+- Workflow creation with dependency injection
+- Memory cleanup routines
+
+**slack.go**
+- SlackService: Encapsulates all Slack API operations
+- Message sending, reactions, thread management
+- User and channel information retrieval
+- Socket Mode event handling abstraction
 
 **llm.go**
-- OpenAI API client
-- Function calling definitions
-- Conversation management
-- Request/response handling
+- LLMService: Manages OpenAI client and conversations
+- Function calling definitions for tools
+- Conversation history management
+- Request/response handling with GPT-4.1
 
 **tools.go**
 - Calculator expression evaluator
@@ -271,10 +281,10 @@ slack-bot/
 - Tool execution dispatcher
 
 **nodes.go**
-- ParseMessageNode: Message preprocessing
-- LLMNode: AI processing with tool detection
+- ParseMessageNode: Message preprocessing with optional Slack context
+- LLMNode: AI processing with injected LLM service
 - ToolExecutorNode: Tool execution
-- FormatResponseNode: Response formatting
+- FormatResponseNode: Response formatting with Slack service integration
 
 ## Configuration
 

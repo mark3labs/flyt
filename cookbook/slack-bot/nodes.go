@@ -12,6 +12,7 @@ import (
 // ParseMessageNode prepares the message for processing
 type ParseMessageNode struct {
 	*flyt.BaseNode
+	slack *SlackService // Optional: for enhanced message parsing
 }
 
 func (n *ParseMessageNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
@@ -31,15 +32,22 @@ func (n *ParseMessageNode) Prep(ctx context.Context, shared *flyt.SharedStore) (
 
 	// Remove bot mention if present (format: <@BOTID>)
 	if strings.Contains(cleanedMessage, "<@") {
-		parts := strings.Split(cleanedMessage, ">")
-		if len(parts) > 1 {
-			cleanedMessage = strings.TrimSpace(strings.Join(parts[1:], ">"))
+		// If we have SlackService, we can be more precise about bot ID
+		if n.slack != nil {
+			botID := n.slack.GetBotUserID()
+			mentionPattern := fmt.Sprintf("<@%s>", botID)
+			cleanedMessage = strings.ReplaceAll(cleanedMessage, mentionPattern, "")
+		} else {
+			// Fallback to generic mention removal
+			parts := strings.Split(cleanedMessage, ">")
+			if len(parts) > 1 {
+				cleanedMessage = strings.TrimSpace(strings.Join(parts[1:], ">"))
+			}
 		}
 	}
 
-	return cleanedMessage, nil
+	return strings.TrimSpace(cleanedMessage), nil
 }
-
 func (n *ParseMessageNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	// Message is already cleaned in Prep
 	return prepResult, nil
@@ -171,6 +179,7 @@ func (n *ToolExecutorNode) Post(ctx context.Context, shared *flyt.SharedStore, p
 // FormatResponseNode formats the final response for Slack
 type FormatResponseNode struct {
 	*flyt.BaseNode
+	slack *SlackService
 }
 
 func (n *FormatResponseNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
@@ -178,6 +187,15 @@ func (n *FormatResponseNode) Prep(ctx context.Context, shared *flyt.SharedStore)
 	if !ok {
 		return nil, fmt.Errorf("no response found")
 	}
+
+	// Optionally show typing indicator
+	if channel, ok := shared.Get("channel"); ok {
+		if channelStr, ok := channel.(string); ok {
+			// This is a no-op in current Slack API but kept for future
+			n.slack.SetTyping(channelStr)
+		}
+	}
+
 	return response, nil
 }
 
