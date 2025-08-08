@@ -1,0 +1,42 @@
+display_information:
+  name: Flyt AI Bot
+  description: An AI-powered Slack bot using OpenAI GPT-4 with calculator and Chuck Norris facts
+  background_color: "#2c2d30"
+  long_description: This bot integrates OpenAI's GPT-4 with function calling capabilities to provide intelligent responses, perform calculations, and share Chuck Norris facts. Built with the Flyt workflow framework for clean, maintainable code architecture.
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Flyt AI Bot
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - channels:read
+      - chat:write
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - mpim:history
+      - mpim:read
+      - mpim:write
+      - users:read
+      - app_mentions:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

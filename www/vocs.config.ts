@@ -123,6 +123,10 @@ export default defineConfig({
           link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/mcp',
         },
         {
+          text: 'Slack Bot',
+          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/slack-bot',
+        },
+        {
           text: 'SST Integration',
           link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/sst-integration',
         },
