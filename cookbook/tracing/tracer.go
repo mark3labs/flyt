@@ -281,6 +281,140 @@ func countParentLevels(t *Tracer, span *Span) int {
 	return count
 }
 
+// Generation represents a traced LLM generation
+type Generation struct {
+	tracer           *Tracer
+	name             string
+	startTime        time.Time
+	metadata         map[string]any
+	generationID     string
+	traceID          string
+	parentID         string
+	model            string
+	promptTokens     int
+	completionTokens int
+	totalTokens      int
+}
+
+// StartGeneration starts a new LLM generation tracking
+func (t *Tracer) StartGeneration(parentSpan *Span, name string, model string, messages []map[string]string, metadata map[string]any) *Generation {
+	gen := &Generation{
+		tracer:       t,
+		name:         name,
+		startTime:    time.Now(),
+		metadata:     metadata,
+		generationID: uuid.New().String(),
+		traceID:      t.traceID,
+		model:        model,
+	}
+
+	if parentSpan != nil {
+		gen.parentID = parentSpan.spanID
+	}
+
+	if t.enabled && t.client != nil {
+		// Convert messages to JSON string for input
+		inputJSON, _ := sonic.MarshalString(messages)
+
+		// Create generation with new API
+		genBody := &langfuse.GenerationEventBody{
+			BaseObservationEventBody: langfuse.BaseObservationEventBody{
+				BaseEventBody: langfuse.BaseEventBody{
+					ID:       gen.generationID,
+					Name:     name,
+					MetaData: metadata,
+				},
+				TraceID:             t.traceID,
+				ParentObservationID: gen.parentID,
+				Input:               inputJSON,
+				StartTime:           time.Now(),
+			},
+			Model: model,
+		}
+
+		_, err := t.client.CreateGeneration(genBody)
+		if err != nil {
+			log.Printf("Failed to create generation: %v", err)
+		}
+	} else {
+		indent := "    "
+		if parentSpan != nil {
+			for i := 0; i < countParentLevels(t, &Span{parentID: gen.parentID}); i++ {
+				indent += "  "
+			}
+		}
+		log.Printf("%s🤖 [GENERATION START] %s - model: %s - messages: %v", indent, name, model, messages)
+	}
+
+	return gen
+}
+
+// EndWithResponse ends the generation with the LLM response and usage stats
+func (g *Generation) EndWithResponse(response string, usage map[string]int, err error) {
+	duration := time.Since(g.startTime)
+
+	if g.tracer.enabled && g.tracer.client != nil {
+		// Update generation metadata
+		metadata := g.metadata
+		if metadata == nil {
+			metadata = make(map[string]any)
+		}
+		metadata["duration_ms"] = duration.Milliseconds()
+		if err != nil {
+			metadata["error"] = err.Error()
+		}
+
+		// Prepare usage data
+		var usageData *langfuse.Usage
+		if usage != nil {
+			usageData = &langfuse.Usage{
+				PromptTokens:     usage["prompt_tokens"],
+				CompletionTokens: usage["completion_tokens"],
+				TotalTokens:      usage["total_tokens"],
+			}
+		}
+
+		// End the generation with new API
+		genBody := &langfuse.GenerationEventBody{
+			BaseObservationEventBody: langfuse.BaseObservationEventBody{
+				BaseEventBody: langfuse.BaseEventBody{
+					ID:       g.generationID,
+					MetaData: metadata,
+				},
+				TraceID: g.traceID,
+				Output:  response,
+			},
+			EndTime: time.Now(),
+			Model:   g.model,
+			Usage:   usageData,
+		}
+
+		endErr := g.tracer.client.EndGeneration(genBody)
+		if endErr != nil {
+			log.Printf("Failed to end generation: %v", endErr)
+		}
+	} else {
+		status := "SUCCESS"
+		if err != nil {
+			status = fmt.Sprintf("ERROR: %v", err)
+		}
+
+		indent := "    "
+		for i := 0; i < countParentLevels(g.tracer, &Span{parentID: g.parentID}); i++ {
+			indent += "  "
+		}
+
+		usageStr := ""
+		if usage != nil {
+			usageStr = fmt.Sprintf(" - tokens: prompt=%d, completion=%d, total=%d",
+				usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"])
+		}
+
+		log.Printf("%s🤖 [GENERATION END] %s - Duration: %v - Status: %s%s - Response: %.100s...",
+			indent, g.name, duration, status, usageStr, response)
+	}
+}
+
 // EndWithOutput ends the span with output tracking
 func (s *Span) EndWithOutput(output any, err error) {
 	duration := time.Since(s.startTime)

@@ -6,6 +6,7 @@ This example demonstrates how to add distributed tracing to Flyt workflows using
 
 - **Comprehensive tracing**: Traces the entire flow execution including prep, exec, and post phases
 - **Hierarchical spans**: Creates nested spans for each node and phase
+- **LLM generation tracking**: Specialized tracing for model calls with token usage
 - **Metadata tracking**: Captures input, output, and custom metadata at each step
 - **Error tracking**: Records errors and failures in traces
 - **Dependency injection**: Tracer is injected through closures
@@ -16,6 +17,7 @@ This example demonstrates how to add distributed tracing to Flyt workflows using
 
 - Go 1.23 or later
 - Langfuse account (optional - runs in demo mode without it)
+- OpenAI API key (optional - uses mock responses without it)
 
 ## Installation
 
@@ -34,7 +36,13 @@ export LANGFUSE_PUBLIC_KEY=your-public-key
 export LANGFUSE_SECRET_KEY=your-secret-key
 ```
 
-Without these variables, the example runs in demo mode and logs traces to the console.
+To enable real LLM calls (using GPT-4):
+
+```bash
+export OPENAI_API_KEY=your-openai-api-key
+```
+
+Without these variables, the example runs in demo mode with console logging and mock LLM responses.
 
 ## Usage
 
@@ -50,10 +58,11 @@ go run .
 
 ### Flow Structure
 
-The example creates a three-node pipeline:
+The example creates a four-node pipeline:
 1. **GreetingNode**: Creates a greeting message
 2. **UppercaseNode**: Converts the greeting to uppercase
 3. **ReverseNode**: Reverses the uppercase greeting
+4. **SummarizeNode**: Uses GPT-4 to create a playful summary (includes LLM generation tracing)
 
 ### Tracing Architecture
 
@@ -67,13 +76,18 @@ BasicGreetingFlow (Trace)
 │   ├── UppercaseNode.prep (Child Span)
 │   ├── UppercaseNode.exec (Child Span)
 │   └── UppercaseNode.post (Child Span)
-└── ReverseNode (Span)
-    ├── ReverseNode.prep (Child Span)
-    ├── ReverseNode.exec (Child Span)
-    └── ReverseNode.post (Child Span)
+├── ReverseNode (Span)
+│   ├── ReverseNode.prep (Child Span)
+│   ├── ReverseNode.exec (Child Span)
+│   └── ReverseNode.post (Child Span)
+└── SummarizeNode (Span)
+    ├── SummarizeNode.prep (Child Span)
+    ├── SummarizeNode.exec (Child Span)
+    │   └── gpt-4-summary (Generation) - LLM-specific tracing
+    └── SummarizeNode.post (Child Span)
 ```
 
-Each node creates a parent span that encompasses all its phases, with prep, exec, and post phases as child spans. This provides better visualization of the node-level performance and hierarchy.
+Each node creates a parent span that encompasses all its phases, with prep, exec, and post phases as child spans. The LLM node uses specialized generation tracing for model calls, capturing token usage and model parameters.
 
 ### Key Components
 

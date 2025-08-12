@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -272,19 +276,212 @@ func CreateReverseNode(tracer *Tracer) flyt.Node {
 
 			// End with output
 			defer span.EndWithOutput(map[string]any{
-				"final_result": reversed,
-				"action":       "default",
+				"next_action":  "summarize",
+				"stored_value": reversed,
 			}, nil)
 
 			// End the node span when post completes
 			defer nodeSpan.EndWithOutput(map[string]any{
 				"final_reversed": reversed,
-				"action":         "default",
+				"next_action":    "summarize",
+			}, nil)
+
+			return "summarize", nil
+		}),
+	)
+}
+
+// CreateSummarizeNode creates a node that summarizes text using an LLM
+func CreateSummarizeNode(tracer *Tracer) flyt.Node {
+	// Create a parent span for the entire node
+	var nodeSpan *Span
+
+	return flyt.NewNode(
+		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+			reversed, ok := shared.Get("reversed_greeting")
+			if !ok {
+				return "", fmt.Errorf("reversed_greeting not found")
+			}
+
+			// Create node-level span if not exists
+			if nodeSpan == nil {
+				nodeSpan = tracer.StartSpan("SummarizeNode", map[string]any{
+					"node": "SummarizeNode",
+					"type": "llm",
+				}, map[string]any{
+					"input_text": reversed,
+				})
+			}
+
+			// Start prep span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "SummarizeNode.prep", map[string]any{
+				"phase": "prep",
+			}, map[string]any{
+				"text_from_store": reversed,
+			})
+
+			// End with output
+			defer span.EndWithOutput(map[string]any{
+				"prepared_text": reversed,
+			}, nil)
+
+			return reversed, nil
+		}),
+		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+			text := prepResult.(string)
+
+			// Start exec span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "SummarizeNode.exec", map[string]any{
+				"phase": "exec",
+			}, map[string]any{
+				"input_text": text,
+			})
+			defer func() {
+				span.EndWithOutput(map[string]any{
+					"llm_called": true,
+				}, nil)
+			}()
+
+			// Get API key from environment
+			apiKey := os.Getenv("OPENAI_API_KEY")
+			if apiKey == "" {
+				// If no API key, return a mock response
+				mockResponse := fmt.Sprintf("Summary of '%s': This is a mock LLM response. Set OPENAI_API_KEY to use real API.", text)
+				return mockResponse, nil
+			}
+
+			// Prepare messages for the LLM
+			messages := []map[string]string{
+				{
+					"role":    "system",
+					"content": "You are a helpful assistant that creates playful, one-sentence summaries.",
+				},
+				{
+					"role":    "user",
+					"content": fmt.Sprintf("Create a fun, creative one-sentence summary of this text: '%s'", text),
+				},
+			}
+
+			// Start generation tracking as child of exec span
+			generation := tracer.StartGeneration(span, "gpt-4.1-summary", "gpt-4.1", messages, map[string]any{
+				"temperature": 0.7,
+				"max_tokens":  100,
+			})
+
+			// Call the LLM
+			response, usage, err := CallLLM(apiKey, messages)
+
+			// End generation with response
+			generation.EndWithResponse(response, usage, err)
+
+			if err != nil {
+				return "", fmt.Errorf("LLM call failed: %v", err)
+			}
+
+			return response, nil
+		}),
+		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+			summary := execResult.(string)
+
+			// Start post span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "SummarizeNode.post", map[string]any{
+				"phase": "post",
+			}, map[string]any{
+				"summary_to_store": summary,
+			})
+
+			shared.Set("llm_summary", summary)
+
+			// End with output
+			defer span.EndWithOutput(map[string]any{
+				"final_summary": summary,
+				"action":        "default",
+			}, nil)
+
+			// End the node span when post completes
+			defer nodeSpan.EndWithOutput(map[string]any{
+				"final_summary": summary,
+				"action":        "default",
 			}, nil)
 
 			return flyt.DefaultAction, nil
 		}),
 	)
+}
+
+// CallLLM calls the OpenAI API with messages
+func CallLLM(apiKey string, messages []map[string]string) (string, map[string]int, error) {
+	// Create request body
+	reqBody := map[string]any{
+		"model":       "gpt-4", // Using gpt-4 as gpt-4.1 doesn't exist
+		"messages":    messages,
+		"temperature": 0.7,
+		"max_tokens":  100,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	// Make request
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", nil, err
+	}
+
+	// Extract the response
+	choices, ok := result["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		return "", nil, fmt.Errorf("no response from API")
+	}
+
+	choice := choices[0].(map[string]any)
+	message := choice["message"].(map[string]any)
+	content := message["content"].(string)
+
+	// Extract usage statistics if available
+	usage := make(map[string]int)
+	if usageData, ok := result["usage"].(map[string]any); ok {
+		if promptTokens, ok := usageData["prompt_tokens"].(float64); ok {
+			usage["prompt_tokens"] = int(promptTokens)
+		}
+		if completionTokens, ok := usageData["completion_tokens"].(float64); ok {
+			usage["completion_tokens"] = int(completionTokens)
+		}
+		if totalTokens, ok := usageData["total_tokens"].(float64); ok {
+			usage["total_tokens"] = int(totalTokens)
+		}
+	}
+
+	return content, usage, nil
 }
 
 // CreateTracedFlow creates a flow with tracing enabled
@@ -293,11 +490,13 @@ func CreateTracedFlow(tracer *Tracer) *flyt.Flow {
 	greetingNode := CreateGreetingNode(tracer)
 	uppercaseNode := CreateUppercaseNode(tracer)
 	reverseNode := CreateReverseNode(tracer)
+	summarizeNode := CreateSummarizeNode(tracer)
 
 	// Create flow
 	flow := flyt.NewFlow(greetingNode)
 	flow.Connect(greetingNode, "uppercase", uppercaseNode)
 	flow.Connect(uppercaseNode, "reverse", reverseNode)
+	flow.Connect(reverseNode, "summarize", summarizeNode)
 
 	return flow
 }
@@ -352,6 +551,12 @@ func main() {
 		log.Println("   Running in demo mode without actual tracing")
 	}
 
+	// Check for OpenAI API key
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		log.Println("ℹ️  Note: OPENAI_API_KEY not set - LLM node will use mock responses")
+	}
+
 	// Create tracer
 	tracer := NewTracer()
 
@@ -375,11 +580,13 @@ func main() {
 	greeting, _ := shared.Get("greeting")
 	uppercase, _ := shared.Get("uppercase_greeting")
 	reversed, _ := shared.Get("reversed_greeting")
+	summary, _ := shared.Get("llm_summary")
 
 	fmt.Printf("📤 Output:\n")
 	fmt.Printf("   Greeting: %v\n", greeting)
 	fmt.Printf("   Uppercase: %v\n", uppercase)
 	fmt.Printf("   Reversed: %v\n", reversed)
+	fmt.Printf("   Summary: %v\n", summary)
 	fmt.Println("✅ Flow completed successfully!")
 
 	if host != "" {
