@@ -12,6 +12,9 @@ import (
 
 // CreateGreetingNode creates a node that generates a greeting message
 func CreateGreetingNode(tracer *Tracer) flyt.Node {
+	// Create a parent span for the entire node that will be closed when node completes
+	var nodeSpan *Span
+
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			name, ok := shared.Get("name")
@@ -19,9 +22,18 @@ func CreateGreetingNode(tracer *Tracer) flyt.Node {
 				name = "World"
 			}
 
-			// Start prep span with input
-			span := tracer.StartSpan("GreetingNode.prep", map[string]any{
-				"node":  "GreetingNode",
+			// Create node-level span if not exists
+			if nodeSpan == nil {
+				nodeSpan = tracer.StartSpan("GreetingNode", map[string]any{
+					"node": "GreetingNode",
+					"type": "greeting",
+				}, map[string]any{
+					"initial_name": name,
+				})
+			}
+
+			// Start prep span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "GreetingNode.prep", map[string]any{
 				"phase": "prep",
 			}, map[string]any{
 				"name_from_store": name,
@@ -37,9 +49,8 @@ func CreateGreetingNode(tracer *Tracer) flyt.Node {
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
 			name := prepResult.(string)
 
-			// Start exec span with input
-			span := tracer.StartSpan("GreetingNode.exec", map[string]any{
-				"node":  "GreetingNode",
+			// Start exec span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "GreetingNode.exec", map[string]any{
 				"phase": "exec",
 			}, map[string]any{
 				"input_name": name,
@@ -60,9 +71,8 @@ func CreateGreetingNode(tracer *Tracer) flyt.Node {
 		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			greeting := execResult.(string)
 
-			// Start post span with input
-			span := tracer.StartSpan("GreetingNode.post", map[string]any{
-				"node":  "GreetingNode",
+			// Start post span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "GreetingNode.post", map[string]any{
 				"phase": "post",
 			}, map[string]any{
 				"greeting_to_store": greeting,
@@ -76,6 +86,12 @@ func CreateGreetingNode(tracer *Tracer) flyt.Node {
 				"stored_value": greeting,
 			}, nil)
 
+			// End the node span when post completes
+			defer nodeSpan.EndWithOutput(map[string]any{
+				"final_greeting": greeting,
+				"next_action":    "uppercase",
+			}, nil)
+
 			return "uppercase", nil
 		}),
 	)
@@ -83,6 +99,9 @@ func CreateGreetingNode(tracer *Tracer) flyt.Node {
 
 // CreateUppercaseNode creates a node that converts text to uppercase
 func CreateUppercaseNode(tracer *Tracer) flyt.Node {
+	// Create a parent span for the entire node
+	var nodeSpan *Span
+
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			greeting, ok := shared.Get("greeting")
@@ -90,9 +109,18 @@ func CreateUppercaseNode(tracer *Tracer) flyt.Node {
 				return "", fmt.Errorf("greeting not found")
 			}
 
-			// Start prep span with input
-			span := tracer.StartSpan("UppercaseNode.prep", map[string]any{
-				"node":  "UppercaseNode",
+			// Create node-level span if not exists
+			if nodeSpan == nil {
+				nodeSpan = tracer.StartSpan("UppercaseNode", map[string]any{
+					"node": "UppercaseNode",
+					"type": "transformation",
+				}, map[string]any{
+					"input_text": greeting,
+				})
+			}
+
+			// Start prep span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "UppercaseNode.prep", map[string]any{
 				"phase": "prep",
 			}, map[string]any{
 				"greeting_from_store": greeting,
@@ -108,9 +136,8 @@ func CreateUppercaseNode(tracer *Tracer) flyt.Node {
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
 			greeting := prepResult.(string)
 
-			// Start exec span with input
-			span := tracer.StartSpan("UppercaseNode.exec", map[string]any{
-				"node":  "UppercaseNode",
+			// Start exec span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "UppercaseNode.exec", map[string]any{
 				"phase": "exec",
 			}, map[string]any{
 				"input_greeting": greeting,
@@ -142,9 +169,8 @@ func CreateUppercaseNode(tracer *Tracer) flyt.Node {
 		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			uppercase := execResult.(string)
 
-			// Start post span with input
-			span := tracer.StartSpan("UppercaseNode.post", map[string]any{
-				"node":  "UppercaseNode",
+			// Start post span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "UppercaseNode.post", map[string]any{
 				"phase": "post",
 			}, map[string]any{
 				"uppercase_to_store": uppercase,
@@ -158,6 +184,12 @@ func CreateUppercaseNode(tracer *Tracer) flyt.Node {
 				"stored_value": uppercase,
 			}, nil)
 
+			// End the node span when post completes
+			defer nodeSpan.EndWithOutput(map[string]any{
+				"final_uppercase": uppercase,
+				"next_action":     "reverse",
+			}, nil)
+
 			return "reverse", nil
 		}),
 	)
@@ -165,6 +197,9 @@ func CreateUppercaseNode(tracer *Tracer) flyt.Node {
 
 // CreateReverseNode creates a node that reverses text
 func CreateReverseNode(tracer *Tracer) flyt.Node {
+	// Create a parent span for the entire node
+	var nodeSpan *Span
+
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			uppercase, ok := shared.Get("uppercase_greeting")
@@ -172,9 +207,18 @@ func CreateReverseNode(tracer *Tracer) flyt.Node {
 				return "", fmt.Errorf("uppercase_greeting not found")
 			}
 
-			// Start prep span with input
-			span := tracer.StartSpan("ReverseNode.prep", map[string]any{
-				"node":  "ReverseNode",
+			// Create node-level span if not exists
+			if nodeSpan == nil {
+				nodeSpan = tracer.StartSpan("ReverseNode", map[string]any{
+					"node": "ReverseNode",
+					"type": "transformation",
+				}, map[string]any{
+					"input_text": uppercase,
+				})
+			}
+
+			// Start prep span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "ReverseNode.prep", map[string]any{
 				"phase": "prep",
 			}, map[string]any{
 				"uppercase_from_store": uppercase,
@@ -190,9 +234,8 @@ func CreateReverseNode(tracer *Tracer) flyt.Node {
 		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
 			text := prepResult.(string)
 
-			// Start exec span with input
-			span := tracer.StartSpan("ReverseNode.exec", map[string]any{
-				"node":  "ReverseNode",
+			// Start exec span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "ReverseNode.exec", map[string]any{
 				"phase": "exec",
 			}, map[string]any{
 				"input_text": text,
@@ -218,9 +261,8 @@ func CreateReverseNode(tracer *Tracer) flyt.Node {
 		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			reversed := execResult.(string)
 
-			// Start post span with input
-			span := tracer.StartSpan("ReverseNode.post", map[string]any{
-				"node":  "ReverseNode",
+			// Start post span as child of node span
+			span := tracer.StartChildSpan(nodeSpan, "ReverseNode.post", map[string]any{
 				"phase": "post",
 			}, map[string]any{
 				"reversed_to_store": reversed,
@@ -232,6 +274,12 @@ func CreateReverseNode(tracer *Tracer) flyt.Node {
 			defer span.EndWithOutput(map[string]any{
 				"final_result": reversed,
 				"action":       "default",
+			}, nil)
+
+			// End the node span when post completes
+			defer nodeSpan.EndWithOutput(map[string]any{
+				"final_reversed": reversed,
+				"action":         "default",
 			}, nil)
 
 			return flyt.DefaultAction, nil

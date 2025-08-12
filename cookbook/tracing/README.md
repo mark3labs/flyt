@@ -59,16 +59,21 @@ The example creates a three-node pipeline:
 
 ```
 BasicGreetingFlow (Trace)
-├── GreetingNode.prep (Span)
-├── GreetingNode.exec (Span)
-├── GreetingNode.post (Span)
-├── UppercaseNode.prep (Span)
-├── UppercaseNode.exec (Span)
-├── UppercaseNode.post (Span)
-├── ReverseNode.prep (Span)
-├── ReverseNode.exec (Span)
-└── ReverseNode.post (Span)
+├── GreetingNode (Span)
+│   ├── GreetingNode.prep (Child Span)
+│   ├── GreetingNode.exec (Child Span)
+│   └── GreetingNode.post (Child Span)
+├── UppercaseNode (Span)
+│   ├── UppercaseNode.prep (Child Span)
+│   ├── UppercaseNode.exec (Child Span)
+│   └── UppercaseNode.post (Child Span)
+└── ReverseNode (Span)
+    ├── ReverseNode.prep (Child Span)
+    ├── ReverseNode.exec (Child Span)
+    └── ReverseNode.post (Child Span)
 ```
+
+Each node creates a parent span that encompasses all its phases, with prep, exec, and post phases as child spans. This provides better visualization of the node-level performance and hierarchy.
 
 ### Key Components
 
@@ -94,24 +99,37 @@ This example uses the `github.com/cloudwego/eino-ext/libs/acl/langfuse` client, 
 
 ## Tracing Pattern
 
-Each node follows this pattern:
+Each node follows this hierarchical pattern:
 
 ```go
 func CreateNode(tracer *Tracer) flyt.Node {
+    var nodeSpan *Span
+    
     return flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            span := tracer.StartSpan("NodeName.prep", metadata)
-            defer span.End(nil)
+            // Create node-level parent span on first execution
+            if nodeSpan == nil {
+                nodeSpan = tracer.StartSpan("NodeName", nodeMetadata, input)
+            }
+            
+            // Create prep phase as child span
+            span := tracer.StartChildSpan(nodeSpan, "NodeName.prep", phaseMetadata, input)
+            defer span.EndWithOutput(output, nil)
             // ... prep logic ...
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-            span := tracer.StartSpan("NodeName.exec", metadata)
-            defer span.End(nil)
+            // Create exec phase as child span
+            span := tracer.StartChildSpan(nodeSpan, "NodeName.exec", phaseMetadata, input)
+            defer span.EndWithOutput(output, nil)
             // ... exec logic ...
         }),
         flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-            span := tracer.StartSpan("NodeName.post", metadata)
-            defer span.End(nil)
+            // Create post phase as child span
+            span := tracer.StartChildSpan(nodeSpan, "NodeName.post", phaseMetadata, input)
+            defer span.EndWithOutput(output, nil)
+            
+            // End the node-level parent span
+            defer nodeSpan.EndWithOutput(finalOutput, nil)
             // ... post logic ...
         }),
     )

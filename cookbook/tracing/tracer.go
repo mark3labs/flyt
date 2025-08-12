@@ -210,6 +210,77 @@ func (t *Tracer) StartSpan(name string, metadata map[string]any, input any) *Spa
 	return span
 }
 
+// StartChildSpan starts a new span as a child of a specific parent span
+func (t *Tracer) StartChildSpan(parentSpan *Span, name string, metadata map[string]any, input any) *Span {
+	span := &Span{
+		tracer:    t,
+		name:      name,
+		startTime: time.Now(),
+		metadata:  metadata,
+		spanID:    uuid.New().String(),
+		traceID:   t.traceID,
+		parentID:  parentSpan.spanID,
+		input:     input,
+	}
+
+	t.spans = append(t.spans, span)
+
+	if t.enabled && t.client != nil {
+		// Convert input to JSON string
+		inputJSON, _ := sonic.MarshalString(input)
+
+		// Create span with new API
+		spanBody := &langfuse.SpanEventBody{
+			BaseObservationEventBody: langfuse.BaseObservationEventBody{
+				BaseEventBody: langfuse.BaseEventBody{
+					ID:       span.spanID,
+					Name:     name,
+					MetaData: metadata,
+				},
+				TraceID:             t.traceID,
+				ParentObservationID: parentSpan.spanID,
+				Input:               inputJSON,
+				StartTime:           time.Now(),
+			},
+		}
+
+		_, err := t.client.CreateSpan(spanBody)
+		if err != nil {
+			log.Printf("Failed to create child span: %v", err)
+		}
+	} else {
+		indent := "    "
+		for i := 0; i < countParentLevels(t, span); i++ {
+			indent += "  "
+		}
+		log.Printf("%s📍 [CHILD SPAN START] %s - parent: %s - metadata: %v, input: %v", indent, name, parentSpan.name, metadata, input)
+	}
+
+	return span
+}
+
+// countParentLevels counts how many parent levels a span has for indentation
+func countParentLevels(t *Tracer, span *Span) int {
+	count := 0
+	currentParentID := span.parentID
+	for currentParentID != "" {
+		count++
+		// Find parent span
+		found := false
+		for _, s := range t.spans {
+			if s.spanID == currentParentID {
+				currentParentID = s.parentID
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+	return count
+}
+
 // EndWithOutput ends the span with output tracking
 func (s *Span) EndWithOutput(output any, err error) {
 	duration := time.Since(s.startTime)
@@ -250,7 +321,14 @@ func (s *Span) EndWithOutput(output any, err error) {
 		if err != nil {
 			status = fmt.Sprintf("ERROR: %v", err)
 		}
-		log.Printf("  📍 [SPAN END] %s - Duration: %v - Status: %s - Output: %v", s.name, duration, status, output)
+
+		// Add indentation for child spans
+		indent := "  "
+		for i := 0; i < countParentLevels(s.tracer, s); i++ {
+			indent += "  "
+		}
+
+		log.Printf("%s📍 [SPAN END] %s - Duration: %v - Status: %s - Output: %v", indent, s.name, duration, status, output)
 	}
 
 	// Reset current span to parent if this was the current span
