@@ -2,20 +2,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
+	"github.com/bytedance/sonic"
+	langfuse "github.com/cloudwego/eino-ext/libs/acl/langfuse"
 	"github.com/google/uuid"
-	"github.com/henomis/langfuse-go"
-	"github.com/henomis/langfuse-go/model"
 	"github.com/mark3labs/flyt"
 )
 
 // Tracer wraps Langfuse client for tracing Flyt workflows
 type Tracer struct {
-	client      *langfuse.Langfuse
+	client      langfuse.Langfuse
 	enabled     bool
 	traceID     string
 	currentSpan *Span
@@ -51,10 +52,17 @@ func NewTracer() *Tracer {
 
 	enabled := host != "" && publicKey != "" && secretKey != ""
 
-	var client *langfuse.Langfuse
+	var client langfuse.Langfuse
 	if enabled {
-		ctx := context.Background()
-		client = langfuse.New(ctx)
+		// Create Langfuse client with the new API
+		client = langfuse.NewLangfuse(
+			host,
+			publicKey,
+			secretKey,
+			// You can add options here like:
+			// langfuse.WithFlushInterval(5*time.Second),
+			// langfuse.WithMaxRetry(3),
+		)
 	}
 
 	return &Tracer{
@@ -77,14 +85,21 @@ func (t *Tracer) StartTrace(name string, metadata map[string]any) *Trace {
 		// Generate trace ID
 		t.traceID = uuid.New().String()
 
-		// Create Langfuse trace
-		now := time.Now()
-		_, err := t.client.Trace(&model.Trace{
-			ID:        t.traceID,
-			Name:      name,
-			Metadata:  convertToModelM(metadata),
-			Timestamp: &now,
-		})
+		// Marshal metadata to JSON string if needed
+		metadataJSON, _ := sonic.MarshalString(metadata)
+
+		// Create trace with new API
+		traceBody := &langfuse.TraceEventBody{
+			BaseEventBody: langfuse.BaseEventBody{
+				ID:       t.traceID,
+				Name:     name,
+				MetaData: metadata,
+			},
+			TimeStamp: time.Now(),
+			Input:     metadataJSON,
+		}
+
+		_, err := t.client.CreateTrace(traceBody)
 		if err != nil {
 			log.Printf("Failed to create trace: %v", err)
 		}
@@ -100,7 +115,7 @@ func (tr *Trace) End(err error) {
 	duration := time.Since(tr.startTime)
 
 	if tr.tracer.enabled && tr.tracer.client != nil {
-		// Update trace with end time and duration
+		// Update trace metadata
 		metadata := tr.metadata
 		if metadata == nil {
 			metadata = make(map[string]any)
@@ -110,15 +125,20 @@ func (tr *Trace) End(err error) {
 			metadata["error"] = err.Error()
 		}
 
-		// Add an event to mark the end
+		// Create a completion event to mark the trace end
 		eventName := tr.name + "_completed"
-		now := time.Now()
-		_, eventErr := tr.tracer.client.Event(&model.Event{
-			TraceID:   tr.tracer.traceID,
-			Name:      eventName,
-			Metadata:  convertToModelM(metadata),
-			StartTime: &now,
-		}, nil)
+		eventBody := &langfuse.EventEventBody{
+			BaseObservationEventBody: langfuse.BaseObservationEventBody{
+				BaseEventBody: langfuse.BaseEventBody{
+					Name:     eventName,
+					MetaData: metadata,
+				},
+				TraceID:   tr.tracer.traceID,
+				StartTime: time.Now(),
+			},
+		}
+
+		_, eventErr := tr.tracer.client.CreateEvent(eventBody)
 		if eventErr != nil {
 			log.Printf("Failed to end trace: %v", eventErr)
 		}
@@ -161,26 +181,25 @@ func (t *Tracer) StartSpan(name string, metadata map[string]any, input any) *Spa
 	t.spans = append(t.spans, span)
 
 	if t.enabled && t.client != nil {
-		// Create Langfuse span
-		now := time.Now()
-		langfuseSpan := &model.Span{
-			ID:        span.spanID,
-			TraceID:   t.traceID,
-			Name:      name,
-			Metadata:  convertToModelM(metadata),
-			Input:     input,
-			StartTime: &now,
+		// Convert input to JSON string
+		inputJSON, _ := sonic.MarshalString(input)
+
+		// Create span with new API
+		spanBody := &langfuse.SpanEventBody{
+			BaseObservationEventBody: langfuse.BaseObservationEventBody{
+				BaseEventBody: langfuse.BaseEventBody{
+					ID:       span.spanID,
+					Name:     name,
+					MetaData: metadata,
+				},
+				TraceID:             t.traceID,
+				ParentObservationID: span.parentID,
+				Input:               inputJSON,
+				StartTime:           time.Now(),
+			},
 		}
 
-		if span.parentID != "" {
-			langfuseSpan.ParentObservationID = span.parentID
-		}
-
-		var parentIDPtr *string
-		if span.parentID != "" {
-			parentIDPtr = &span.parentID
-		}
-		_, err := t.client.Span(langfuseSpan, parentIDPtr)
+		_, err := t.client.CreateSpan(spanBody)
 		if err != nil {
 			log.Printf("Failed to create span: %v", err)
 		}
@@ -196,7 +215,7 @@ func (s *Span) EndWithOutput(output any, err error) {
 	duration := time.Since(s.startTime)
 
 	if s.tracer.enabled && s.tracer.client != nil {
-		// End the span
+		// Update span metadata
 		metadata := s.metadata
 		if metadata == nil {
 			metadata = make(map[string]any)
@@ -206,14 +225,23 @@ func (s *Span) EndWithOutput(output any, err error) {
 			metadata["error"] = err.Error()
 		}
 
-		now := time.Now()
-		_, endErr := s.tracer.client.SpanEnd(&model.Span{
-			ID:       s.spanID,
-			TraceID:  s.traceID,
-			EndTime:  &now,
-			Metadata: convertToModelM(metadata),
-			Output:   output,
-		})
+		// Convert output to JSON string
+		outputJSON, _ := sonic.MarshalString(output)
+
+		// End the span with new API
+		spanBody := &langfuse.SpanEventBody{
+			BaseObservationEventBody: langfuse.BaseObservationEventBody{
+				BaseEventBody: langfuse.BaseEventBody{
+					ID:       s.spanID,
+					MetaData: metadata,
+				},
+				TraceID: s.traceID,
+				Output:  outputJSON,
+			},
+			EndTime: time.Now(),
+		}
+
+		endErr := s.tracer.client.EndSpan(spanBody)
 		if endErr != nil {
 			log.Printf("Failed to end span: %v", endErr)
 		}
@@ -257,31 +285,33 @@ func (s *Span) AddMetadata(metadata map[string]any) {
 // Flush flushes all pending traces
 func (t *Tracer) Flush(ctx context.Context) {
 	if t.enabled && t.client != nil {
-		t.client.Flush(ctx)
+		t.client.Flush()
 		log.Println("📊 Traces flushed to Langfuse")
 	}
 }
 
-// convertToModelM converts map[string]any to model.M
-func convertToModelM(m map[string]any) model.M {
-	if m == nil {
-		return nil
-	}
-
-	result := make(model.M)
-	for k, v := range m {
-		// Convert the value to a string representation if needed
-		switch val := v.(type) {
-		case string:
-			result[k] = val
-		case int, int32, int64, float32, float64, bool:
-			result[k] = fmt.Sprintf("%v", val)
-		case *flyt.SharedStore:
-			// Handle SharedStore specially
-			result[k] = "SharedStore{...}"
-		default:
-			result[k] = fmt.Sprintf("%v", val)
-		}
-	}
+// marshalSharedStore converts SharedStore to a JSON-serializable map
+func marshalSharedStore(store *flyt.SharedStore) map[string]any {
+	result := make(map[string]any)
+	// Note: SharedStore doesn't expose a method to iterate all keys,
+	// so we'd need to know the keys in advance or modify the implementation
+	// For now, we'll just return a placeholder
+	result["type"] = "SharedStore"
 	return result
+}
+
+// toJSONString safely converts any value to a JSON string
+func toJSONString(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(b)
+	}
 }

@@ -1,6 +1,6 @@
 # Tracing Example
 
-This example demonstrates how to add distributed tracing to Flyt workflows using Langfuse.
+This example demonstrates how to add distributed tracing to Flyt workflows using the CloudWeGo Eino-ext Langfuse integration.
 
 ## Features
 
@@ -9,10 +9,12 @@ This example demonstrates how to add distributed tracing to Flyt workflows using
 - **Metadata tracking**: Captures input, output, and custom metadata at each step
 - **Error tracking**: Records errors and failures in traces
 - **Dependency injection**: Tracer is injected through closures
+- **Batched uploads**: Efficient batch processing of trace events
+- **Automatic retries**: Built-in retry logic for failed uploads
 
 ## Prerequisites
 
-- Go 1.21 or later
+- Go 1.23 or later
 - Langfuse account (optional - runs in demo mode without it)
 
 ## Installation
@@ -78,8 +80,17 @@ BasicGreetingFlow (Trace)
 ## Code Structure
 
 - `main.go`: Main application with traced flow setup
-- `tracer.go`: Tracer implementation using langfuse-go
+- `tracer.go`: Tracer implementation using CloudWeGo's eino-ext Langfuse client
 - `README.md`: This file
+
+## Implementation Details
+
+This example uses the `github.com/cloudwego/eino-ext/libs/acl/langfuse` client, which provides:
+- Event-based API for creating traces, spans, and events
+- Built-in batching and queueing for efficient API calls
+- Configurable flush intervals and batch sizes
+- Automatic retry logic for failed requests
+- JSON serialization for input/output data
 
 ## Tracing Pattern
 
