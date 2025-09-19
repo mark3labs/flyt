@@ -2,12 +2,17 @@ Directory structure:
 └── flyt/
     ├── README.md
     ├── AGENTS.md
+    ├── assert.go
     ├── batch.go
     ├── batch_test.go
     ├── flyt.go
     ├── flyt_test.go
+    ├── generic.go
     ├── go.mod
     ├── LICENSE
+    ├── result.go
+    ├── result_test.go
+    ├── types.go
     ├── www/
     │   ├── README.md
     │   ├── package.json
@@ -134,9 +139,9 @@ import (
 func main() {
     // Create a simple node using the helper
     node := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
             fmt.Println("Hello, Flyt!")
-            return "done", nil
+            return flyt.R("done"), nil
         }),
     )
 
@@ -163,19 +168,21 @@ Nodes are the building blocks. Each node has three phases:
 3. **Post** - Process results and decide next action
 
 ```go
-// Simple node with type-safe getters
+// Simple node with type-safe Result handling
 node := flyt.NewNode(
-    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
         // Use type-safe getters to retrieve data
         input := shared.GetString("input")
-        return input, nil
+        return flyt.R(input), nil
     }),
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+        // Use Result's type-safe accessors
+        input := prepResult.AsStringOr("")
         // Process data
-        return "result", nil
+        return flyt.R("result"), nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-        shared.Set("output", execResult)
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+        shared.Set("output", execResult.Value())
         return flyt.DefaultAction, nil
     }),
 )
@@ -188,22 +195,25 @@ type ProcessRequest struct {
 }
 
 processNode := flyt.NewNode(
-    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
         // Bind structured data from shared store
         var request ProcessRequest
         if err := shared.Bind("request", &request); err != nil {
-            return nil, fmt.Errorf("invalid request: %w", err)
+            return flyt.R(nil), fmt.Errorf("invalid request: %w", err)
         }
-        return request, nil
+        return flyt.R(request), nil
     }),
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-        request := prepResult.(ProcessRequest)
+    flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+        // Use Result's Bind method for type-safe access
+        var request ProcessRequest
+        prepResult.MustBind(&request)  // Or use Bind() with error handling
+        
         // Process the structured request
         result := processUserRequest(request.UserID, request.Operation, request.Resources)
-        return result, nil
+        return flyt.R(result), nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-        shared.Set("process_result", execResult)
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+        shared.Set("process_result", execResult.Value())
         return flyt.DefaultAction, nil
     }),
 )
@@ -214,8 +224,9 @@ processNode := flyt.NewNode(
 Actions are strings returned by a node's Post phase that determine what happens next:
 
 ```go
-func (n *MyNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-    if execResult.(bool) {
+func (n *MyNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+    // Type-safe access to result
+    if execResult.AsBoolOr(false) {
         return "success", nil  // Go to node connected with "success"
     }
     return "retry", nil       // Go to node connected with "retry"
@@ -291,16 +302,16 @@ user := User{
 shared.Set("user", user)
 
 // Later, in a node's Prep function, bind it back to a struct
-func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
     var user User
     err := shared.Bind("user", &user)  // Binds stored data to struct
     if err != nil {
-        return nil, err
+        return flyt.R(nil), err
     }
     // Or use MustBind (panics on failure - use for required data)
     // shared.MustBind("user", &user)
     
-    return user, nil
+    return flyt.R(user), nil
 }
 
 // Utility methods
@@ -334,13 +345,13 @@ Pass configuration to nodes using closures:
 ```go
 func createAPINode(apiKey string, baseURL string) flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
             // apiKey and baseURL are captured in the closure
             url := fmt.Sprintf("%s/data", baseURL)
             req, _ := http.NewRequest("GET", url, nil)
             req.Header.Set("Authorization", apiKey)
             // ... make request
-            return data, nil
+            return flyt.R(data), nil
         }),
     )
 }
@@ -355,15 +366,16 @@ Add retry logic to handle transient failures:
 
 ```go
 node := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
         // This will be retried up to 3 times
-        return callFlakeyAPI()
+        data, err := callFlakeyAPI()
+        return flyt.R(data), err
     }),
     flyt.WithMaxRetries(3),
     flyt.WithWait(time.Second),
-    flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+    flyt.WithExecFallbackFunc(func(prepResult flyt.Result, err error) (flyt.Result, error) {
         // Called after all retries fail
-        return "default-value", nil
+        return flyt.R("default-value"), nil
     }),
 )
 ```
@@ -378,23 +390,23 @@ type CachedAPINode struct {
     cache map[string]any
 }
 
-func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
+func (n *CachedAPINode) ExecFallback(prepResult flyt.Result, err error) (flyt.Result, error) {
     // Return cached data when API fails
-    key := prepResult.(string)
+    key := prepResult.MustString()
     if cached, ok := n.cache[key]; ok {
-        return cached, nil
+        return flyt.R(cached), nil
     }
     // Return default value if no cache
-    return map[string]any{"status": "unavailable"}, nil
+    return flyt.R(map[string]any{"status": "unavailable"}), nil
 }
 
-func (n *CachedAPINode) Exec(ctx context.Context, prepResult any) (any, error) {
-    key := prepResult.(string)
+func (n *CachedAPINode) Exec(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+    key := prepResult.MustString()
     data, err := callAPI(key)
     if err == nil {
         n.cache[key] = data // Update cache on success
     }
-    return data, err
+    return flyt.R(data), err
 }
 ```
 
@@ -406,12 +418,12 @@ Control flow based on results:
 
 ```go
 decisionNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-        value := prepResult.(int)
-        return value > 100, nil
+    flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+        value := prepResult.MustInt()
+        return flyt.R(value > 100), nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-        if execResult.(bool) {
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+        if execResult.MustBool() {
             return "high", nil
         }
         return "low", nil
@@ -442,12 +454,13 @@ func NewRateLimitedNode(rps int) *RateLimitedNode {
     }
 }
 
-func (n *RateLimitedNode) Exec(ctx context.Context, prepResult any) (any, error) {
+func (n *RateLimitedNode) Exec(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
     if err := n.limiter.Wait(ctx); err != nil {
-        return nil, err
+        return flyt.R(nil), err
     }
     // Process with rate limiting
-    return process(prepResult)
+    data, err := process(prepResult.Value())
+    return flyt.R(data), err
 }
 ```
 
@@ -474,9 +487,10 @@ func (n *CustomRetryNode) GetWait() time.Duration {
     return time.Duration(n.attempts) * time.Second
 }
 
-func (n *CustomRetryNode) Exec(ctx context.Context, prepResult any) (any, error) {
+func (n *CustomRetryNode) Exec(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
     n.attempts++
-    return callAPI(prepResult)
+    data, err := callAPI(prepResult.Value())
+    return flyt.R(data), err
 }
 ```
 
@@ -486,9 +500,9 @@ Process multiple items concurrently:
 
 ```go
 // Simple batch node for processing items
-processFunc := func(ctx context.Context, item any) (any, error) {
+processFunc := func(ctx context.Context, item any) (flyt.Result, error) {
     // Process each item
-    return fmt.Sprintf("processed: %v", item), nil
+    return flyt.R(fmt.Sprintf("processed: %v", item)), nil
 }
 
 batchNode := flyt.NewBatchNode(processFunc, true) // true for concurrent
@@ -508,8 +522,9 @@ config := &flyt.BatchConfig{
     CountKey:    "total",   // Custom key for processed count
 }
 
-processFunc := func(ctx context.Context, item any) (any, error) {
-    return processItem(item)
+processFunc := func(ctx context.Context, item any) (flyt.Result, error) {
+    data, err := processItem(item)
+    return flyt.R(data), err
 }
 
 batchNode := flyt.NewBatchNodeWithConfig(processFunc, true, config)
@@ -541,16 +556,17 @@ Run the same flow multiple times with different parameters:
 // Create a flow factory - returns a new flow instance for each iteration
 flowFactory := func() *flyt.Flow {
     validateNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
             // Each flow has its own SharedStore with merged FlowInputs
             userID := shared.GetInt("user_id")
             email := shared.GetString("email")
-            return map[string]any{"user_id": userID, "email": email}, nil
+            return flyt.R(map[string]any{"user_id": userID, "email": email}), nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-            data := prepResult.(map[string]any)
+        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+            data := prepResult.MustMap()
             // Process user data
-            return processUser(data), nil
+            result := processUser(data)
+            return flyt.R(result), nil
         }),
     )
     return flyt.NewFlow(validateNode)
@@ -707,6 +723,154 @@ FILE: AGENTS.md
 - Core types: Node, Flow, Shared, Params, Action
 - Helper functions for batch processing patterns
 - Comprehensive test coverage with TestNode implementations
+
+
+================================================
+FILE: assert.go
+================================================
+package flyt
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+)
+
+// Assert provides safe type assertion with a default value
+func Assert[T any](v any, defaultVal T) T {
+	if v == nil {
+		return defaultVal
+	}
+	if typed, ok := v.(T); ok {
+		return typed
+	}
+	return defaultVal
+}
+
+// MustAssert performs type assertion and panics on failure
+func MustAssert[T any](v any) T {
+	if v == nil {
+		panic(fmt.Sprintf("MustAssert: got nil, expected %T", *new(T)))
+	}
+	typed, ok := v.(T)
+	if !ok {
+		panic(fmt.Sprintf("MustAssert: type assertion failed, got %T, expected %T", v, *new(T)))
+	}
+	return typed
+}
+
+// TryAssert attempts type assertion and returns result with ok flag
+func TryAssert[T any](v any) (T, bool) {
+	var zero T
+	if v == nil {
+		return zero, false
+	}
+	typed, ok := v.(T)
+	return typed, ok
+}
+
+// Convert attempts to convert between compatible types using JSON
+func Convert[T any](v any) (T, error) {
+	var result T
+
+	// Direct type match
+	if typed, ok := v.(T); ok {
+		return typed, nil
+	}
+
+	// Check if types are assignable
+	if v != nil {
+		srcType := reflect.TypeOf(v)
+		dstType := reflect.TypeOf(result)
+		if srcType.AssignableTo(dstType) {
+			reflect.ValueOf(&result).Elem().Set(reflect.ValueOf(v))
+			return result, nil
+		}
+	}
+
+	// Fallback to JSON conversion
+	data, err := json.Marshal(v)
+	if err != nil {
+		return result, fmt.Errorf("convert: failed to marshal: %w", err)
+	}
+
+	if err := json.Unmarshal(data, &result); err != nil {
+		return result, fmt.Errorf("convert: failed to unmarshal: %w", err)
+	}
+
+	return result, nil
+}
+
+// MustConvert converts between types or panics
+func MustConvert[T any](v any) T {
+	result, err := Convert[T](v)
+	if err != nil {
+		panic(fmt.Sprintf("MustConvert failed: %v", err))
+	}
+	return result
+}
+
+// AssertMap safely asserts to map[string]any
+func AssertMap(v any) (map[string]any, bool) {
+	if v == nil {
+		return nil, false
+	}
+	m, ok := v.(map[string]any)
+	return m, ok
+}
+
+// AssertSlice safely asserts to []any
+func AssertSlice(v any) ([]any, bool) {
+	if v == nil {
+		return nil, false
+	}
+	s, ok := v.([]any)
+	return s, ok
+}
+
+// AssertString safely asserts to string
+func AssertString(v any) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// ChainAssert allows chaining type assertions with fallback
+type ChainAssert struct {
+	value  any
+	result any
+	ok     bool
+}
+
+// NewChainAssert creates a new assertion chain
+func NewChainAssert(v any) *ChainAssert {
+	return &ChainAssert{value: v}
+}
+
+// Try attempts an assertion in the chain
+func (c *ChainAssert) Try(fn func(any) (any, bool)) *ChainAssert {
+	if c.ok {
+		return c
+	}
+	c.result, c.ok = fn(c.value)
+	return c
+}
+
+// OrElse provides a default value if all assertions failed
+func (c *ChainAssert) OrElse(defaultVal any) any {
+	if c.ok {
+		return c.result
+	}
+	return defaultVal
+}
+
+// Result returns the result and success flag
+func (c *ChainAssert) Result() (any, bool) {
+	return c.result, c.ok
+}
+
 
 
 ================================================
@@ -3561,6 +3725,104 @@ func BenchmarkSharedStoreConcurrentAccess(b *testing.B) {
 
 
 ================================================
+FILE: generic.go
+================================================
+package flyt
+
+import "context"
+
+// NodeG is a generic version of Node interface for type-safe implementations
+type NodeG[P, E any] interface {
+	// PrepG reads and preprocesses data from shared store with typed result
+	PrepG(ctx context.Context, shared *SharedStore) (P, error)
+
+	// ExecG executes the main logic with typed input and output
+	ExecG(ctx context.Context, prepResult P) (E, error)
+
+	// PostG processes results with typed inputs
+	PostG(ctx context.Context, shared *SharedStore, prepResult P, execResult E) (Action, error)
+}
+
+// BaseNodeG provides a generic base implementation
+type BaseNodeG[P, E any] struct {
+	*BaseNode
+}
+
+// NewBaseNodeG creates a new generic BaseNode
+func NewBaseNodeG[P, E any](opts ...NodeOption) *BaseNodeG[P, E] {
+	return &BaseNodeG[P, E]{
+		BaseNode: NewBaseNode(opts...),
+	}
+}
+
+// PrepG default implementation
+func (n *BaseNodeG[P, E]) PrepG(ctx context.Context, shared *SharedStore) (P, error) {
+	var zero P
+	return zero, nil
+}
+
+// ExecG default implementation
+func (n *BaseNodeG[P, E]) ExecG(ctx context.Context, prepResult P) (E, error) {
+	var zero E
+	return zero, nil
+}
+
+// PostG default implementation
+func (n *BaseNodeG[P, E]) PostG(ctx context.Context, shared *SharedStore, prepResult P, execResult E) (Action, error) {
+	return DefaultAction, nil
+}
+
+// NodeAdapter adapts a generic node to the standard Node interface
+type NodeAdapter[P, E any] struct {
+	node NodeG[P, E]
+}
+
+// NewNodeAdapter creates an adapter from generic to standard node
+func NewNodeAdapter[P, E any](node NodeG[P, E]) Node {
+	return &NodeAdapter[P, E]{node: node}
+}
+
+func (a *NodeAdapter[P, E]) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	return a.node.PrepG(ctx, shared)
+}
+
+func (a *NodeAdapter[P, E]) Exec(ctx context.Context, prepResult any) (any, error) {
+	// Safe type assertion with fallback
+	if typed, ok := prepResult.(P); ok {
+		return a.node.ExecG(ctx, typed)
+	}
+	// Attempt zero value if nil
+	if prepResult == nil {
+		var zero P
+		return a.node.ExecG(ctx, zero)
+	}
+	var zero E
+	return zero, nil
+}
+
+func (a *NodeAdapter[P, E]) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	var p P
+	var e E
+
+	if typed, ok := prepResult.(P); ok {
+		p = typed
+	}
+	if typed, ok := execResult.(E); ok {
+		e = typed
+	}
+
+	return a.node.PostG(ctx, shared, p, e)
+}
+
+// RunG executes a generic node with type safety
+func RunG[P, E any](ctx context.Context, node NodeG[P, E], shared *SharedStore) (Action, error) {
+	// Use the adapter to run through standard flow
+	return Run(ctx, NewNodeAdapter(node), shared)
+}
+
+
+
+================================================
 FILE: go.mod
 ================================================
 module github.com/mark3labs/flyt
@@ -3592,6 +3854,941 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+================================================
+FILE: result.go
+================================================
+package flyt
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+)
+
+// Result is a wrapper type that provides convenient type assertion methods.
+// It's used as return type for Prep and Exec methods to improve developer experience.
+// It can hold any value and provides type-safe accessors.
+type Result struct {
+	value any
+}
+
+// NewResult creates a new Result from any value.
+func NewResult(v any) Result {
+	return Result{value: v}
+}
+
+// R is a shorthand for NewResult.
+func R(v any) Result {
+	return NewResult(v)
+}
+
+// AsString retrieves the Result as a string.
+// Returns empty string and false if the Result value is nil or not a string.
+func (r Result) AsString() (string, bool) {
+	if r.value == nil {
+		return "", false
+	}
+	s, ok := r.value.(string)
+	return s, ok
+}
+
+// AsStringOr retrieves the Result as a string.
+// Returns the provided default value if the Result is nil or not a string.
+func (r Result) AsStringOr(defaultVal string) string {
+	s, ok := r.AsString()
+	if !ok {
+		return defaultVal
+	}
+	return s
+}
+
+// MustString retrieves the Result as a string.
+// Panics if the Result is nil or not a string.
+func (r Result) MustString() string {
+	s, ok := r.AsString()
+	if !ok {
+		panic(fmt.Sprintf("Result.MustString: value is not a string (type %T)", r))
+	}
+	return s
+}
+
+// AsInt retrieves the Result as an int.
+// Returns 0 and false if the Result value is nil or cannot be converted to int.
+// Supports conversion from int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, and float types.
+func (r Result) AsInt() (int, bool) {
+	if r.value == nil {
+		return 0, false
+	}
+
+	switch v := r.value.(type) {
+	case int:
+		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case uint:
+		return int(v), true
+	case uint8:
+		return int(v), true
+	case uint16:
+		return int(v), true
+	case uint32:
+		return int(v), true
+	case uint64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case float64:
+		return int(v), true
+	default:
+		return 0, false
+	}
+}
+
+// AsIntOr retrieves the Result as an int.
+// Returns the provided default value if the Result is nil or cannot be converted to int.
+func (r Result) AsIntOr(defaultVal int) int {
+	i, ok := r.AsInt()
+	if !ok {
+		return defaultVal
+	}
+	return i
+}
+
+// MustInt retrieves the Result as an int.
+// Panics if the Result is nil or cannot be converted to int.
+func (r Result) MustInt() int {
+	i, ok := r.AsInt()
+	if !ok {
+		panic(fmt.Sprintf("Result.MustInt: value cannot be converted to int (type %T)", r))
+	}
+	return i
+}
+
+// AsFloat64 retrieves the Result as a float64.
+// Returns 0.0 and false if the Result value is nil or cannot be converted to float64.
+// Supports conversion from various numeric types.
+func (r Result) AsFloat64() (float64, bool) {
+	if r.value == nil {
+		return 0.0, false
+	}
+
+	switch v := r.value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	default:
+		return 0.0, false
+	}
+}
+
+// AsFloat64Or retrieves the Result as a float64.
+// Returns the provided default value if the Result is nil or cannot be converted to float64.
+func (r Result) AsFloat64Or(defaultVal float64) float64 {
+	f, ok := r.AsFloat64()
+	if !ok {
+		return defaultVal
+	}
+	return f
+}
+
+// MustFloat64 retrieves the Result as a float64.
+// Panics if the Result is nil or cannot be converted to float64.
+func (r Result) MustFloat64() float64 {
+	f, ok := r.AsFloat64()
+	if !ok {
+		panic(fmt.Sprintf("Result.MustFloat64: value cannot be converted to float64 (type %T)", r))
+	}
+	return f
+}
+
+// AsBool retrieves the Result as a bool.
+// Returns false and false if the Result value is nil or not a bool.
+func (r Result) AsBool() (bool, bool) {
+	if r.value == nil {
+		return false, false
+	}
+	b, ok := r.value.(bool)
+	return b, ok
+}
+
+// AsBoolOr retrieves the Result as a bool.
+// Returns the provided default value if the Result is nil or not a bool.
+func (r Result) AsBoolOr(defaultVal bool) bool {
+	b, ok := r.AsBool()
+	if !ok {
+		return defaultVal
+	}
+	return b
+}
+
+// MustBool retrieves the Result as a bool.
+// Panics if the Result is nil or not a bool.
+func (r Result) MustBool() bool {
+	b, ok := r.AsBool()
+	if !ok {
+		panic(fmt.Sprintf("Result.MustBool: value is not a bool (type %T)", r))
+	}
+	return b
+}
+
+// AsSlice retrieves the Result as a []any slice.
+// Returns nil and false if the Result value is nil or not a slice.
+// Uses ToSlice to convert various slice types to []any.
+func (r Result) AsSlice() ([]any, bool) {
+	if r.value == nil {
+		return nil, false
+	}
+
+	// Check if it's already []any
+	if slice, ok := r.value.([]any); ok {
+		return slice, true
+	}
+
+	// Try to convert using ToSlice
+	result := ToSlice(r.value)
+	// ToSlice wraps non-slice values, so check if it's actually a slice
+	if len(result) == 1 && result[0] == r.value {
+		// ToSlice wrapped a non-slice value
+		return nil, false
+	}
+	return result, true
+}
+
+// AsSliceOr retrieves the Result as a []any slice.
+// Returns the provided default value if the Result is nil or not a slice.
+func (r Result) AsSliceOr(defaultVal []any) []any {
+	s, ok := r.AsSlice()
+	if !ok {
+		return defaultVal
+	}
+	return s
+}
+
+// MustSlice retrieves the Result as a []any slice.
+// Panics if the Result is nil or not a slice.
+func (r Result) MustSlice() []any {
+	s, ok := r.AsSlice()
+	if !ok {
+		panic(fmt.Sprintf("Result.MustSlice: value is not a slice (type %T)", r))
+	}
+	return s
+}
+
+// AsMap retrieves the Result as a map[string]any.
+// Returns nil and false if the Result value is nil or not a map[string]any.
+func (r Result) AsMap() (map[string]any, bool) {
+	if r.value == nil {
+		return nil, false
+	}
+	m, ok := r.value.(map[string]any)
+	return m, ok
+}
+
+// AsMapOr retrieves the Result as a map[string]any.
+// Returns the provided default value if the Result is nil or not a map[string]any.
+func (r Result) AsMapOr(defaultVal map[string]any) map[string]any {
+	m, ok := r.AsMap()
+	if !ok {
+		return defaultVal
+	}
+	return m
+}
+
+// MustMap retrieves the Result as a map[string]any.
+// Panics if the Result is nil or not a map[string]any.
+func (r Result) MustMap() map[string]any {
+	m, ok := r.AsMap()
+	if !ok {
+		panic(fmt.Sprintf("Result.MustMap: value is not a map[string]any (type %T)", r))
+	}
+	return m
+}
+
+// Bind binds the Result to a struct using JSON marshaling/unmarshaling.
+// This allows for easy conversion of complex types.
+// The destination must be a pointer to the target struct.
+// Returns an error if the Result value is nil or binding fails.
+//
+// Example:
+//
+//	type User struct {
+//	    ID   int    `json:"id"`
+//	    Name string `json:"name"`
+//	}
+//	var user User
+//	err := result.Bind(&user)
+func (r Result) Bind(dest any) error {
+	if r.value == nil {
+		return fmt.Errorf("cannot bind nil Result value")
+	}
+
+	// Check if dest is a pointer
+	rv := reflect.ValueOf(dest)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return fmt.Errorf("destination must be a non-nil pointer")
+	}
+
+	// If Result value is already the correct type, assign directly
+	valType := reflect.TypeOf(r.value)
+	destType := rv.Type().Elem()
+	if valType == destType {
+		rv.Elem().Set(reflect.ValueOf(r.value))
+		return nil
+	}
+
+	// Otherwise use JSON as intermediate format
+	jsonBytes, err := json.Marshal(r.value)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Result: %w", err)
+	}
+
+	if err := json.Unmarshal(jsonBytes, dest); err != nil {
+		return fmt.Errorf("failed to unmarshal to destination: %w", err)
+	}
+
+	return nil
+}
+
+// MustBind is like Bind but panics if binding fails.
+// Use this only when binding failure should be considered a programming error.
+//
+// Example:
+//
+//	var config Config
+//	result.MustBind(&config)  // Panics if binding fails
+func (r Result) MustBind(dest any) {
+	if err := r.Bind(dest); err != nil {
+		panic(fmt.Sprintf("Result.MustBind failed: %v", err))
+	}
+}
+
+// IsNil checks if the Result value is nil.
+func (r Result) IsNil() bool {
+	return r.value == nil
+}
+
+// Type returns the underlying type of the Result value as a string.
+// Returns "nil" if the Result value is nil.
+func (r Result) Type() string {
+	if r.value == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%T", r.value)
+}
+
+// Value returns the underlying value as any.
+// This is useful when you need to pass the Result to functions expecting any.
+func (r Result) Value() any {
+	return r.value
+}
+
+// As attempts to retrieve the Result as the specified type T.
+// Returns the typed value and true if successful, or zero value and false if not.
+//
+// Example:
+//
+//	if user, ok := result.As[*User](); ok {
+//	    // Use typed user
+//	}
+func As[T any](r Result) (T, bool) {
+	var zero T
+	if r.value == nil {
+		return zero, false
+	}
+	typed, ok := r.value.(T)
+	return typed, ok
+}
+
+// MustAs retrieves the Result as the specified type T.
+// Panics if the Result is nil or not of type T.
+//
+// Example:
+//
+//	user := MustAs[*User](result)
+func MustAs[T any](r Result) T {
+	typed, ok := As[T](r)
+	if !ok {
+		panic(fmt.Sprintf("Result.MustAs: value is not of type %T", *new(T)))
+	}
+	return typed
+}
+
+
+
+================================================
+FILE: result_test.go
+================================================
+package flyt_test
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/mark3labs/flyt"
+)
+
+func TestResultString(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    flyt.Result
+		wantStr   string
+		wantOk    bool
+		wantOr    string
+		orDefault string
+	}{
+		{
+			name:      "valid string",
+			result:    flyt.R("hello"),
+			wantStr:   "hello",
+			wantOk:    true,
+			wantOr:    "hello",
+			orDefault: "default",
+		},
+		{
+			name:      "nil value",
+			result:    flyt.R(nil),
+			wantStr:   "",
+			wantOk:    false,
+			wantOr:    "default",
+			orDefault: "default",
+		},
+		{
+			name:      "non-string value",
+			result:    flyt.R(123),
+			wantStr:   "",
+			wantOk:    false,
+			wantOr:    "default",
+			orDefault: "default",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test AsString
+			str, ok := tt.result.AsString()
+			if str != tt.wantStr || ok != tt.wantOk {
+				t.Errorf("AsString() = (%q, %v), want (%q, %v)", str, ok, tt.wantStr, tt.wantOk)
+			}
+
+			// Test AsStringOr
+			strOr := tt.result.AsStringOr(tt.orDefault)
+			if strOr != tt.wantOr {
+				t.Errorf("AsStringOr(%q) = %q, want %q", tt.orDefault, strOr, tt.wantOr)
+			}
+
+			// Test MustString for valid strings
+			if tt.wantOk {
+				mustStr := tt.result.MustString()
+				if mustStr != tt.wantStr {
+					t.Errorf("MustString() = %q, want %q", mustStr, tt.wantStr)
+				}
+			} else {
+				// Should panic for non-strings
+				defer func() {
+					if r := recover(); r == nil {
+						t.Error("MustString() should have panicked")
+					}
+				}()
+				tt.result.MustString()
+			}
+		})
+	}
+}
+
+func TestResultInt(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  flyt.Result
+		wantInt int
+		wantOk  bool
+	}{
+		{"int", flyt.R(42), 42, true},
+		{"int8", flyt.R(int8(42)), 42, true},
+		{"int16", flyt.R(int16(42)), 42, true},
+		{"int32", flyt.R(int32(42)), 42, true},
+		{"int64", flyt.R(int64(42)), 42, true},
+		{"uint", flyt.R(uint(42)), 42, true},
+		{"uint8", flyt.R(uint8(42)), 42, true},
+		{"uint16", flyt.R(uint16(42)), 42, true},
+		{"uint32", flyt.R(uint32(42)), 42, true},
+		{"uint64", flyt.R(uint64(42)), 42, true},
+		{"float32", flyt.R(float32(42.0)), 42, true},
+		{"float64", flyt.R(float64(42.0)), 42, true},
+		{"nil", flyt.R(nil), 0, false},
+		{"string", flyt.R("42"), 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			i, ok := tt.result.AsInt()
+			if i != tt.wantInt || ok != tt.wantOk {
+				t.Errorf("AsInt() = (%d, %v), want (%d, %v)", i, ok, tt.wantInt, tt.wantOk)
+			}
+
+			iOr := tt.result.AsIntOr(99)
+			wantOr := tt.wantInt
+			if !tt.wantOk {
+				wantOr = 99
+			}
+			if iOr != wantOr {
+				t.Errorf("AsIntOr(99) = %d, want %d", iOr, wantOr)
+			}
+		})
+	}
+}
+
+func TestResultFloat64(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  flyt.Result
+		wantVal float64
+		wantOk  bool
+	}{
+		{"float64", flyt.R(42.5), 42.5, true},
+		{"float32", flyt.R(float32(42.5)), 42.5, true},
+		{"int", flyt.R(42), 42.0, true},
+		{"uint", flyt.R(uint(42)), 42.0, true},
+		{"nil", flyt.R(nil), 0.0, false},
+		{"string", flyt.R("42.5"), 0.0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, ok := tt.result.AsFloat64()
+			if f != tt.wantVal || ok != tt.wantOk {
+				t.Errorf("AsFloat64() = (%f, %v), want (%f, %v)", f, ok, tt.wantVal, tt.wantOk)
+			}
+		})
+	}
+}
+
+func TestResultBool(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  flyt.Result
+		wantVal bool
+		wantOk  bool
+	}{
+		{"true", flyt.R(true), true, true},
+		{"false", flyt.R(false), false, true},
+		{"nil", flyt.R(nil), false, false},
+		{"string", flyt.R("true"), false, false},
+		{"int", flyt.R(1), false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, ok := tt.result.AsBool()
+			if b != tt.wantVal || ok != tt.wantOk {
+				t.Errorf("AsBool() = (%v, %v), want (%v, %v)", b, ok, tt.wantVal, tt.wantOk)
+			}
+		})
+	}
+}
+
+func TestResultSlice(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  flyt.Result
+		wantLen int
+		wantOk  bool
+	}{
+		{"[]any", flyt.R([]any{1, 2, 3}), 3, true},
+		{"[]string", flyt.R([]string{"a", "b", "c"}), 3, true},
+		{"[]int", flyt.R([]int{1, 2, 3}), 3, true},
+		{"nil", flyt.R(nil), 0, false},
+		{"non-slice", flyt.R("not a slice"), 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, ok := tt.result.AsSlice()
+			if ok != tt.wantOk {
+				t.Errorf("AsSlice() ok = %v, want %v", ok, tt.wantOk)
+			}
+			if ok && len(s) != tt.wantLen {
+				t.Errorf("AsSlice() len = %d, want %d", len(s), tt.wantLen)
+			}
+		})
+	}
+}
+
+func TestResultMap(t *testing.T) {
+	tests := []struct {
+		name   string
+		result flyt.Result
+		wantOk bool
+	}{
+		{"map[string]any", flyt.R(map[string]any{"key": "value"}), true},
+		{"nil", flyt.R(nil), false},
+		{"non-map", flyt.R("not a map"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ok := tt.result.AsMap()
+			if ok != tt.wantOk {
+				t.Errorf("AsMap() ok = %v, want %v", ok, tt.wantOk)
+			}
+		})
+	}
+}
+
+func TestResultBind(t *testing.T) {
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	tests := []struct {
+		name    string
+		result  flyt.Result
+		wantErr bool
+	}{
+		{
+			name:    "valid map",
+			result:  flyt.R(map[string]any{"id": 123, "name": "Alice"}),
+			wantErr: false,
+		},
+		{
+			name:    "valid struct",
+			result:  flyt.R(User{ID: 456, Name: "Bob"}),
+			wantErr: false,
+		},
+		{
+			name:    "nil value",
+			result:  flyt.R(nil),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var user User
+			err := tt.result.Bind(&user)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Bind() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && user.ID == 0 {
+				t.Error("Bind() didn't populate the struct")
+			}
+		})
+	}
+
+	// Test Bind with non-pointer
+	t.Run("non-pointer dest", func(t *testing.T) {
+		var user User
+		result := flyt.R(map[string]any{"id": 123, "name": "Alice"})
+		err := result.Bind(user) // Pass by value, not pointer
+		if err == nil {
+			t.Error("Bind() should error with non-pointer destination")
+		}
+	})
+}
+
+func TestResultMustBind(t *testing.T) {
+	type Config struct {
+		Timeout int `json:"timeout"`
+	}
+
+	// Test successful bind
+	result := flyt.R(map[string]any{"timeout": 30})
+	var config Config
+	result.MustBind(&config)
+	if config.Timeout != 30 {
+		t.Errorf("MustBind() didn't populate struct correctly: %+v", config)
+	}
+
+	// Test panic on failure
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("MustBind() should have panicked with nil value")
+		}
+	}()
+	nilResult := flyt.R(nil)
+	nilResult.MustBind(&config)
+}
+
+func TestResultHelpers(t *testing.T) {
+	// Test IsNil
+	nilResult := flyt.R(nil)
+	if !nilResult.IsNil() {
+		t.Error("IsNil() should return true for nil value")
+	}
+
+	nonNilResult := flyt.R("value")
+	if nonNilResult.IsNil() {
+		t.Error("IsNil() should return false for non-nil value")
+	}
+
+	// Test Type
+	if nilResult.Type() != "nil" {
+		t.Errorf("Type() = %q, want 'nil'", nilResult.Type())
+	}
+
+	stringResult := flyt.R("hello")
+	expectedType := "string"
+	if stringResult.Type() != expectedType {
+		t.Errorf("Type() = %q, want %q", stringResult.Type(), expectedType)
+	}
+
+	// Test Value
+	val := stringResult.Value()
+	if val != "hello" {
+		t.Errorf("Value() = %v, want 'hello'", val)
+	}
+}
+
+func TestResultAs(t *testing.T) {
+	type CustomType struct {
+		Value string
+	}
+
+	custom := &CustomType{Value: "test"}
+	result := flyt.R(custom)
+
+	// Test successful type assertion
+	if typed, ok := flyt.As[*CustomType](result); !ok || typed.Value != "test" {
+		t.Errorf("As[*CustomType]() = (%v, %v), want (%v, true)", typed, ok, custom)
+	}
+
+	// Test failed type assertion
+	if _, ok := flyt.As[string](result); ok {
+		t.Error("As[string]() should have failed for *CustomType")
+	}
+
+	// Test with nil
+	nilResult := flyt.R(nil)
+	if _, ok := flyt.As[*CustomType](nilResult); ok {
+		t.Error("As[*CustomType]() should have failed for nil value")
+	}
+}
+
+func TestResultMustAs(t *testing.T) {
+	result := flyt.R("hello")
+
+	// Test successful assertion
+	str := flyt.MustAs[string](result)
+	if str != "hello" {
+		t.Errorf("MustAs[string]() = %q, want 'hello'", str)
+	}
+
+	// Test panic on failure
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("MustAs[int]() should have panicked")
+		}
+	}()
+	flyt.MustAs[int](result)
+}
+
+func TestResultIntegration(t *testing.T) {
+	// Simulate a complex result from a node
+	complexData := map[string]any{
+		"user": map[string]any{
+			"id":   123,
+			"name": "Alice",
+		},
+		"items": []any{"item1", "item2", "item3"},
+		"config": map[string]any{
+			"enabled": true,
+			"timeout": 30,
+		},
+	}
+
+	result := flyt.R(complexData)
+
+	// Test various accessors
+	m, ok := result.AsMap()
+	if !ok {
+		t.Fatal("AsMap() failed")
+	}
+
+	// Access nested data
+	if user, ok := m["user"].(map[string]any); ok {
+		if user["name"] != "Alice" {
+			t.Errorf("user name = %v, want 'Alice'", user["name"])
+		}
+	} else {
+		t.Error("Failed to access user map")
+	}
+
+	// Bind to struct
+	type Response struct {
+		User struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"user"`
+		Items  []string `json:"items"`
+		Config struct {
+			Enabled bool `json:"enabled"`
+			Timeout int  `json:"timeout"`
+		} `json:"config"`
+	}
+
+	var response Response
+	err := result.Bind(&response)
+	if err != nil {
+		t.Fatalf("Bind() failed: %v", err)
+	}
+
+	if response.User.ID != 123 {
+		t.Errorf("User.ID = %d, want 123", response.User.ID)
+	}
+	if len(response.Items) != 3 {
+		t.Errorf("len(Items) = %d, want 3", len(response.Items))
+	}
+	if !response.Config.Enabled {
+		t.Error("Config.Enabled should be true")
+	}
+}
+
+func TestResultWithJSON(t *testing.T) {
+	// Test that Result works with JSON marshaling/unmarshaling
+	original := map[string]any{
+		"key": "value",
+		"num": 42,
+	}
+
+	result := flyt.R(original)
+
+	// Marshal the underlying value
+	data, err := json.Marshal(result.Value())
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	// Unmarshal back
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	// Create new Result and verify
+	newResult := flyt.R(decoded)
+	m, ok := newResult.AsMap()
+	if !ok {
+		t.Fatal("AsMap() failed after JSON round-trip")
+	}
+
+	if m["key"] != "value" || m["num"].(float64) != 42 {
+		t.Errorf("JSON round-trip changed data: %v", m)
+	}
+}
+
+
+
+================================================
+FILE: types.go
+================================================
+package flyt
+
+// PrepResult represents common prep phase results
+type PrepResult struct {
+	Data   any
+	Config map[string]any
+	Items  []any
+}
+
+// ExecResult represents common exec phase results
+type ExecResult struct {
+	Success bool
+	Data    any
+	Error   string
+	Results []any
+}
+
+// BatchPrepResult for batch processing nodes
+type BatchPrepResult struct {
+	Items     []any
+	BatchSize int
+	Workers   int
+	CountKey  string
+}
+
+// BatchExecResult for batch processing results
+type BatchExecResult struct {
+	Results    []any
+	Errors     []error
+	Successful int
+	Failed     int
+}
+
+// ExtractPrepResult safely extracts PrepResult from any
+func ExtractPrepResult(v any) (*PrepResult, bool) {
+	if v == nil {
+		return nil, false
+	}
+	if result, ok := v.(*PrepResult); ok {
+		return result, true
+	}
+	if result, ok := v.(PrepResult); ok {
+		return &result, true
+	}
+	return nil, false
+}
+
+// ExtractExecResult safely extracts ExecResult from any
+func ExtractExecResult(v any) (*ExecResult, bool) {
+	if v == nil {
+		return nil, false
+	}
+	if result, ok := v.(*ExecResult); ok {
+		return result, true
+	}
+	if result, ok := v.(ExecResult); ok {
+		return &result, true
+	}
+	return nil, false
+}
+
+// MustExtractPrepResult extracts PrepResult or panics
+func MustExtractPrepResult(v any) *PrepResult {
+	result, ok := ExtractPrepResult(v)
+	if !ok {
+		panic("failed to extract PrepResult")
+	}
+	return result
+}
+
+// MustExtractExecResult extracts ExecResult or panics
+func MustExtractExecResult(v any) *ExecResult {
+	result, ok := ExtractExecResult(v)
+	if !ok {
+		panic("failed to extract ExecResult")
+	}
+	return result
+}
+
 
 
 ================================================
