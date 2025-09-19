@@ -217,14 +217,48 @@ err := flow.Run(ctx, shared)
 
 ### Shared Store
 
-Thread-safe data sharing between nodes:
+Thread-safe data sharing between nodes with type-safe helpers:
 
 ```go
 shared := flyt.NewSharedStore()
 
-// Set and get individual values
+// Basic get/set operations
 shared.Set("key", "value")
 value, ok := shared.Get("key")
+
+// Type-safe getters (return zero values if not found or wrong type)
+str := shared.GetString("name")           // Returns "" if not found
+num := shared.GetInt("count")             // Returns 0 if not found
+price := shared.GetFloat64("price")       // Returns 0.0 if not found
+enabled := shared.GetBool("enabled")      // Returns false if not found
+items := shared.GetSlice("items")         // Returns nil if not found
+config := shared.GetMap("config")         // Returns nil if not found
+
+// Type-safe getters with custom defaults
+str = shared.GetStringOr("name", "anonymous")
+num = shared.GetIntOr("count", -1)
+price = shared.GetFloat64Or("price", 99.99)
+enabled = shared.GetBoolOr("enabled", true)
+
+// Bind complex types (similar to Echo framework)
+type User struct {
+    ID   int    `json:"id"`
+    Name string `json:"name"`
+}
+
+shared.Set("user", map[string]any{"id": 123, "name": "Alice"})
+
+var user User
+err := shared.Bind("user", &user)  // Binds map to struct
+// Or panic on failure (for required data)
+shared.MustBind("user", &user)
+
+// Utility methods
+exists := shared.Has("key")       // Check if key exists
+shared.Delete("key")               // Remove a key
+keys := shared.Keys()              // Get all keys
+length := shared.Len()             // Get number of items
+shared.Clear()                     // Remove all items
 
 // Get all data as a map (returns a copy)
 allData := shared.GetAll()
@@ -235,6 +269,11 @@ shared.Merge(map[string]any{
     "config": map[string]any{"timeout": 30},
 })
 ```
+
+The type-safe getters handle numeric conversions automatically:
+- `GetInt()` converts from int8, int16, int32, int64, uint variants, and float types
+- `GetFloat64()` converts from all numeric types including int and float32
+- `GetSlice()` uses the same conversion logic as `ToSlice()` utility
 
 ## Intermediate Patterns
 
@@ -1569,6 +1608,7 @@ package flyt
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -1647,6 +1687,317 @@ func (s *SharedStore) Merge(data map[string]any) {
 	defer s.mu.Unlock()
 	for k, v := range data {
 		s.data[k] = v
+	}
+}
+
+// Has checks if a key exists in the store.
+// This method is safe for concurrent access.
+func (s *SharedStore) Has(key string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.data[key]
+	return ok
+}
+
+// Delete removes a key from the store.
+// This method is safe for concurrent access.
+func (s *SharedStore) Delete(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data, key)
+}
+
+// Clear removes all keys from the store.
+// This method is safe for concurrent access.
+func (s *SharedStore) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = make(map[string]any)
+}
+
+// Keys returns all keys in the store.
+// The returned slice is a snapshot and can be safely modified
+// without affecting the store's internal data.
+// This method is safe for concurrent access.
+func (s *SharedStore) Keys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys := make([]string, 0, len(s.data))
+	for k := range s.data {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// Len returns the number of items in the store.
+// This method is safe for concurrent access.
+func (s *SharedStore) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.data)
+}
+
+// GetString retrieves a string value from the store.
+// Returns empty string if the key doesn't exist or the value is not a string.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetString(key string) string {
+	val, ok := s.Get(key)
+	if !ok {
+		return ""
+	}
+	str, _ := val.(string)
+	return str
+}
+
+// GetStringOr retrieves a string value from the store.
+// Returns the provided default value if the key doesn't exist or the value is not a string.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetStringOr(key string, defaultVal string) string {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+	str, ok := val.(string)
+	if !ok {
+		return defaultVal
+	}
+	return str
+}
+
+// GetInt retrieves an int value from the store.
+// Returns 0 if the key doesn't exist or the value cannot be converted to int.
+// Supports conversion from int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, and float types.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetInt(key string) int {
+	return s.GetIntOr(key, 0)
+}
+
+// GetIntOr retrieves an int value from the store.
+// Returns the provided default value if the key doesn't exist or the value cannot be converted to int.
+// Supports conversion from various numeric types.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetIntOr(key string, defaultVal int) int {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+
+	switch v := val.(type) {
+	case int:
+		return v
+	case int8:
+		return int(v)
+	case int16:
+		return int(v)
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case uint:
+		return int(v)
+	case uint8:
+		return int(v)
+	case uint16:
+		return int(v)
+	case uint32:
+		return int(v)
+	case uint64:
+		return int(v)
+	case float32:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return defaultVal
+	}
+}
+
+// GetFloat64 retrieves a float64 value from the store.
+// Returns 0.0 if the key doesn't exist or the value cannot be converted to float64.
+// Supports conversion from int, float32, and other numeric types.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetFloat64(key string) float64 {
+	return s.GetFloat64Or(key, 0.0)
+}
+
+// GetFloat64Or retrieves a float64 value from the store.
+// Returns the provided default value if the key doesn't exist or the value cannot be converted to float64.
+// Supports conversion from various numeric types.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetFloat64Or(key string, defaultVal float64) float64 {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+
+	switch v := val.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int8:
+		return float64(v)
+	case int16:
+		return float64(v)
+	case int32:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case uint:
+		return float64(v)
+	case uint8:
+		return float64(v)
+	case uint16:
+		return float64(v)
+	case uint32:
+		return float64(v)
+	case uint64:
+		return float64(v)
+	default:
+		return defaultVal
+	}
+}
+
+// GetBool retrieves a bool value from the store.
+// Returns false if the key doesn't exist or the value is not a bool.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetBool(key string) bool {
+	return s.GetBoolOr(key, false)
+}
+
+// GetBoolOr retrieves a bool value from the store.
+// Returns the provided default value if the key doesn't exist or the value is not a bool.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetBoolOr(key string, defaultVal bool) bool {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+	b, ok := val.(bool)
+	if !ok {
+		return defaultVal
+	}
+	return b
+}
+
+// GetSlice retrieves a []any slice from the store.
+// Returns nil if the key doesn't exist or the value is not a slice.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetSlice(key string) []any {
+	return s.GetSliceOr(key, nil)
+}
+
+// GetSliceOr retrieves a []any slice from the store.
+// Returns the provided default value if the key doesn't exist or the value is not a slice.
+// Uses ToSlice to convert various slice types to []any.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetSliceOr(key string, defaultVal []any) []any {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+
+	// Use ToSlice for conversion which handles various slice types
+	if val == nil {
+		return defaultVal
+	}
+
+	// Check if it's already []any
+	if slice, ok := val.([]any); ok {
+		return slice
+	}
+
+	// Try to convert using reflection
+	result := ToSlice(val)
+	if len(result) == 1 && result[0] == val {
+		// ToSlice wrapped a non-slice value, so this wasn't actually a slice
+		return defaultVal
+	}
+	return result
+}
+
+// GetMap retrieves a map[string]any from the store.
+// Returns nil if the key doesn't exist or the value is not a map[string]any.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetMap(key string) map[string]any {
+	return s.GetMapOr(key, nil)
+}
+
+// GetMapOr retrieves a map[string]any from the store.
+// Returns the provided default value if the key doesn't exist or the value is not a map[string]any.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetMapOr(key string, defaultVal map[string]any) map[string]any {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+	m, ok := val.(map[string]any)
+	if !ok {
+		return defaultVal
+	}
+	return m
+}
+
+// Bind binds a value from the store to a struct using JSON marshaling/unmarshaling.
+// This allows for easy conversion of complex types stored in the SharedStore.
+// The destination must be a pointer to the target struct.
+// Returns an error if the key is not found or binding fails.
+// This method is safe for concurrent access.
+//
+// Example:
+//
+//	type User struct {
+//	    ID   int    `json:"id"`
+//	    Name string `json:"name"`
+//	}
+//	var user User
+//	err := shared.Bind("user", &user)
+func (s *SharedStore) Bind(key string, dest any) error {
+	val, ok := s.Get(key)
+	if !ok {
+		return fmt.Errorf("key %q not found in shared store", key)
+	}
+
+	// Check if dest is a pointer
+	rv := reflect.ValueOf(dest)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return fmt.Errorf("destination must be a non-nil pointer")
+	}
+
+	// If val is already the correct type, assign directly
+	valType := reflect.TypeOf(val)
+	destType := rv.Type().Elem()
+	if valType == destType {
+		rv.Elem().Set(reflect.ValueOf(val))
+		return nil
+	}
+
+	// Otherwise use JSON as intermediate format
+	jsonBytes, err := json.Marshal(val)
+	if err != nil {
+		return fmt.Errorf("failed to marshal value: %w", err)
+	}
+
+	if err := json.Unmarshal(jsonBytes, dest); err != nil {
+		return fmt.Errorf("failed to unmarshal to destination: %w", err)
+	}
+
+	return nil
+}
+
+// MustBind is like Bind but panics if binding fails.
+// Use this only when binding failure should be considered a programming error.
+// This method is safe for concurrent access.
+//
+// Example:
+//
+//	var config Config
+//	shared.MustBind("config", &config)  // Panics if binding fails
+func (s *SharedStore) MustBind(key string, dest any) {
+	if err := s.Bind(key, dest); err != nil {
+		panic(fmt.Sprintf("SharedStore.MustBind failed: %v", err))
 	}
 }
 
@@ -2470,6 +2821,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -2565,6 +2917,364 @@ func TestSharedStoreMerge(t *testing.T) {
 	if val3 != "new" {
 		t.Errorf("key3: expected new, got %v", val3)
 	}
+}
+
+// TestSharedStoreTypeGetters tests all the type-specific getter methods
+func TestSharedStoreTypeGetters(t *testing.T) {
+	store := NewSharedStore()
+
+	// Set various types
+	store.Set("string", "hello")
+	store.Set("int", 42)
+	store.Set("int64", int64(100))
+	store.Set("float32", float32(3.14))
+	store.Set("float64", 2.718)
+	store.Set("bool", true)
+	store.Set("slice", []string{"a", "b", "c"})
+	store.Set("map", map[string]any{"name": "test", "value": 123})
+
+	// Test GetString
+	if got := store.GetString("string"); got != "hello" {
+		t.Errorf("GetString: expected hello, got %v", got)
+	}
+	if got := store.GetString("notfound"); got != "" {
+		t.Errorf("GetString (not found): expected empty string, got %v", got)
+	}
+	if got := store.GetString("int"); got != "" {
+		t.Errorf("GetString (wrong type): expected empty string, got %v", got)
+	}
+
+	// Test GetStringOr
+	if got := store.GetStringOr("string", "default"); got != "hello" {
+		t.Errorf("GetStringOr: expected hello, got %v", got)
+	}
+	if got := store.GetStringOr("notfound", "default"); got != "default" {
+		t.Errorf("GetStringOr (not found): expected default, got %v", got)
+	}
+
+	// Test GetInt with numeric conversions
+	if got := store.GetInt("int"); got != 42 {
+		t.Errorf("GetInt: expected 42, got %v", got)
+	}
+	if got := store.GetInt("int64"); got != 100 {
+		t.Errorf("GetInt (int64): expected 100, got %v", got)
+	}
+	if got := store.GetInt("float32"); got != 3 {
+		t.Errorf("GetInt (float32): expected 3, got %v", got)
+	}
+	if got := store.GetInt("notfound"); got != 0 {
+		t.Errorf("GetInt (not found): expected 0, got %v", got)
+	}
+
+	// Test GetIntOr
+	if got := store.GetIntOr("int", -1); got != 42 {
+		t.Errorf("GetIntOr: expected 42, got %v", got)
+	}
+	if got := store.GetIntOr("notfound", -1); got != -1 {
+		t.Errorf("GetIntOr (not found): expected -1, got %v", got)
+	}
+
+	// Test GetFloat64 with numeric conversions
+	if got := store.GetFloat64("float64"); got != 2.718 {
+		t.Errorf("GetFloat64: expected 2.718, got %v", got)
+	}
+	if got := store.GetFloat64("float32"); got != float64(float32(3.14)) {
+		t.Errorf("GetFloat64 (float32): expected %v, got %v", float64(float32(3.14)), got)
+	}
+	if got := store.GetFloat64("int"); got != 42.0 {
+		t.Errorf("GetFloat64 (int): expected 42.0, got %v", got)
+	}
+	if got := store.GetFloat64("notfound"); got != 0.0 {
+		t.Errorf("GetFloat64 (not found): expected 0.0, got %v", got)
+	}
+
+	// Test GetFloat64Or
+	if got := store.GetFloat64Or("float64", -1.0); got != 2.718 {
+		t.Errorf("GetFloat64Or: expected 2.718, got %v", got)
+	}
+	if got := store.GetFloat64Or("notfound", -1.0); got != -1.0 {
+		t.Errorf("GetFloat64Or (not found): expected -1.0, got %v", got)
+	}
+
+	// Test GetBool
+	if got := store.GetBool("bool"); got != true {
+		t.Errorf("GetBool: expected true, got %v", got)
+	}
+	if got := store.GetBool("notfound"); got != false {
+		t.Errorf("GetBool (not found): expected false, got %v", got)
+	}
+	if got := store.GetBool("string"); got != false {
+		t.Errorf("GetBool (wrong type): expected false, got %v", got)
+	}
+
+	// Test GetBoolOr
+	if got := store.GetBoolOr("bool", false); got != true {
+		t.Errorf("GetBoolOr: expected true, got %v", got)
+	}
+	if got := store.GetBoolOr("notfound", true); got != true {
+		t.Errorf("GetBoolOr (not found): expected true, got %v", got)
+	}
+
+	// Test GetSlice
+	if got := store.GetSlice("slice"); got == nil || len(got) != 3 {
+		t.Errorf("GetSlice: expected slice of length 3, got %v", got)
+	}
+	if got := store.GetSlice("notfound"); got != nil {
+		t.Errorf("GetSlice (not found): expected nil, got %v", got)
+	}
+
+	// Test GetSliceOr
+	defaultSlice := []any{"default"}
+	if got := store.GetSliceOr("slice", defaultSlice); got == nil || len(got) != 3 {
+		t.Errorf("GetSliceOr: expected slice of length 3, got %v", got)
+	}
+	if got := store.GetSliceOr("notfound", defaultSlice); !reflect.DeepEqual(got, defaultSlice) {
+		t.Errorf("GetSliceOr (not found): expected %v, got %v", defaultSlice, got)
+	}
+
+	// Test GetMap
+	if got := store.GetMap("map"); got == nil || got["name"] != "test" {
+		t.Errorf("GetMap: expected map with name=test, got %v", got)
+	}
+	if got := store.GetMap("notfound"); got != nil {
+		t.Errorf("GetMap (not found): expected nil, got %v", got)
+	}
+
+	// Test GetMapOr
+	defaultMap := map[string]any{"default": true}
+	if got := store.GetMapOr("map", defaultMap); got == nil || got["name"] != "test" {
+		t.Errorf("GetMapOr: expected map with name=test, got %v", got)
+	}
+	if got := store.GetMapOr("notfound", defaultMap); !reflect.DeepEqual(got, defaultMap) {
+		t.Errorf("GetMapOr (not found): expected %v, got %v", defaultMap, got)
+	}
+}
+
+// TestSharedStoreUtilityMethods tests Has, Delete, Clear, Keys, Len
+func TestSharedStoreUtilityMethods(t *testing.T) {
+	store := NewSharedStore()
+
+	// Test Has
+	store.Set("key1", "value1")
+	if !store.Has("key1") {
+		t.Error("Has: expected true for existing key")
+	}
+	if store.Has("notfound") {
+		t.Error("Has: expected false for non-existing key")
+	}
+
+	// Test Len
+	store.Set("key2", "value2")
+	store.Set("key3", "value3")
+	if got := store.Len(); got != 3 {
+		t.Errorf("Len: expected 3, got %v", got)
+	}
+
+	// Test Keys
+	keys := store.Keys()
+	if len(keys) != 3 {
+		t.Errorf("Keys: expected 3 keys, got %v", len(keys))
+	}
+	keyMap := make(map[string]bool)
+	for _, k := range keys {
+		keyMap[k] = true
+	}
+	if !keyMap["key1"] || !keyMap["key2"] || !keyMap["key3"] {
+		t.Errorf("Keys: missing expected keys, got %v", keys)
+	}
+
+	// Test Delete
+	store.Delete("key2")
+	if store.Has("key2") {
+		t.Error("Delete: key2 should be deleted")
+	}
+	if got := store.Len(); got != 2 {
+		t.Errorf("Len after delete: expected 2, got %v", got)
+	}
+
+	// Test Clear
+	store.Clear()
+	if got := store.Len(); got != 0 {
+		t.Errorf("Len after clear: expected 0, got %v", got)
+	}
+	if store.Has("key1") || store.Has("key3") {
+		t.Error("Clear: store should be empty")
+	}
+}
+
+// TestSharedStoreBind tests the Bind and MustBind methods
+func TestSharedStoreBind(t *testing.T) {
+	store := NewSharedStore()
+
+	// Test struct binding
+	type User struct {
+		ID   int      `json:"id"`
+		Name string   `json:"name"`
+		Tags []string `json:"tags"`
+	}
+
+	// Store as map
+	store.Set("user", map[string]any{
+		"id":   123,
+		"name": "Alice",
+		"tags": []string{"admin", "developer"},
+	})
+
+	var user User
+	if err := store.Bind("user", &user); err != nil {
+		t.Errorf("Bind: unexpected error: %v", err)
+	}
+	if user.ID != 123 || user.Name != "Alice" || len(user.Tags) != 2 {
+		t.Errorf("Bind: incorrect values: %+v", user)
+	}
+
+	// Test binding to non-pointer
+	var notPointer User
+	if err := store.Bind("user", notPointer); err == nil {
+		t.Error("Bind: should error on non-pointer")
+	}
+
+	// Test binding non-existent key
+	var missing User
+	if err := store.Bind("missing", &missing); err == nil {
+		t.Error("Bind: should error on missing key")
+	}
+
+	// Test direct type match
+	type Config struct {
+		Timeout int
+		Debug   bool
+	}
+	config := Config{Timeout: 30, Debug: true}
+	store.Set("config", config)
+
+	var boundConfig Config
+	if err := store.Bind("config", &boundConfig); err != nil {
+		t.Errorf("Bind (direct type): unexpected error: %v", err)
+	}
+	if boundConfig.Timeout != 30 || boundConfig.Debug != true {
+		t.Errorf("Bind (direct type): incorrect values: %+v", boundConfig)
+	}
+
+	// Test MustBind success
+	var user2 User
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("MustBind: unexpected panic: %v", r)
+			}
+		}()
+		store.MustBind("user", &user2)
+	}()
+
+	if user2.ID != 123 {
+		t.Error("MustBind: binding failed")
+	}
+
+	// Test MustBind panic
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("MustBind: expected panic for missing key")
+			}
+		}()
+		var missing User
+		store.MustBind("notfound", &missing)
+	}()
+}
+
+// TestSharedStoreNumericConversions tests numeric type conversions
+func TestSharedStoreNumericConversions(t *testing.T) {
+	store := NewSharedStore()
+
+	// Test all numeric types to int conversion
+	store.Set("int8", int8(8))
+	store.Set("int16", int16(16))
+	store.Set("int32", int32(32))
+	store.Set("int64", int64(64))
+	store.Set("uint", uint(10))
+	store.Set("uint8", uint8(8))
+	store.Set("uint16", uint16(16))
+	store.Set("uint32", uint32(32))
+	store.Set("uint64", uint64(64))
+
+	tests := []struct {
+		key      string
+		expected int
+	}{
+		{"int8", 8},
+		{"int16", 16},
+		{"int32", 32},
+		{"int64", 64},
+		{"uint", 10},
+		{"uint8", 8},
+		{"uint16", 16},
+		{"uint32", 32},
+		{"uint64", 64},
+	}
+
+	for _, test := range tests {
+		if got := store.GetInt(test.key); got != test.expected {
+			t.Errorf("GetInt(%s): expected %d, got %d", test.key, test.expected, got)
+		}
+	}
+
+	// Test all numeric types to float64 conversion
+	for _, test := range tests {
+		if got := store.GetFloat64(test.key); got != float64(test.expected) {
+			t.Errorf("GetFloat64(%s): expected %f, got %f", test.key, float64(test.expected), got)
+		}
+	}
+}
+
+// TestSharedStoreConcurrentTypeGetters tests concurrent access to type-specific getters
+func TestSharedStoreConcurrentTypeGetters(t *testing.T) {
+	store := NewSharedStore()
+	store.Set("string", "test")
+	store.Set("int", 42)
+	store.Set("bool", true)
+
+	var wg sync.WaitGroup
+
+	// Concurrent type-specific reads
+	for i := 0; i < 100; i++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			_ = store.GetString("string")
+		}()
+		go func() {
+			defer wg.Done()
+			_ = store.GetInt("int")
+		}()
+		go func() {
+			defer wg.Done()
+			_ = store.GetBool("bool")
+		}()
+	}
+
+	// Concurrent writes and utility methods
+	for i := 0; i < 50; i++ {
+		wg.Add(4)
+		go func(n int) {
+			defer wg.Done()
+			store.Set(fmt.Sprintf("concurrent_%d", n), n)
+		}(i)
+		go func(n int) {
+			defer wg.Done()
+			store.Has(fmt.Sprintf("concurrent_%d", n))
+		}(i)
+		go func() {
+			defer wg.Done()
+			_ = store.Keys()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = store.Len()
+		}()
+	}
+
+	wg.Wait()
 }
 
 // SlowNode is a test node that takes time to execute
@@ -3206,6 +3916,36 @@ return nil, errors.New("failed")
 return nil, fmt.Errorf("failed to fetch user %d: %w", userID, err)
 ```
 
+### Type-Safe SharedStore Access
+
+Use type-safe helpers to avoid runtime panics:
+
+```go
+// ❌ Bad: Manual type assertion can panic
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    val, _ := shared.Get("count")
+    count := val.(int)  // Panics if val is nil or not int
+    return count, nil
+}
+
+// ✅ Good: Type-safe getter with default
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    count := shared.GetInt("count")  // Returns 0 if not found
+    // Or with custom default
+    count := shared.GetIntOr("count", -1)
+    return count, nil
+}
+
+// ✅ Good: Bind complex types
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    var config Config
+    if err := shared.Bind("config", &config); err != nil {
+        return nil, fmt.Errorf("invalid config: %w", err)
+    }
+    return config, nil
+}
+```
+
 ## Flow Design
 
 ### Modular Flows
@@ -3403,8 +4143,10 @@ func TestCompleteFlow(t *testing.T) {
     err := flow.Run(ctx, shared)
     assert.NoError(t, err)
     
-    result, ok := shared.Get("output")
-    assert.True(t, ok)
+    // Use type-safe getter or Bind for results
+    var result OutputData
+    err = shared.Bind("output", &result)
+    assert.NoError(t, err)
     assert.Equal(t, expectedResult, result)
 }
 ```
@@ -3615,11 +4357,12 @@ func main() {
     
     processNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            data, _ := shared.Get("data")
+            // Type-safe access to data
+            data := shared.GetMap("data")
             return data, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, data any) (any, error) {
-            val := data.(map[string]int)["value"]
+            val := data.(map[string]any)["value"].(int)
             fmt.Printf("Processing: %d\n", val)
             return val * 2, nil
         }),
@@ -3631,7 +4374,8 @@ func main() {
     
     saveNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            result, _ := shared.Get("result")
+            // Type-safe getter for integer result
+            result := shared.GetInt("result")
             return result, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, result any) (any, error) {
@@ -4094,8 +4838,8 @@ shared.Set("items", []string{"item1", "item2", "item3"})
 ctx := context.Background()
 action, err := flyt.Run(ctx, batchNode, shared)
 
-// Get results
-results, _ := shared.Get("results")
+// Get results using type-safe getter
+results := shared.GetSlice("results")
 fmt.Println(results) // ["processed: item1", "processed: item2", "processed: item3"]
 ```
 
@@ -6876,14 +7620,21 @@ The preparation phase reads from the SharedStore and prepares data for execution
 
 ```go
 func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-    // Read configuration or input data
-    config, _ := shared.Get("config")
-    input, _ := shared.Get("input_data")
+    // Read data using type-safe getters
+    userID := shared.GetInt("user_id")
+    apiKey := shared.GetString("api_key")
+    
+    // Or bind complex types
+    var config Config
+    if err := shared.Bind("config", &config); err != nil {
+        return nil, err
+    }
     
     // Prepare and return data for Exec phase
     return map[string]any{
+        "userID": userID,
+        "apiKey": apiKey,
         "config": config,
-        "input": input,
     }, nil
 }
 ```
@@ -6932,15 +7683,27 @@ The simplest way to create a node:
 ```go
 node := flyt.NewNode(
     flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-        // Prep logic
-        return prepData, nil
+        // Use type-safe getters
+        message := shared.GetString("message")
+        retryCount := shared.GetIntOr("retry_count", 0)
+        
+        return map[string]any{
+            "message": message,
+            "retry": retryCount,
+        }, nil
     }),
     flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-        // Exec logic
-        return result, nil
+        data := prepResult.(map[string]any)
+        // Process the data
+        return processMessage(data["message"].(string)), nil
     }),
     flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-        // Post logic
+        // Store result and determine action
+        shared.Set("result", execResult)
+        
+        if shared.GetInt("retry_count") > 3 {
+            return "max_retries", nil
+        }
         return flyt.DefaultAction, nil
     }),
 )
@@ -7055,7 +7818,7 @@ FILE: www/docs/pages/concepts/shared-store.mdx
 ================================================
 # Shared Store
 
-The SharedStore provides thread-safe data sharing between nodes in a flow. It acts as a key-value store that persists throughout flow execution.
+The SharedStore provides thread-safe data sharing between nodes in a flow. It acts as a key-value store that persists throughout flow execution with type-safe helpers for common operations.
 
 ## Creating a SharedStore
 
@@ -7067,18 +7830,98 @@ shared := flyt.NewSharedStore()
 
 ### Set and Get
 
-Store and retrieve individual values:
+Store and retrieve individual values with the original API:
 
 ```go
 // Set a value
 shared.Set("user_id", 123)
 shared.Set("config", map[string]any{"timeout": 30})
 
-// Get a value
+// Get a value (original method with type assertion)
 if value, ok := shared.Get("user_id"); ok {
     userID := value.(int)
     fmt.Printf("User ID: %d\n", userID)
 }
+```
+
+### Type-Safe Getters
+
+Use type-specific getters to avoid manual type assertions:
+
+```go
+// Type-safe getters (return zero values if not found or wrong type)
+userID := shared.GetInt("user_id")           // Returns 0 if not found
+name := shared.GetString("name")              // Returns "" if not found
+price := shared.GetFloat64("price")           // Returns 0.0 if not found
+enabled := shared.GetBool("enabled")          // Returns false if not found
+items := shared.GetSlice("items")             // Returns nil if not found
+config := shared.GetMap("config")             // Returns nil if not found
+
+// Type-safe getters with custom defaults
+userID = shared.GetIntOr("user_id", -1)              // Returns -1 if not found
+name = shared.GetStringOr("name", "anonymous")       // Returns "anonymous" if not found
+price = shared.GetFloat64Or("price", 99.99)          // Returns 99.99 if not found
+enabled = shared.GetBoolOr("enabled", true)          // Returns true if not found
+```
+
+The type-safe getters handle numeric conversions automatically:
+- `GetInt()` converts from int8, int16, int32, int64, uint variants, and float types
+- `GetFloat64()` converts from all numeric types including int and float32
+
+### Bind Method
+
+Bind complex types directly to structs (similar to Echo framework):
+
+```go
+// Define your struct
+type User struct {
+    ID       int      `json:"id"`
+    Name     string   `json:"name"`
+    Email    string   `json:"email"`
+    Tags     []string `json:"tags"`
+}
+
+// Store as map
+shared.Set("user", map[string]any{
+    "id":    123,
+    "name":  "Alice",
+    "email": "alice@example.com",
+    "tags":  []string{"admin", "developer"},
+})
+
+// Bind to struct
+var user User
+err := shared.Bind("user", &user)  // Automatically converts map to struct
+if err != nil {
+    // Handle error
+}
+
+// Or use MustBind (panics on failure - use for required data)
+var config Config
+shared.MustBind("config", &config)
+```
+
+### Utility Methods
+
+Additional helper methods for store management:
+
+```go
+// Check if key exists
+if shared.Has("user_id") {
+    // Key exists
+}
+
+// Delete a key
+shared.Delete("temp_data")
+
+// Get all keys
+keys := shared.Keys()  // Returns []string
+
+// Get number of items
+count := shared.Len()
+
+// Clear all items
+shared.Clear()
 ```
 
 ### GetAll
@@ -7133,16 +7976,32 @@ wg.Wait()
 Store configuration that multiple nodes need:
 
 ```go
+// Define configuration struct
+type APIConfig struct {
+    BaseURL string `json:"base_url"`
+    APIKey  string `json:"api_key"`
+    Timeout string `json:"timeout"`
+}
+
 // In main or initial node
-shared.Set("api_config", map[string]string{
-    "base_url": "https://api.example.com",
-    "api_key": os.Getenv("API_KEY"),
-    "timeout": "30s",
+shared.Set("api_config", APIConfig{
+    BaseURL: "https://api.example.com",
+    APIKey:  os.Getenv("API_KEY"),
+    Timeout: "30s",
 })
 
-// In any node
+// In any node - using Bind
 func (n *APINode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-    config, _ := shared.Get("api_config")
+    var config APIConfig
+    if err := shared.Bind("api_config", &config); err != nil {
+        return nil, err
+    }
+    return config, nil
+}
+
+// Or using GetMap for simple access
+func (n *APINode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    config := shared.GetMap("api_config")
     return config, nil
 }
 ```
@@ -7152,16 +8011,16 @@ func (n *APINode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, erro
 Collect results from multiple nodes:
 
 ```go
-// Node 1
+// Node 1 - Using type-safe getters
 func (n *Node1) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-    results, _ := shared.Get("results")
+    // GetSlice returns nil if not found, perfect for initialization
+    results := shared.GetSlice("results")
     if results == nil {
         results = []any{}
     }
     
-    resultList := results.([]any)
-    resultList = append(resultList, execResult)
-    shared.Set("results", resultList)
+    results = append(results, execResult)
+    shared.Set("results", results)
     
     return flyt.DefaultAction, nil
 }
@@ -7169,7 +8028,7 @@ func (n *Node1) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, 
 
 ### State Management
 
-Track workflow state:
+Track workflow state with type safety:
 
 ```go
 // Initialize state
@@ -7177,10 +8036,18 @@ shared.Set("workflow_state", "initialized")
 shared.Set("retry_count", 0)
 shared.Set("start_time", time.Now())
 
-// Update state in nodes
-func updateState(shared *flyt.SharedStore, newState string) {
-    shared.Set("workflow_state", newState)
-    shared.Set("last_update", time.Now())
+// Update state in nodes with increment
+func incrementRetry(shared *flyt.SharedStore) int {
+    count := shared.GetInt("retry_count")
+    count++
+    shared.Set("retry_count", count)
+    shared.Set("last_retry", time.Now())
+    return count
+}
+
+// Check state
+func checkState(shared *flyt.SharedStore) string {
+    return shared.GetStringOr("workflow_state", "unknown")
 }
 ```
 
@@ -7243,16 +8110,28 @@ batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInp
 
 ### 1. Type Safety
 
-Use type assertions carefully:
+Use type-safe getters to avoid manual assertions:
 
 ```go
-// Safe type assertion
+// Old way - manual type assertion
 if value, ok := shared.Get("count"); ok {
     if count, ok := value.(int); ok {
         // Use count
     } else {
         // Handle type mismatch
     }
+}
+
+// New way - type-safe getter
+count := shared.GetInt("count")  // Returns 0 if not found or wrong type
+
+// Or with custom default
+count := shared.GetIntOr("count", -1)  // Returns -1 if not found
+
+// For complex types, use Bind
+var userData UserData
+if err := shared.Bind("user_data", &userData); err != nil {
+    // Handle error
 }
 ```
 
@@ -7465,13 +8344,14 @@ func main() {
 
     processNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            data, _ := shared.Get("fetched_data")
+            // Use GetMap for type-safe access
+            data := shared.GetMap("fetched_data")
             return data, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-            data := prepResult.(map[string]string)
+            data := prepResult.(map[string]any)
             fmt.Printf("Processing: %v\n", data["data"])
-            return "processed: " + data["data"], nil
+            return "processed: " + fmt.Sprint(data["data"]), nil
         }),
     )
 
