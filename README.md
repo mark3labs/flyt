@@ -111,11 +111,12 @@ Nodes are the building blocks. Each node has three phases:
 3. **Post** - Process results and decide next action
 
 ```go
-// Using the helper
+// Simple node with type-safe getters
 node := flyt.NewNode(
     flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-        data, _ := shared.Get("input")
-        return data, nil
+        // Use type-safe getters to retrieve data
+        input := shared.GetString("input")
+        return input, nil
     }),
     flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
         // Process data
@@ -123,6 +124,34 @@ node := flyt.NewNode(
     }),
     flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         shared.Set("output", execResult)
+        return flyt.DefaultAction, nil
+    }),
+)
+
+// Working with structured data
+type ProcessRequest struct {
+    UserID    int      `json:"user_id"`
+    Operation string   `json:"operation"`
+    Resources []string `json:"resources"`
+}
+
+processNode := flyt.NewNode(
+    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        // Bind structured data from shared store
+        var request ProcessRequest
+        if err := shared.Bind("request", &request); err != nil {
+            return nil, fmt.Errorf("invalid request: %w", err)
+        }
+        return request, nil
+    }),
+    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        request := prepResult.(ProcessRequest)
+        // Process the structured request
+        result := processUserRequest(request.UserID, request.Operation, request.Resources)
+        return result, nil
+    }),
+    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        shared.Set("process_result", execResult)
         return flyt.DefaultAction, nil
     }),
 )
@@ -170,36 +199,57 @@ Thread-safe data sharing between nodes with type-safe helpers:
 ```go
 shared := flyt.NewSharedStore()
 
-// Basic get/set operations
-shared.Set("key", "value")
-value, ok := shared.Get("key")
+// Set values
+shared.Set("name", "Alice")
+shared.Set("count", 42)
+shared.Set("price", 19.99)
+shared.Set("enabled", true)
+shared.Set("items", []string{"apple", "banana"})
+shared.Set("config", map[string]any{"timeout": 30})
 
 // Type-safe getters (return zero values if not found or wrong type)
-str := shared.GetString("name")           // Returns "" if not found
-num := shared.GetInt("count")             // Returns 0 if not found
-price := shared.GetFloat64("price")       // Returns 0.0 if not found
-enabled := shared.GetBool("enabled")      // Returns false if not found
-items := shared.GetSlice("items")         // Returns nil if not found
-config := shared.GetMap("config")         // Returns nil if not found
+str := shared.GetString("name")           // Returns "Alice"
+num := shared.GetInt("count")             // Returns 42
+price := shared.GetFloat64("price")       // Returns 19.99
+enabled := shared.GetBool("enabled")      // Returns true
+items := shared.GetSlice("items")         // Returns []any{"apple", "banana"}
+config := shared.GetMap("config")         // Returns map[string]any{"timeout": 30}
 
 // Type-safe getters with custom defaults
-str = shared.GetStringOr("name", "anonymous")
-num = shared.GetIntOr("count", -1)
-price = shared.GetFloat64Or("price", 99.99)
-enabled = shared.GetBoolOr("enabled", true)
+str = shared.GetStringOr("missing", "anonymous")     // Returns "anonymous"
+num = shared.GetIntOr("missing", -1)                 // Returns -1
+price = shared.GetFloat64Or("missing", 99.99)        // Returns 99.99
+enabled = shared.GetBoolOr("missing", true)          // Returns true
 
 // Bind complex types (similar to Echo framework)
 type User struct {
-    ID   int    `json:"id"`
-    Name string `json:"name"`
+    ID    int      `json:"id"`
+    Name  string   `json:"name"`
+    Email string   `json:"email"`
+    Tags  []string `json:"tags"`
 }
 
-shared.Set("user", map[string]any{"id": 123, "name": "Alice"})
+// Store a typed struct - it gets stored as-is
+user := User{
+    ID:    123,
+    Name:  "Alice",
+    Email: "alice@example.com",
+    Tags:  []string{"admin", "developer"},
+}
+shared.Set("user", user)
 
-var user User
-err := shared.Bind("user", &user)  // Binds map to struct
-// Or panic on failure (for required data)
-shared.MustBind("user", &user)
+// Later, in a node's Prep function, bind it back to a struct
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    var user User
+    err := shared.Bind("user", &user)  // Binds stored data to struct
+    if err != nil {
+        return nil, err
+    }
+    // Or use MustBind (panics on failure - use for required data)
+    // shared.MustBind("user", &user)
+    
+    return user, nil
+}
 
 // Utility methods
 exists := shared.Has("key")       // Check if key exists
@@ -441,8 +491,8 @@ flowFactory := func() *flyt.Flow {
     validateNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Each flow has its own SharedStore with merged FlowInputs
-            userID, _ := shared.Get("user_id")
-            email, _ := shared.Get("email")
+            userID := shared.GetInt("user_id")
+            email := shared.GetString("email")
             return map[string]any{"user_id": userID, "email": email}, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {

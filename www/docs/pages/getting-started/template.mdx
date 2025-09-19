@@ -77,8 +77,9 @@ func main() {
     }
     
     // Get results
-    if result, ok := shared.Get("final_result"); ok {
-        log.Printf("Success! Result: %v\n", result)
+    result := shared.GetString("final_result")
+    if result != "" {
+        log.Printf("Success! Result: %s\n", result)
     }
 }
 ```

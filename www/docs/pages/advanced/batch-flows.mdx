@@ -12,8 +12,8 @@ flowFactory := func() *flyt.Flow {
     validateNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Each flow has its own SharedStore with merged FlowInputs
-            userID, _ := shared.Get("user_id")
-            email, _ := shared.Get("email")
+            userID := shared.GetInt("user_id")
+            email := shared.GetString("email")
             return map[string]any{"user_id": userID, "email": email}, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
@@ -60,8 +60,8 @@ Generate inputs based on runtime data:
 ```go
 batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
     // Get configuration from parent shared store
-    config, _ := shared.Get("batch_config")
-    batchSize := config.(map[string]any)["size"].(int)
+    config := shared.GetMap("batch_config")
+    batchSize := int(config["size"].(float64))  // JSON numbers are float64
     
     // Fetch data from database
     users, err := fetchUsers(batchSize)
@@ -126,10 +126,10 @@ func createConfiguredBatchFlow(config Config) *flyt.Flow {
     }
     
     batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-        items, _ := shared.Get("items")
+        items := shared.GetSlice("items")
         
         inputs := make([]flyt.FlowInputs, 0)
-        for _, item := range items.([]any) {
+        for _, item := range items {
             inputs = append(inputs, flyt.FlowInputs{
                 "item": item,
                 "config": config,
@@ -226,11 +226,11 @@ Process batches based on conditions:
 
 ```go
 batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-    mode, _ := shared.Get("processing_mode")
+    mode := shared.GetString("processing_mode")
     
     var inputs []flyt.FlowInputs
     
-    switch mode.(string) {
+    switch mode {
     case "all":
         inputs = getAllInputs()
     case "pending":

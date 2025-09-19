@@ -30,9 +30,8 @@ func main() {
     shared := flyt.NewSharedStore()
     shared.Set("test", "success")
     
-    if val, ok := shared.Get("test"); ok {
-        fmt.Printf("Flyt installed successfully! Value: %v\n", val)
-    }
+    val := shared.GetString("test")
+    fmt.Printf("Flyt installed successfully! Value: %s\n", val)
 }
 ```
 

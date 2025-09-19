@@ -203,11 +203,8 @@ func createRecursiveProcessingFlow(maxDepth int) *flyt.Flow {
     
     depthCheck := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            depth, _ := shared.Get("recursion_depth")
-            if depth == nil {
-                depth = 0
-            }
-            return depth.(int), nil
+            depth := shared.GetInt("recursion_depth")
+            return depth, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
             depth := prepResult.(int)

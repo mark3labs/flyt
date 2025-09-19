@@ -112,8 +112,8 @@ Create specialized node variants:
 func createHTTPNode(method string, headers map[string]string) flyt.Node {
     return flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            url, _ := shared.Get("url")
-            body, _ := shared.Get("body")
+            url := shared.GetString("url")
+            body := shared.GetMap("body")
             return map[string]any{"url": url, "body": body}, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {

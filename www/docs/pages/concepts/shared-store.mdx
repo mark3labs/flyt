@@ -19,11 +19,9 @@ Store and retrieve individual values with the original API:
 shared.Set("user_id", 123)
 shared.Set("config", map[string]any{"timeout": 30})
 
-// Get a value (original method with type assertion)
-if value, ok := shared.Get("user_id"); ok {
-    userID := value.(int)
-    fmt.Printf("User ID: %d\n", userID)
-}
+// Type-safe getter (recommended)
+userID := shared.GetInt("user_id")
+fmt.Printf("User ID: %d\n", userID)
 ```
 
 ### Type-Safe Getters
@@ -268,8 +266,8 @@ shared.Set("batch_config", map[string]any{
 })
 
 // After batch processing
-results, _ := shared.Get("results")
-errors, _ := shared.Get("errors")
+results := shared.GetSlice("results")
+errors := shared.GetSlice("errors")
 ```
 
 ## Isolation in Batch Flows
@@ -279,7 +277,7 @@ Each flow in a batch has its own SharedStore:
 ```go
 batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
     // This shared is from the parent
-    baseConfig, _ := shared.Get("base_config")
+    baseConfig := shared.GetMap("base_config")
     
     return []flyt.FlowInputs{
         {"id": 1, "config": baseConfig}, // Each gets own SharedStore
@@ -295,16 +293,7 @@ batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInp
 Use type-safe getters to avoid manual assertions:
 
 ```go
-// Old way - manual type assertion
-if value, ok := shared.Get("count"); ok {
-    if count, ok := value.(int); ok {
-        // Use count
-    } else {
-        // Handle type mismatch
-    }
-}
-
-// New way - type-safe getter
+// Type-safe getter (recommended)
 count := shared.GetInt("count")  // Returns 0 if not found or wrong type
 
 // Or with custom default

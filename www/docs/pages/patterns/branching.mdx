@@ -68,12 +68,7 @@ type StateMachine struct {
 }
 
 func (n *StateMachine) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-    currentState, _ := shared.Get("state")
-    if currentState == nil {
-        currentState = "init"
-    }
-    
-    state := currentState.(string)
+    state := shared.GetStringOr("state", "init")
     event := execResult.(string)
     
     // State transition logic
@@ -206,11 +201,8 @@ Create loops with exit conditions:
 ```go
 retryNode := flyt.NewNode(
     flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-        attempts, _ := shared.Get("attempts")
-        if attempts == nil {
-            attempts = 0
-        }
-        return attempts.(int), nil
+        attempts := shared.GetInt("attempts")
+        return attempts, nil
     }),
     flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
         attempts := prepResult.(int)
@@ -345,7 +337,7 @@ Route based on experiment groups:
 func createABTestNode(testName string, distribution map[string]int) flyt.Node {
     return flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            userID, _ := shared.Get("user_id")
+            userID := shared.GetString("user_id")
             return userID, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {

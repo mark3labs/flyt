@@ -115,8 +115,7 @@ func makeDecisionPost(ctx context.Context, shared *flyt.SharedStore, prepResult,
 
 ```go
 func retryablePost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-    attempts, _ := shared.Get("attempts")
-    count := attempts.(int)
+    count := shared.GetInt("attempts")
     
     if execResult == nil && count < 3 {
         shared.Set("attempts", count + 1)
@@ -130,9 +129,9 @@ func retryablePost(ctx context.Context, shared *flyt.SharedStore, prepResult, ex
 
 ```go
 func statePost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-    currentState, _ := shared.Get("state")
+    currentState := shared.GetString("state")
     
-    switch currentState.(string) {
+    switch currentState {
     case "init":
         shared.Set("state", "processing")
         return "process", nil

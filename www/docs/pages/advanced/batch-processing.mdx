@@ -176,7 +176,7 @@ Process large datasets in chunks:
 func createChunkedProcessor(chunkSize int) flyt.Node {
     return flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            items, _ := shared.Get("items")
+            items := shared.GetSlice("items")
             return items, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {

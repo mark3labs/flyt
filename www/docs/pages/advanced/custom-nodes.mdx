@@ -23,7 +23,7 @@ func NewCustomNode(config Config) *CustomNode {
 
 func (n *CustomNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
     // Custom preparation logic
-    input, _ := shared.Get("input")
+    input := shared.GetString("input")
     n.state.Prepare(input)
     return input, nil
 }

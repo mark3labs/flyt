@@ -136,7 +136,7 @@ func main() {
     
     node := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            config, _ := shared.Get("config")
+            config := shared.GetMap("config")
             return config, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {

@@ -141,7 +141,7 @@ func createNestedFlowWithContext(parentContext map[string]any) *flyt.Flow {
             }
             
             // Get data from parent flow
-            parentData, _ := shared.Get("parent_data")
+            parentData := shared.GetMap("parent_data")
             return parentData, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
@@ -184,11 +184,8 @@ Create recursive workflow patterns:
 func createRecursiveFlow(maxDepth int) *flyt.Flow {
     checkDepth := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            depth, _ := shared.Get("depth")
-            if depth == nil {
-                depth = 0
-            }
-            return depth.(int), nil
+            depth := shared.GetInt("depth")
+            return depth, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
             depth := prepResult.(int)
@@ -240,8 +237,8 @@ func createParallelNestedFlow() *flyt.Flow {
     // Merge results
     mergeNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            result1, _ := shared.Get("result1")
-            result2, _ := shared.Get("result2")
+            result1 := shared.GetMap("result1")
+            result2 := shared.GetMap("result2")
             return map[string]any{
                 "result1": result1,
                 "result2": result2,

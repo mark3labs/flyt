@@ -106,29 +106,24 @@ func ParallelMap[T any, R any](items []T, fn func(T) R, workers int) []R {
 results := ParallelMap(items, processItem, 10)
 ```
 
-### Safe Type Assertion
+### Type-Safe Getters
+
+Flyt provides built-in type-safe getters:
 
 ```go
-func SafeGet[T any](shared *flyt.SharedStore, key string) (T, bool) {
-    var zero T
-    
-    value, exists := shared.Get(key)
-    if !exists {
-        return zero, false
-    }
-    
-    typed, ok := value.(T)
-    if !ok {
-        return zero, false
-    }
-    
-    return typed, true
-}
+// Built-in type-safe getters
+userID := shared.GetInt("user_id")           // Returns 0 if not found
+name := shared.GetString("name")              // Returns "" if not found
+enabled := shared.GetBool("enabled")          // Returns false if not found
 
-// Usage
-if userID, ok := SafeGet[int](shared, "user_id"); ok {
-    // Use userID safely
-}
+// With custom defaults
+userID = shared.GetIntOr("user_id", -1)
+name = shared.GetStringOr("name", "anonymous")
+enabled = shared.GetBoolOr("enabled", true)
+
+// For complex types, use Bind
+var config Config
+err := shared.Bind("config", &config)
 ```
 
 ### Chunk Slice
