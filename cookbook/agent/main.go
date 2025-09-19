@@ -46,9 +46,8 @@ func main() {
 		log.Fatalf("Error running agent: %v", err)
 	}
 
-	answerVal, _ := shared.Get("answer")
-	answer, ok := answerVal.(string)
-	if !ok || answer == "" {
+	answer := shared.GetString("answer")
+	if answer == "" {
 		log.Fatal("No answer found")
 	}
 	fmt.Println("\n🎯 Final Answer:")

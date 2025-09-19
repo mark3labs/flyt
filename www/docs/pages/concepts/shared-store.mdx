@@ -1,6 +1,6 @@
 # Shared Store
 
-The SharedStore provides thread-safe data sharing between nodes in a flow. It acts as a key-value store that persists throughout flow execution.
+The SharedStore provides thread-safe data sharing between nodes in a flow. It acts as a key-value store that persists throughout flow execution with type-safe helpers for common operations.
 
 ## Creating a SharedStore
 
@@ -12,18 +12,98 @@ shared := flyt.NewSharedStore()
 
 ### Set and Get
 
-Store and retrieve individual values:
+Store and retrieve individual values with the original API:
 
 ```go
 // Set a value
 shared.Set("user_id", 123)
 shared.Set("config", map[string]any{"timeout": 30})
 
-// Get a value
+// Get a value (original method with type assertion)
 if value, ok := shared.Get("user_id"); ok {
     userID := value.(int)
     fmt.Printf("User ID: %d\n", userID)
 }
+```
+
+### Type-Safe Getters
+
+Use type-specific getters to avoid manual type assertions:
+
+```go
+// Type-safe getters (return zero values if not found or wrong type)
+userID := shared.GetInt("user_id")           // Returns 0 if not found
+name := shared.GetString("name")              // Returns "" if not found
+price := shared.GetFloat64("price")           // Returns 0.0 if not found
+enabled := shared.GetBool("enabled")          // Returns false if not found
+items := shared.GetSlice("items")             // Returns nil if not found
+config := shared.GetMap("config")             // Returns nil if not found
+
+// Type-safe getters with custom defaults
+userID = shared.GetIntOr("user_id", -1)              // Returns -1 if not found
+name = shared.GetStringOr("name", "anonymous")       // Returns "anonymous" if not found
+price = shared.GetFloat64Or("price", 99.99)          // Returns 99.99 if not found
+enabled = shared.GetBoolOr("enabled", true)          // Returns true if not found
+```
+
+The type-safe getters handle numeric conversions automatically:
+- `GetInt()` converts from int8, int16, int32, int64, uint variants, and float types
+- `GetFloat64()` converts from all numeric types including int and float32
+
+### Bind Method
+
+Bind complex types directly to structs (similar to Echo framework):
+
+```go
+// Define your struct
+type User struct {
+    ID       int      `json:"id"`
+    Name     string   `json:"name"`
+    Email    string   `json:"email"`
+    Tags     []string `json:"tags"`
+}
+
+// Store as map
+shared.Set("user", map[string]any{
+    "id":    123,
+    "name":  "Alice",
+    "email": "alice@example.com",
+    "tags":  []string{"admin", "developer"},
+})
+
+// Bind to struct
+var user User
+err := shared.Bind("user", &user)  // Automatically converts map to struct
+if err != nil {
+    // Handle error
+}
+
+// Or use MustBind (panics on failure - use for required data)
+var config Config
+shared.MustBind("config", &config)
+```
+
+### Utility Methods
+
+Additional helper methods for store management:
+
+```go
+// Check if key exists
+if shared.Has("user_id") {
+    // Key exists
+}
+
+// Delete a key
+shared.Delete("temp_data")
+
+// Get all keys
+keys := shared.Keys()  // Returns []string
+
+// Get number of items
+count := shared.Len()
+
+// Clear all items
+shared.Clear()
 ```
 
 ### GetAll
@@ -78,16 +158,32 @@ wg.Wait()
 Store configuration that multiple nodes need:
 
 ```go
+// Define configuration struct
+type APIConfig struct {
+    BaseURL string `json:"base_url"`
+    APIKey  string `json:"api_key"`
+    Timeout string `json:"timeout"`
+}
+
 // In main or initial node
-shared.Set("api_config", map[string]string{
-    "base_url": "https://api.example.com",
-    "api_key": os.Getenv("API_KEY"),
-    "timeout": "30s",
+shared.Set("api_config", APIConfig{
+    BaseURL: "https://api.example.com",
+    APIKey:  os.Getenv("API_KEY"),
+    Timeout: "30s",
 })
 
-// In any node
+// In any node - using Bind
 func (n *APINode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-    config, _ := shared.Get("api_config")
+    var config APIConfig
+    if err := shared.Bind("api_config", &config); err != nil {
+        return nil, err
+    }
+    return config, nil
+}
+
+// Or using GetMap for simple access
+func (n *APINode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    config := shared.GetMap("api_config")
     return config, nil
 }
 ```
@@ -97,16 +193,16 @@ func (n *APINode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, erro
 Collect results from multiple nodes:
 
 ```go
-// Node 1
+// Node 1 - Using type-safe getters
 func (n *Node1) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-    results, _ := shared.Get("results")
+    // GetSlice returns nil if not found, perfect for initialization
+    results := shared.GetSlice("results")
     if results == nil {
         results = []any{}
     }
     
-    resultList := results.([]any)
-    resultList = append(resultList, execResult)
-    shared.Set("results", resultList)
+    results = append(results, execResult)
+    shared.Set("results", results)
     
     return flyt.DefaultAction, nil
 }
@@ -114,7 +210,7 @@ func (n *Node1) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, 
 
 ### State Management
 
-Track workflow state:
+Track workflow state with type safety:
 
 ```go
 // Initialize state
@@ -122,10 +218,18 @@ shared.Set("workflow_state", "initialized")
 shared.Set("retry_count", 0)
 shared.Set("start_time", time.Now())
 
-// Update state in nodes
-func updateState(shared *flyt.SharedStore, newState string) {
-    shared.Set("workflow_state", newState)
-    shared.Set("last_update", time.Now())
+// Update state in nodes with increment
+func incrementRetry(shared *flyt.SharedStore) int {
+    count := shared.GetInt("retry_count")
+    count++
+    shared.Set("retry_count", count)
+    shared.Set("last_retry", time.Now())
+    return count
+}
+
+// Check state
+func checkState(shared *flyt.SharedStore) string {
+    return shared.GetStringOr("workflow_state", "unknown")
 }
 ```
 
@@ -188,16 +292,28 @@ batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInp
 
 ### 1. Type Safety
 
-Use type assertions carefully:
+Use type-safe getters to avoid manual assertions:
 
 ```go
-// Safe type assertion
+// Old way - manual type assertion
 if value, ok := shared.Get("count"); ok {
     if count, ok := value.(int); ok {
         // Use count
     } else {
         // Handle type mismatch
     }
+}
+
+// New way - type-safe getter
+count := shared.GetInt("count")  // Returns 0 if not found or wrong type
+
+// Or with custom default
+count := shared.GetIntOr("count", -1)  // Returns -1 if not found
+
+// For complex types, use Bind
+var userData UserData
+if err := shared.Bind("user_data", &userData); err != nil {
+    // Handle error
 }
 ```
 

@@ -31,6 +31,7 @@ package flyt
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -109,6 +110,317 @@ func (s *SharedStore) Merge(data map[string]any) {
 	defer s.mu.Unlock()
 	for k, v := range data {
 		s.data[k] = v
+	}
+}
+
+// Has checks if a key exists in the store.
+// This method is safe for concurrent access.
+func (s *SharedStore) Has(key string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.data[key]
+	return ok
+}
+
+// Delete removes a key from the store.
+// This method is safe for concurrent access.
+func (s *SharedStore) Delete(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data, key)
+}
+
+// Clear removes all keys from the store.
+// This method is safe for concurrent access.
+func (s *SharedStore) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = make(map[string]any)
+}
+
+// Keys returns all keys in the store.
+// The returned slice is a snapshot and can be safely modified
+// without affecting the store's internal data.
+// This method is safe for concurrent access.
+func (s *SharedStore) Keys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys := make([]string, 0, len(s.data))
+	for k := range s.data {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// Len returns the number of items in the store.
+// This method is safe for concurrent access.
+func (s *SharedStore) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.data)
+}
+
+// GetString retrieves a string value from the store.
+// Returns empty string if the key doesn't exist or the value is not a string.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetString(key string) string {
+	val, ok := s.Get(key)
+	if !ok {
+		return ""
+	}
+	str, _ := val.(string)
+	return str
+}
+
+// GetStringOr retrieves a string value from the store.
+// Returns the provided default value if the key doesn't exist or the value is not a string.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetStringOr(key string, defaultVal string) string {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+	str, ok := val.(string)
+	if !ok {
+		return defaultVal
+	}
+	return str
+}
+
+// GetInt retrieves an int value from the store.
+// Returns 0 if the key doesn't exist or the value cannot be converted to int.
+// Supports conversion from int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, and float types.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetInt(key string) int {
+	return s.GetIntOr(key, 0)
+}
+
+// GetIntOr retrieves an int value from the store.
+// Returns the provided default value if the key doesn't exist or the value cannot be converted to int.
+// Supports conversion from various numeric types.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetIntOr(key string, defaultVal int) int {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+
+	switch v := val.(type) {
+	case int:
+		return v
+	case int8:
+		return int(v)
+	case int16:
+		return int(v)
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case uint:
+		return int(v)
+	case uint8:
+		return int(v)
+	case uint16:
+		return int(v)
+	case uint32:
+		return int(v)
+	case uint64:
+		return int(v)
+	case float32:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return defaultVal
+	}
+}
+
+// GetFloat64 retrieves a float64 value from the store.
+// Returns 0.0 if the key doesn't exist or the value cannot be converted to float64.
+// Supports conversion from int, float32, and other numeric types.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetFloat64(key string) float64 {
+	return s.GetFloat64Or(key, 0.0)
+}
+
+// GetFloat64Or retrieves a float64 value from the store.
+// Returns the provided default value if the key doesn't exist or the value cannot be converted to float64.
+// Supports conversion from various numeric types.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetFloat64Or(key string, defaultVal float64) float64 {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+
+	switch v := val.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int8:
+		return float64(v)
+	case int16:
+		return float64(v)
+	case int32:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case uint:
+		return float64(v)
+	case uint8:
+		return float64(v)
+	case uint16:
+		return float64(v)
+	case uint32:
+		return float64(v)
+	case uint64:
+		return float64(v)
+	default:
+		return defaultVal
+	}
+}
+
+// GetBool retrieves a bool value from the store.
+// Returns false if the key doesn't exist or the value is not a bool.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetBool(key string) bool {
+	return s.GetBoolOr(key, false)
+}
+
+// GetBoolOr retrieves a bool value from the store.
+// Returns the provided default value if the key doesn't exist or the value is not a bool.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetBoolOr(key string, defaultVal bool) bool {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+	b, ok := val.(bool)
+	if !ok {
+		return defaultVal
+	}
+	return b
+}
+
+// GetSlice retrieves a []any slice from the store.
+// Returns nil if the key doesn't exist or the value is not a slice.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetSlice(key string) []any {
+	return s.GetSliceOr(key, nil)
+}
+
+// GetSliceOr retrieves a []any slice from the store.
+// Returns the provided default value if the key doesn't exist or the value is not a slice.
+// Uses ToSlice to convert various slice types to []any.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetSliceOr(key string, defaultVal []any) []any {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+
+	// Use ToSlice for conversion which handles various slice types
+	if val == nil {
+		return defaultVal
+	}
+
+	// Check if it's already []any
+	if slice, ok := val.([]any); ok {
+		return slice
+	}
+
+	// Try to convert using reflection
+	result := ToSlice(val)
+	if len(result) == 1 && result[0] == val {
+		// ToSlice wrapped a non-slice value, so this wasn't actually a slice
+		return defaultVal
+	}
+	return result
+}
+
+// GetMap retrieves a map[string]any from the store.
+// Returns nil if the key doesn't exist or the value is not a map[string]any.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetMap(key string) map[string]any {
+	return s.GetMapOr(key, nil)
+}
+
+// GetMapOr retrieves a map[string]any from the store.
+// Returns the provided default value if the key doesn't exist or the value is not a map[string]any.
+// This method is safe for concurrent access.
+func (s *SharedStore) GetMapOr(key string, defaultVal map[string]any) map[string]any {
+	val, ok := s.Get(key)
+	if !ok {
+		return defaultVal
+	}
+	m, ok := val.(map[string]any)
+	if !ok {
+		return defaultVal
+	}
+	return m
+}
+
+// Bind binds a value from the store to a struct using JSON marshaling/unmarshaling.
+// This allows for easy conversion of complex types stored in the SharedStore.
+// The destination must be a pointer to the target struct.
+// Returns an error if the key is not found or binding fails.
+// This method is safe for concurrent access.
+//
+// Example:
+//
+//	type User struct {
+//	    ID   int    `json:"id"`
+//	    Name string `json:"name"`
+//	}
+//	var user User
+//	err := shared.Bind("user", &user)
+func (s *SharedStore) Bind(key string, dest any) error {
+	val, ok := s.Get(key)
+	if !ok {
+		return fmt.Errorf("key %q not found in shared store", key)
+	}
+
+	// Check if dest is a pointer
+	rv := reflect.ValueOf(dest)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return fmt.Errorf("destination must be a non-nil pointer")
+	}
+
+	// If val is already the correct type, assign directly
+	valType := reflect.TypeOf(val)
+	destType := rv.Type().Elem()
+	if valType == destType {
+		rv.Elem().Set(reflect.ValueOf(val))
+		return nil
+	}
+
+	// Otherwise use JSON as intermediate format
+	jsonBytes, err := json.Marshal(val)
+	if err != nil {
+		return fmt.Errorf("failed to marshal value: %w", err)
+	}
+
+	if err := json.Unmarshal(jsonBytes, dest); err != nil {
+		return fmt.Errorf("failed to unmarshal to destination: %w", err)
+	}
+
+	return nil
+}
+
+// MustBind is like Bind but panics if binding fails.
+// Use this only when binding failure should be considered a programming error.
+// This method is safe for concurrent access.
+//
+// Example:
+//
+//	var config Config
+//	shared.MustBind("config", &config)  // Panics if binding fails
+func (s *SharedStore) MustBind(key string, dest any) {
+	if err := s.Bind(key, dest); err != nil {
+		panic(fmt.Sprintf("SharedStore.MustBind failed: %v", err))
 	}
 }
 

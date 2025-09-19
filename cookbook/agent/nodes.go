@@ -14,16 +14,9 @@ import (
 func NewDecideActionNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-			question, _ := shared.Get("question")
-			context, _ := shared.Get("context")
-			if context == nil {
-				context = "No previous search"
-			}
-
-			searchCount, _ := shared.Get("search_count")
-			if searchCount == nil {
-				searchCount = 0
-			}
+			question := shared.GetString("question")
+			context := shared.GetStringOr("context", "No previous search")
+			searchCount := shared.GetInt("search_count")
 
 			return map[string]any{
 				"question":     question,
@@ -112,7 +105,7 @@ Example responses:
 func NewSearchWebNode(searcher Searcher) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-			query, _ := shared.Get("search_query")
+			query := shared.GetString("search_query")
 
 			return map[string]any{
 				"query": query,
@@ -140,13 +133,9 @@ func NewSearchWebNode(searcher Searcher) flyt.Node {
 			results := data["results"].(string)
 			query := data["query"].(string)
 
-			previousContext, _ := shared.Get("context")
-			previousStr := ""
-			if previousContext != nil {
-				previousStr = previousContext.(string)
-			}
+			previousContext := shared.GetString("context")
 
-			newContext := fmt.Sprintf("%s\n\nSEARCH: %s\nRESULTS: %s", previousStr, query, results)
+			newContext := fmt.Sprintf("%s\n\nSEARCH: %s\nRESULTS: %s", previousContext, query, results)
 			shared.Set("context", newContext)
 
 			fmt.Println("📚 Found information, analyzing results...")
@@ -160,8 +149,8 @@ func NewSearchWebNode(searcher Searcher) flyt.Node {
 func NewAnswerQuestionNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
 		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-			question, _ := shared.Get("question")
-			context, _ := shared.Get("context")
+			question := shared.GetString("question")
+			context := shared.GetString("context")
 
 			return map[string]any{
 				"question": question,

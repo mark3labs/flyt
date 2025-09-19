@@ -231,10 +231,8 @@ func (b *SlackBot) processWithFlyt(ctx context.Context, message, channel, thread
 	}
 
 	// Get response from shared store
-	if response, ok := shared.Get("response"); ok {
-		if responseStr, ok := response.(string); ok {
-			b.sendMessage(channel, responseStr, threadTS)
-		}
+	if response := shared.GetString("response"); response != "" {
+		b.sendMessage(channel, response, threadTS)
 	}
 }
 

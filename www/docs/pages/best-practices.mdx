@@ -69,6 +69,36 @@ return nil, errors.New("failed")
 return nil, fmt.Errorf("failed to fetch user %d: %w", userID, err)
 ```
 
+### Type-Safe SharedStore Access
+
+Use type-safe helpers to avoid runtime panics:
+
+```go
+// ❌ Bad: Manual type assertion can panic
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    val, _ := shared.Get("count")
+    count := val.(int)  // Panics if val is nil or not int
+    return count, nil
+}
+
+// ✅ Good: Type-safe getter with default
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    count := shared.GetInt("count")  // Returns 0 if not found
+    // Or with custom default
+    count := shared.GetIntOr("count", -1)
+    return count, nil
+}
+
+// ✅ Good: Bind complex types
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    var config Config
+    if err := shared.Bind("config", &config); err != nil {
+        return nil, fmt.Errorf("invalid config: %w", err)
+    }
+    return config, nil
+}
+```
+
 ## Flow Design
 
 ### Modular Flows
@@ -266,8 +296,10 @@ func TestCompleteFlow(t *testing.T) {
     err := flow.Run(ctx, shared)
     assert.NoError(t, err)
     
-    result, ok := shared.Get("output")
-    assert.True(t, ok)
+    // Use type-safe getter or Bind for results
+    var result OutputData
+    err = shared.Bind("output", &result)
+    assert.NoError(t, err)
     assert.Equal(t, expectedResult, result)
 }
 ```

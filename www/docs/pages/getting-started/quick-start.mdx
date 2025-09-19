@@ -66,13 +66,14 @@ func main() {
 
     processNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            data, _ := shared.Get("fetched_data")
+            // Use GetMap for type-safe access
+            data := shared.GetMap("fetched_data")
             return data, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-            data := prepResult.(map[string]string)
+            data := prepResult.(map[string]any)
             fmt.Printf("Processing: %v\n", data["data"])
-            return "processed: " + data["data"], nil
+            return "processed: " + fmt.Sprint(data["data"]), nil
         }),
     )
 

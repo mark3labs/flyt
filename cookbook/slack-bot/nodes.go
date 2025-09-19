@@ -16,14 +16,9 @@ type ParseMessageNode struct {
 }
 
 func (n *ParseMessageNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-	message, ok := shared.Get("message")
-	if !ok {
+	messageStr := shared.GetString("message")
+	if messageStr == "" {
 		return nil, fmt.Errorf("no message found in shared store")
-	}
-
-	messageStr, ok := message.(string)
-	if !ok {
-		return nil, fmt.Errorf("message is not a string")
 	}
 
 	// Clean up the message (remove bot mentions, extra spaces, etc.)
@@ -67,7 +62,8 @@ type LLMNode struct {
 
 func (n *LLMNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 	// Check if we're processing tool responses
-	if toolResponses, ok := shared.Get("tool_responses"); ok {
+	if shared.Has("tool_responses") {
+		toolResponses, _ := shared.Get("tool_responses")
 		return map[string]interface{}{
 			"type":           "tool_response",
 			"tool_responses": toolResponses,
@@ -75,8 +71,8 @@ func (n *LLMNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, erro
 	}
 
 	// Otherwise, process user message
-	message, ok := shared.Get("cleaned_message")
-	if !ok {
+	message := shared.GetString("cleaned_message")
+	if message == "" {
 		return nil, fmt.Errorf("no cleaned message found")
 	}
 
@@ -203,8 +199,8 @@ type FormatResponseNode struct {
 }
 
 func (n *FormatResponseNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-	response, ok := shared.Get("response")
-	if !ok {
+	response := shared.GetString("response")
+	if response == "" {
 		return nil, fmt.Errorf("no response found")
 	}
 	return response, nil

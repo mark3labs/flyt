@@ -12,14 +12,21 @@ The preparation phase reads from the SharedStore and prepares data for execution
 
 ```go
 func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-    // Read configuration or input data
-    config, _ := shared.Get("config")
-    input, _ := shared.Get("input_data")
+    // Read data using type-safe getters
+    userID := shared.GetInt("user_id")
+    apiKey := shared.GetString("api_key")
+    
+    // Or bind complex types
+    var config Config
+    if err := shared.Bind("config", &config); err != nil {
+        return nil, err
+    }
     
     // Prepare and return data for Exec phase
     return map[string]any{
+        "userID": userID,
+        "apiKey": apiKey,
         "config": config,
-        "input": input,
     }, nil
 }
 ```
@@ -68,15 +75,27 @@ The simplest way to create a node:
 ```go
 node := flyt.NewNode(
     flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-        // Prep logic
-        return prepData, nil
+        // Use type-safe getters
+        message := shared.GetString("message")
+        retryCount := shared.GetIntOr("retry_count", 0)
+        
+        return map[string]any{
+            "message": message,
+            "retry": retryCount,
+        }, nil
     }),
     flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-        // Exec logic
-        return result, nil
+        data := prepResult.(map[string]any)
+        // Process the data
+        return processMessage(data["message"].(string)), nil
     }),
     flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-        // Post logic
+        // Store result and determine action
+        shared.Set("result", execResult)
+        
+        if shared.GetInt("retry_count") > 3 {
+            return "max_retries", nil
+        }
         return flyt.DefaultAction, nil
     }),
 )

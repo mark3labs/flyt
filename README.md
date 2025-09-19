@@ -165,14 +165,48 @@ err := flow.Run(ctx, shared)
 
 ### Shared Store
 
-Thread-safe data sharing between nodes:
+Thread-safe data sharing between nodes with type-safe helpers:
 
 ```go
 shared := flyt.NewSharedStore()
 
-// Set and get individual values
+// Basic get/set operations
 shared.Set("key", "value")
 value, ok := shared.Get("key")
+
+// Type-safe getters (return zero values if not found or wrong type)
+str := shared.GetString("name")           // Returns "" if not found
+num := shared.GetInt("count")             // Returns 0 if not found
+price := shared.GetFloat64("price")       // Returns 0.0 if not found
+enabled := shared.GetBool("enabled")      // Returns false if not found
+items := shared.GetSlice("items")         // Returns nil if not found
+config := shared.GetMap("config")         // Returns nil if not found
+
+// Type-safe getters with custom defaults
+str = shared.GetStringOr("name", "anonymous")
+num = shared.GetIntOr("count", -1)
+price = shared.GetFloat64Or("price", 99.99)
+enabled = shared.GetBoolOr("enabled", true)
+
+// Bind complex types (similar to Echo framework)
+type User struct {
+    ID   int    `json:"id"`
+    Name string `json:"name"`
+}
+
+shared.Set("user", map[string]any{"id": 123, "name": "Alice"})
+
+var user User
+err := shared.Bind("user", &user)  // Binds map to struct
+// Or panic on failure (for required data)
+shared.MustBind("user", &user)
+
+// Utility methods
+exists := shared.Has("key")       // Check if key exists
+shared.Delete("key")               // Remove a key
+keys := shared.Keys()              // Get all keys
+length := shared.Len()             // Get number of items
+shared.Clear()                     // Remove all items
 
 // Get all data as a map (returns a copy)
 allData := shared.GetAll()
@@ -183,6 +217,11 @@ shared.Merge(map[string]any{
     "config": map[string]any{"timeout": 30},
 })
 ```
+
+The type-safe getters handle numeric conversions automatically:
+- `GetInt()` converts from int8, int16, int32, int64, uint variants, and float types
+- `GetFloat64()` converts from all numeric types including int and float32
+- `GetSlice()` uses the same conversion logic as `ToSlice()` utility
 
 ## Intermediate Patterns
 

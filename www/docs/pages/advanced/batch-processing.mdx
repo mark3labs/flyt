@@ -24,8 +24,8 @@ shared.Set("items", []string{"item1", "item2", "item3"})
 ctx := context.Background()
 action, err := flyt.Run(ctx, batchNode, shared)
 
-// Get results
-results, _ := shared.Get("results")
+// Get results using type-safe getter
+results := shared.GetSlice("results")
 fmt.Println(results) // ["processed: item1", "processed: item2", "processed: item3"]
 ```
 

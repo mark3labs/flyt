@@ -96,11 +96,12 @@ func main() {
     
     processNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            data, _ := shared.Get("data")
+            // Type-safe access to data
+            data := shared.GetMap("data")
             return data, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, data any) (any, error) {
-            val := data.(map[string]int)["value"]
+            val := data.(map[string]any)["value"].(int)
             fmt.Printf("Processing: %d\n", val)
             return val * 2, nil
         }),
@@ -112,7 +113,8 @@ func main() {
     
     saveNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            result, _ := shared.Get("result")
+            // Type-safe getter for integer result
+            result := shared.GetInt("result")
             return result, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, result any) (any, error) {
