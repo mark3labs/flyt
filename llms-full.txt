@@ -427,8 +427,8 @@ flowFactory := func() *flyt.Flow {
     validateNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Each flow has its own SharedStore with merged FlowInputs
-            userID, _ := shared.Get("user_id")
-            email, _ := shared.Get("email")
+            userID := shared.GetInt("user_id")
+            email := shared.GetString("email")
             return map[string]any{"user_id": userID, "email": email}, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
@@ -475,8 +475,8 @@ Generate inputs based on runtime data:
 ```go
 batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
     // Get configuration from parent shared store
-    config, _ := shared.Get("batch_config")
-    batchSize := config.(map[string]any)["size"].(int)
+    config := shared.GetMap("batch_config")
+    batchSize := int(config["size"].(float64))  // JSON numbers are float64
     
     // Fetch data from database
     users, err := fetchUsers(batchSize)
@@ -541,10 +541,10 @@ func createConfiguredBatchFlow(config Config) *flyt.Flow {
     }
     
     batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-        items, _ := shared.Get("items")
+        items := shared.GetSlice("items")
         
         inputs := make([]flyt.FlowInputs, 0)
-        for _, item := range items.([]any) {
+        for _, item := range items {
             inputs = append(inputs, flyt.FlowInputs{
                 "item": item,
                 "config": config,
@@ -641,11 +641,11 @@ Process batches based on conditions:
 
 ```go
 batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-    mode, _ := shared.Get("processing_mode")
+    mode := shared.GetString("processing_mode")
     
     var inputs []flyt.FlowInputs
     
-    switch mode.(string) {
+    switch mode {
     case "all":
         inputs = getAllInputs()
     case "pending":
@@ -920,7 +920,7 @@ Process large datasets in chunks:
 func createChunkedProcessor(chunkSize int) flyt.Node {
     return flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            items, _ := shared.Get("items")
+            items := shared.GetSlice("items")
             return items, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
@@ -1084,7 +1084,7 @@ func NewCustomNode(config Config) *CustomNode {
 
 func (n *CustomNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
     // Custom preparation logic
-    input, _ := shared.Get("input")
+    input := shared.GetString("input")
     n.state.Prepare(input)
     return input, nil
 }
@@ -1733,11 +1733,8 @@ func createRecursiveProcessingFlow(maxDepth int) *flyt.Flow {
     
     depthCheck := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            depth, _ := shared.Get("recursion_depth")
-            if depth == nil {
-                depth = 0
-            }
-            return depth.(int), nil
+            depth := shared.GetInt("recursion_depth")
+            return depth, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
             depth := prepResult.(int)
@@ -2026,7 +2023,7 @@ func createNestedFlowWithContext(parentContext map[string]any) *flyt.Flow {
             }
             
             // Get data from parent flow
-            parentData, _ := shared.Get("parent_data")
+            parentData := shared.GetMap("parent_data")
             return parentData, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
@@ -2069,11 +2066,8 @@ Create recursive workflow patterns:
 func createRecursiveFlow(maxDepth int) *flyt.Flow {
     checkDepth := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            depth, _ := shared.Get("depth")
-            if depth == nil {
-                depth = 0
-            }
-            return depth.(int), nil
+            depth := shared.GetInt("depth")
+            return depth, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
             depth := prepResult.(int)
@@ -2125,8 +2119,8 @@ func createParallelNestedFlow() *flyt.Flow {
     // Merge results
     mergeNode := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            result1, _ := shared.Get("result1")
-            result2, _ := shared.Get("result2")
+            result1 := shared.GetMap("result1")
+            result2 := shared.GetMap("result2")
             return map[string]any{
                 "result1": result1,
                 "result2": result2,
@@ -2335,29 +2329,24 @@ func ParallelMap[T any, R any](items []T, fn func(T) R, workers int) []R {
 results := ParallelMap(items, processItem, 10)
 ```
 
-#### Safe Type Assertion
+#### Type-Safe Getters
+
+Flyt provides built-in type-safe getters:
 
 ```go
-func SafeGet[T any](shared *flyt.SharedStore, key string) (T, bool) {
-    var zero T
-    
-    value, exists := shared.Get(key)
-    if !exists {
-        return zero, false
-    }
-    
-    typed, ok := value.(T)
-    if !ok {
-        return zero, false
-    }
-    
-    return typed, true
-}
+// Built-in type-safe getters
+userID := shared.GetInt("user_id")           // Returns 0 if not found
+name := shared.GetString("name")              // Returns "" if not found
+enabled := shared.GetBool("enabled")          // Returns false if not found
 
-// Usage
-if userID, ok := SafeGet[int](shared, "user_id"); ok {
-    // Use userID safely
-}
+// With custom defaults
+userID = shared.GetIntOr("user_id", -1)
+name = shared.GetStringOr("name", "anonymous")
+enabled = shared.GetBoolOr("enabled", true)
+
+// For complex types, use Bind
+var config Config
+err := shared.Bind("config", &config)
 ```
 
 #### Chunk Slice
@@ -3230,8 +3219,7 @@ func makeDecisionPost(ctx context.Context, shared *flyt.SharedStore, prepResult,
 
 ```go
 func retryablePost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-    attempts, _ := shared.Get("attempts")
-    count := attempts.(int)
+    count := shared.GetInt("attempts")
     
     if execResult == nil && count < 3 {
         shared.Set("attempts", count + 1)
@@ -3245,9 +3233,9 @@ func retryablePost(ctx context.Context, shared *flyt.SharedStore, prepResult, ex
 
 ```go
 func statePost(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-    currentState, _ := shared.Get("state")
+    currentState := shared.GetString("state")
     
-    switch currentState.(string) {
+    switch currentState {
     case "init":
         shared.Set("state", "processing")
         return "process", nil
@@ -3334,7 +3322,7 @@ if err != nil {
 }
 
 // Get results
-result, _ := shared.Get("output")
+result := shared.GetString("output")
 ```
 
 ### Flow Connections
@@ -3740,11 +3728,9 @@ Store and retrieve individual values with the original API:
 shared.Set("user_id", 123)
 shared.Set("config", map[string]any{"timeout": 30})
 
-// Get a value (original method with type assertion)
-if value, ok := shared.Get("user_id"); ok {
-    userID := value.(int)
-    fmt.Printf("User ID: %d\n", userID)
-}
+// Type-safe getter (recommended)
+userID := shared.GetInt("user_id")
+fmt.Printf("User ID: %d\n", userID)
 ```
 
 #### Type-Safe Getters
@@ -3990,8 +3976,8 @@ shared.Set("batch_config", map[string]any{
 })
 
 // After batch processing
-results, _ := shared.Get("results")
-errors, _ := shared.Get("errors")
+results := shared.GetSlice("results")
+errors := shared.GetSlice("errors")
 ```
 
 ### Isolation in Batch Flows
@@ -4001,7 +3987,7 @@ Each flow in a batch has its own SharedStore:
 ```go
 batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
     // This shared is from the parent
-    baseConfig, _ := shared.Get("base_config")
+    baseConfig := shared.GetMap("base_config")
     
     return []flyt.FlowInputs{
         {"id": 1, "config": baseConfig}, // Each gets own SharedStore
@@ -4017,16 +4003,7 @@ batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInp
 Use type-safe getters to avoid manual assertions:
 
 ```go
-// Old way - manual type assertion
-if value, ok := shared.Get("count"); ok {
-    if count, ok := value.(int); ok {
-        // Use count
-    } else {
-        // Handle type mismatch
-    }
-}
-
-// New way - type-safe getter
+// Type-safe getter (recommended)
 count := shared.GetInt("count")  // Returns 0 if not found or wrong type
 
 // Or with custom default
@@ -4150,9 +4127,8 @@ func main() {
     shared := flyt.NewSharedStore()
     shared.Set("test", "success")
     
-    if val, ok := shared.Get("test"); ok {
-        fmt.Printf("Flyt installed successfully! Value: %v\n", val)
-    }
+    val := shared.GetString("test")
+    fmt.Printf("Flyt installed successfully! Value: %s\n", val)
 }
 ```
 
@@ -4313,7 +4289,7 @@ func main() {
     
     node := flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            config, _ := shared.Get("config")
+            config := shared.GetMap("config")
             return config, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
@@ -4417,8 +4393,9 @@ func main() {
     }
     
     // Get results
-    if result, ok := shared.Get("final_result"); ok {
-        log.Printf("Success! Result: %v\n", result)
+    result := shared.GetString("final_result")
+    if result != "" {
+        log.Printf("Success! Result: %s\n", result)
     }
 }
 ```
@@ -4577,12 +4554,7 @@ type StateMachine struct {
 }
 
 func (n *StateMachine) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-    currentState, _ := shared.Get("state")
-    if currentState == nil {
-        currentState = "init"
-    }
-    
-    state := currentState.(string)
+    state := shared.GetStringOr("state", "init")
     event := execResult.(string)
     
     // State transition logic
@@ -4715,11 +4687,8 @@ Create loops with exit conditions:
 ```go
 retryNode := flyt.NewNode(
     flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-        attempts, _ := shared.Get("attempts")
-        if attempts == nil {
-            attempts = 0
-        }
-        return attempts.(int), nil
+        attempts := shared.GetInt("attempts")
+        return attempts, nil
     }),
     flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
         attempts := prepResult.(int)
@@ -4854,7 +4823,7 @@ Route based on experiment groups:
 func createABTestNode(testName string, distribution map[string]int) flyt.Node {
     return flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            userID, _ := shared.Get("user_id")
+            userID := shared.GetString("user_id")
             return userID, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
@@ -5024,8 +4993,8 @@ Create specialized node variants:
 func createHTTPNode(method string, headers map[string]string) flyt.Node {
     return flyt.NewNode(
         flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            url, _ := shared.Get("url")
-            body, _ := shared.Get("body")
+            url := shared.GetString("url")
+            body := shared.GetMap("body")
             return map[string]any{"url": url, "body": body}, nil
         }),
         flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
