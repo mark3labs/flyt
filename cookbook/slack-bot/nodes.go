@@ -18,7 +18,7 @@ type ParseMessageNode struct {
 func (n *ParseMessageNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 	messageStr := shared.GetString("message")
 	if messageStr == "" {
-		return nil, fmt.Errorf("no message found in shared store")
+		return flyt.R(nil), fmt.Errorf("no message found in shared store")
 	}
 
 	// Clean up the message (remove bot mentions, extra spaces, etc.)
@@ -41,7 +41,7 @@ func (n *ParseMessageNode) Prep(ctx context.Context, shared *flyt.SharedStore) (
 		}
 	}
 
-	return strings.TrimSpace(cleanedMessage), nil
+	return flyt.R(strings.TrimSpace(cleanedMessage)), nil
 }
 func (n *ParseMessageNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	// Message is already cleaned in Prep
@@ -64,16 +64,16 @@ func (n *LLMNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, erro
 	// Check if we're processing tool responses
 	if shared.Has("tool_responses") {
 		toolResponses, _ := shared.Get("tool_responses")
-		return map[string]interface{}{
+		return flyt.R(map[string]interface{}{
 			"type":           "tool_response",
 			"tool_responses": toolResponses,
-		}, nil
+		}), nil
 	}
 
 	// Otherwise, process user message
 	message := shared.GetString("cleaned_message")
 	if message == "" {
-		return nil, fmt.Errorf("no cleaned message found")
+		return flyt.R(nil), fmt.Errorf("no cleaned message found")
 	}
 
 	// Get conversation history if available
@@ -84,27 +84,31 @@ func (n *LLMNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, erro
 		}
 	}
 
-	return map[string]interface{}{
+	return flyt.R(map[string]interface{}{
 		"type":    "user_message",
 		"message": message,
 		"history": history,
-	}, nil
+	}), nil
 }
 
 func (n *LLMNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	data := prepResult.(map[string]interface{})
+	prepRes, ok := prepResult.(flyt.Result)
+	if !ok {
+		prepRes = flyt.R(prepResult)
+	}
+	data := prepRes.MustMap()
 
 	if data["type"] == "tool_response" {
 		// Process tool responses
 		toolResponses := data["tool_responses"].(map[string]string)
 		response, err := n.llm.ProcessToolResponses(ctx, toolResponses)
 		if err != nil {
-			return nil, fmt.Errorf("failed to process tool responses: %w", err)
+			return flyt.R(nil), fmt.Errorf("failed to process tool responses: %w", err)
 		}
-		return map[string]interface{}{
+		return flyt.R(map[string]interface{}{
 			"type":     "final_response",
 			"response": response,
-		}, nil
+		}), nil
 	}
 
 	// Process user message with optional history
@@ -122,23 +126,27 @@ func (n *LLMNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to process with LLM: %w", err)
+		return flyt.R(nil), fmt.Errorf("failed to process with LLM: %w", err)
 	}
 
 	if len(toolCalls) > 0 {
-		return map[string]interface{}{
+		return flyt.R(map[string]interface{}{
 			"type":       "tool_calls",
 			"tool_calls": toolCalls,
-		}, nil
+		}), nil
 	}
 
-	return map[string]interface{}{
+	return flyt.R(map[string]interface{}{
 		"type":     "response",
 		"response": response,
-	}, nil
+	}), nil
 }
 func (n *LLMNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-	result := execResult.(map[string]interface{})
+	execRes, ok := execResult.(flyt.Result)
+	if !ok {
+		execRes = flyt.R(execResult)
+	}
+	result := execRes.MustMap()
 
 	switch result["type"] {
 	case "tool_calls":
@@ -164,15 +172,20 @@ type ToolExecutorNode struct {
 func (n *ToolExecutorNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 	toolCalls, ok := shared.Get("tool_calls")
 	if !ok {
-		return nil, fmt.Errorf("no tool calls found")
+		return flyt.R(nil), fmt.Errorf("no tool calls found")
 	}
-	return toolCalls, nil
+	return flyt.R(toolCalls), nil
 }
 
 func (n *ToolExecutorNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	toolCalls, ok := prepResult.([]ToolCall)
+	prepRes, ok := prepResult.(flyt.Result)
 	if !ok {
-		return nil, fmt.Errorf("invalid tool calls format")
+		prepRes = flyt.R(prepResult)
+	}
+
+	toolCalls, ok := flyt.As[[]ToolCall](prepRes)
+	if !ok {
+		return flyt.R(nil), fmt.Errorf("invalid tool calls format")
 	}
 
 	log.Printf("Executing %d tool calls", len(toolCalls))
@@ -180,10 +193,10 @@ func (n *ToolExecutorNode) Exec(ctx context.Context, prepResult any) (any, error
 	// Execute all tool calls
 	results, err := ExecuteToolCalls(toolCalls)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute tools: %w", err)
+		return flyt.R(nil), fmt.Errorf("failed to execute tools: %w", err)
 	}
 
-	return results, nil
+	return flyt.R(results), nil
 }
 
 func (n *ToolExecutorNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
@@ -201,12 +214,16 @@ type FormatResponseNode struct {
 func (n *FormatResponseNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 	response := shared.GetString("response")
 	if response == "" {
-		return nil, fmt.Errorf("no response found")
+		return flyt.R(nil), fmt.Errorf("no response found")
 	}
-	return response, nil
+	return flyt.R(response), nil
 }
 func (n *FormatResponseNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	response := prepResult.(string)
+	prepRes, ok := prepResult.(flyt.Result)
+	if !ok {
+		prepRes = flyt.R(prepResult)
+	}
+	response := prepRes.MustString()
 
 	// Format the response for Slack (could add formatting, emojis, etc.)
 	formattedResponse := response
@@ -221,7 +238,7 @@ func (n *FormatResponseNode) Exec(ctx context.Context, prepResult any) (any, err
 		formattedResponse = formattedResponse[:maxLength-3] + "..."
 	}
 
-	return formattedResponse, nil
+	return flyt.R(formattedResponse), nil
 }
 
 func (n *FormatResponseNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
