@@ -15,7 +15,7 @@ Each node should do one thing well:
 ```go
 // ❌ Bad: Node doing too much
 node := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         // Fetch data
         data := fetchFromAPI()
         // Validate
@@ -425,13 +425,13 @@ Run a flow for each set of inputs:
 // Create a flow factory - returns a new flow instance for each iteration
 flowFactory := func() *flyt.Flow {
     validateNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Each flow has its own SharedStore with merged FlowInputs
             userID := shared.GetInt("user_id")
             email := shared.GetString("email")
             return map[string]any{"user_id": userID, "email": email}, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             data := prepResult.(map[string]any)
             // Process user data
             return processUser(data), nil
@@ -532,7 +532,7 @@ func createConfiguredBatchFlow(config Config) *flyt.Flow {
     flowFactory := func() *flyt.Flow {
         // Each flow gets the same configuration
         node := flyt.NewNode(
-            flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
                 // Use config in processing
                 return processWithConfig(prepResult, config), nil
             }),
@@ -572,7 +572,7 @@ type ResultCollector struct {
 func createAggregatingBatchFlow(collector *ResultCollector) *flyt.Flow {
     flowFactory := func() *flyt.Flow {
         node := flyt.NewNode(
-            flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
                 result, err := process(prepResult)
                 
                 collector.mu.Lock()
@@ -607,7 +607,7 @@ type ProgressTracker struct {
 func createProgressBatchFlow(tracker *ProgressTracker) *flyt.Flow {
     flowFactory := func() *flyt.Flow {
         node := flyt.NewNode(
-            flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+            flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
                 if execResult != nil {
                     atomic.AddInt32(&tracker.completed, 1)
                 } else {
@@ -702,7 +702,7 @@ Handle failures in batch flows:
 ```go
 flowFactory := func() *flyt.Flow {
     node := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             result, err := riskyOperation(prepResult)
             if err != nil {
                 // Store error for later analysis
@@ -919,11 +919,11 @@ Process large datasets in chunks:
 ```go
 func createChunkedProcessor(chunkSize int) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             items := shared.GetSlice("items")
             return items, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             items := prepResult.([]any)
             results := make([]any, 0, len(items))
             
@@ -1511,6 +1511,71 @@ func (n *ValidationNode) Post(ctx context.Context, shared *flyt.SharedStore, pre
 }
 ```
 
+### Using Result Type with Custom Nodes
+
+When implementing custom nodes, you can leverage the Result type for better type safety:
+
+```go
+type TypeSafeNode struct {
+    *flyt.BaseNode
+}
+
+func (n *TypeSafeNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Return Result wrapped value
+    data := shared.GetMap("config")
+    return flyt.NewResult(data).Value(), nil
+}
+
+func (n *TypeSafeNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Wrap input in Result for type-safe access
+    input := flyt.NewResult(prepResult)
+    
+    // Use Result's convenience methods
+    if config := input.AsMapOr(nil); config != nil {
+        timeout := flyt.NewResult(config["timeout"]).AsIntOr(30)
+        retries := flyt.NewResult(config["retries"]).AsIntOr(3)
+        
+        result := n.processWithConfig(timeout, retries)
+        return result, nil
+    }
+    
+    return nil, fmt.Errorf("invalid configuration")
+}
+
+func (n *TypeSafeNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    // Use Result for safe type conversion
+    result := flyt.NewResult(execResult)
+    
+    if result.IsNil() {
+        return "failed", nil
+    }
+    
+    // Bind to struct for complex types
+    var output ProcessedData
+    if err := result.Bind(&output); err == nil {
+        shared.Set("processed", output)
+        return "success", nil
+    }
+    
+    return flyt.DefaultAction, nil
+}
+```
+
+#### Helper Functions vs Custom Nodes
+
+**Use helper functions (WithExecFunc, etc.) when:**
+
+* Building simple, stateless operations
+* Prototyping workflows quickly
+* Creating one-off transformations
+
+**Implement custom nodes when:**
+
+* Managing state or resources
+* Need complex initialization
+* Building reusable components
+* Require custom retry logic
+
 ### Best Practices
 
 1. **Clear Interfaces**: Define clear interfaces for custom nodes
@@ -1645,11 +1710,11 @@ type FlowSelector struct {
 
 func (fs *FlowSelector) CreateSelectorNode() flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             flowType := prepResult.(string)
             return flowType, nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             return flyt.Action(execResult.(string)), nil
         }),
     )
@@ -1732,18 +1797,18 @@ func createRecursiveProcessingFlow(maxDepth int) *flyt.Flow {
     var flow *flyt.Flow
     
     depthCheck := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             depth := shared.GetInt("recursion_depth")
             return depth, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             depth := prepResult.(int)
             if depth >= maxDepth {
                 return "terminate", nil
             }
             return "recurse", nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             if execResult.(string) == "recurse" {
                 depth := prepResult.(int)
                 shared.Set("recursion_depth", depth+1)
@@ -1770,14 +1835,14 @@ Wrap flows with additional behavior:
 ```go
 func withLogging(name string, flow *flyt.Flow) *flyt.Flow {
     logStart := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             log.Printf("[%s] Flow starting", name)
             return prepResult, nil
         }),
     )
     
     logEnd := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             log.Printf("[%s] Flow completed", name)
             return prepResult, nil
         }),
@@ -1804,7 +1869,7 @@ func TestFlowAsNode(t *testing.T) {
     // Create a simple flow
     innerFlow := flyt.NewFlow(
         flyt.NewNode(
-            flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
                 return "inner_result", nil
             }),
         ),
@@ -1835,7 +1900,7 @@ Using flows as nodes:
 // Lightweight flow - good as node
 func createLightweightFlow() *flyt.Flow {
     node := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Simple operation
             return transform(prepResult), nil
         }),
@@ -1853,7 +1918,7 @@ func createHeavyFlow() *flyt.Flow {
 // Alternative: Use node with embedded logic
 func createOptimizedNode() flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Inline the flow logic for performance
             result := step1(prepResult)
             result = step2(result)
@@ -1915,14 +1980,14 @@ Create modular flow components:
 // Reusable authentication flow
 func createAuthFlow() *flyt.Flow {
     checkToken := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             token := prepResult.(string)
             return validateToken(token)
         }),
     )
     
     refreshToken := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             return refreshAuthToken()
         }),
     )
@@ -1994,11 +2059,11 @@ Dynamically choose nested flows:
 
 ```go
 routerNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         request := prepResult.(Request)
         return request.Type, nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
     }),
 )
@@ -2016,7 +2081,7 @@ Pass context through nested flows:
 ```go
 func createNestedFlowWithContext(parentContext map[string]any) *flyt.Flow {
     node := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Access parent context
             for k, v := range parentContext {
                 shared.Set(k, v)
@@ -2026,7 +2091,7 @@ func createNestedFlowWithContext(parentContext map[string]any) *flyt.Flow {
             parentData := shared.GetMap("parent_data")
             return parentData, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Process with parent context
             return processWithContext(prepResult, parentContext), nil
         }),
@@ -2065,18 +2130,18 @@ Create recursive workflow patterns:
 ```go
 func createRecursiveFlow(maxDepth int) *flyt.Flow {
     checkDepth := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             depth := shared.GetInt("depth")
             return depth, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             depth := prepResult.(int)
             if depth >= maxDepth {
                 return "max_depth", nil
             }
             return "continue", nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             if execResult.(string) == "continue" {
                 depth := prepResult.(int)
                 shared.Set("depth", depth+1)
@@ -2103,7 +2168,7 @@ Execute nested flows in parallel:
 ```go
 func createParallelNestedFlow() *flyt.Flow {
     splitNode := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Split data for parallel processing
             data := prepResult.(Data)
             shared.Set("part1", data.Part1)
@@ -2118,7 +2183,7 @@ func createParallelNestedFlow() *flyt.Flow {
     
     // Merge results
     mergeNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             result1 := shared.GetMap("result1")
             result2 := shared.GetMap("result2")
             return map[string]any{
@@ -2192,7 +2257,7 @@ func TestNestedFlow(t *testing.T) {
     
     // Test main flow with mocked sub-flow
     mockSubFlow := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             return "mocked_result", nil
         }),
     )
@@ -2625,7 +2690,7 @@ func (m *MockSharedStore) Set(key string, value any) {
 ```go
 func TestNode(execFn func(context.Context, any) (any, error)) flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(execFn),
+        flyt.WithExecFuncAny(execFn),
     )
 }
 
@@ -3145,11 +3210,11 @@ flow.Connect(node1, flyt.DefaultAction, node2)
 
 ```go
 validationNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(string)
         return len(data) > 0, nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         if execResult.(bool) {
             return "valid", nil
         }
@@ -3166,7 +3231,7 @@ flow.Connect(validationNode, "invalid", errorNode)
 
 ```go
 categoryNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         value := prepResult.(int)
         if value < 10 {
             return "small", nil
@@ -3175,7 +3240,7 @@ categoryNode := flyt.NewNode(
         }
         return "large", nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
     }),
 )
@@ -3449,15 +3514,15 @@ Add logging nodes for debugging:
 ```go
 func createLoggingNode(name string) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             log.Printf("[%s] Prep: SharedStore keys: %v", name, shared.GetAll())
             return nil, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             log.Printf("[%s] Exec", name)
             return prepResult, nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             log.Printf("[%s] Post: Result: %v", name, execResult)
             return flyt.DefaultAction, nil
         }),
@@ -3572,12 +3637,54 @@ func (n *MyNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult,
 
 #### Using Helper Functions
 
-The simplest way to create a node:
+Flyt provides two styles of helper functions for creating nodes:
+
+##### Result-based Functions (Type-Safe)
+
+Use `WithPrepFunc`, `WithExecFunc`, and `WithPostFunc` for type-safe operations with the Result type:
 
 ```go
 node := flyt.NewNode(
-    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
         // Use type-safe getters
+        message := shared.GetString("message")
+        retryCount := shared.GetIntOr("retry_count", 0)
+        
+        return flyt.NewResult(map[string]any{
+            "message": message,
+            "retry": retryCount,
+        }), nil
+    }),
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+        // Type-safe access to data
+        data := prepResult.AsMapOr(nil)
+        message := data["message"].(string)
+        
+        // Process and return Result
+        processed := processMessage(message)
+        return flyt.NewResult(processed), nil
+    }),
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+        // Type-safe result handling
+        result := execResult.Value()
+        shared.Set("result", result)
+        
+        if shared.GetInt("retry_count") > 3 {
+            return "max_retries", nil
+        }
+        return flyt.DefaultAction, nil
+    }),
+)
+```
+
+##### Any-based Functions (Simple)
+
+Use `WithPrepFuncAny`, `WithExecFuncAny`, and `WithPostFuncAny` for simpler cases or backward compatibility:
+
+```go
+node := flyt.NewNode(
+    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        // Direct any types
         message := shared.GetString("message")
         retryCount := shared.GetIntOr("retry_count", 0)
         
@@ -3586,12 +3693,12 @@ node := flyt.NewNode(
             "retry": retryCount,
         }, nil
     }),
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(map[string]any)
         // Process the data
         return processMessage(data["message"].(string)), nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         // Store result and determine action
         shared.Set("result", execResult)
         
@@ -3602,6 +3709,22 @@ node := flyt.NewNode(
     }),
 )
 ```
+
+#### Choosing Between Result and Any
+
+**Use Result-based functions when:**
+
+* You need type-safe access to data with convenience methods
+* Working with complex data transformations
+* You want better IDE support and type checking
+* Building reusable components that handle various data types
+
+**Use Any-based functions when:**
+
+* Building simple nodes with straightforward logic
+* Migrating existing code that uses `any` types
+* The overhead of Result wrapping isn't justified
+* Working with known, simple data types
 
 #### Custom Node Types
 
@@ -3638,8 +3761,22 @@ func (n *DatabaseNode) Exec(ctx context.Context, prepResult any) (any, error) {
 Configure node behavior with options:
 
 ```go
+// With Result type
 node := flyt.NewNode(
-    flyt.WithExecFunc(execFunc),
+    flyt.WithExecFuncAny(func(ctx context.Context, input flyt.Result) (flyt.Result, error) {
+        // Type-safe operations
+        return flyt.NewResult(processData(input.Value())), nil
+    }),
+    flyt.WithMaxRetries(3),        // Retry up to 3 times
+    flyt.WithWait(time.Second * 2), // Wait 2 seconds between retries
+)
+
+// With any type
+node := flyt.NewNode(
+    flyt.WithExecFuncAny(func(ctx context.Context, input any) (any, error) {
+        // Direct any handling
+        return processData(input), nil
+    }),
     flyt.WithMaxRetries(3),        // Retry up to 3 times
     flyt.WithWait(time.Second * 2), // Wait 2 seconds between retries
 )
@@ -4157,7 +4294,9 @@ This guide will help you build your first Flyt workflow in 5 minutes.
 
 ### Your First Node
 
-Let's start with a simple node that processes data:
+Let's start with a simple node that processes data. You can choose between two approaches:
+
+#### Using Result Type (Recommended for Type Safety)
 
 ```go
 package main
@@ -4169,9 +4308,35 @@ import (
 )
 
 func main() {
-    // Create a node with just an Exec function
+    // Create a node with Result type for better type safety
     node := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+            fmt.Println("Processing data...")
+            return flyt.NewResult("Hello, Flyt!"), nil
+        }),
+    )
+
+    // Create shared store and context
+    shared := flyt.NewSharedStore()
+    ctx := context.Background()
+
+    // Run the node
+    action, err := flyt.Run(ctx, node, shared)
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Completed with action: %s\n", action)
+}
+```
+
+#### Using Any Type (Simple Approach)
+
+```go
+func main() {
+    // Create a node with any type for simpler code
+    node := flyt.NewNode(
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             fmt.Println("Processing data...")
             return "Hello, Flyt!", nil
         }),
@@ -4205,28 +4370,31 @@ import (
 )
 
 func main() {
-    // Create nodes
+    // Create nodes using Result type for type safety
     fetchNode := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
             fmt.Println("Fetching data...")
-            return map[string]string{"data": "important info"}, nil
+            data := map[string]string{"data": "important info"}
+            return flyt.NewResult(data), nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-            shared.Set("fetched_data", execResult)
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+            shared.Set("fetched_data", execResult.Value())
             return flyt.DefaultAction, nil
         }),
     )
 
     processNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
             // Use GetMap for type-safe access
             data := shared.GetMap("fetched_data")
-            return data, nil
+            return flyt.NewResult(data), nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-            data := prepResult.(map[string]any)
+        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+            // Type-safe map access
+            data := prepResult.AsMapOr(nil)
             fmt.Printf("Processing: %v\n", data["data"])
-            return "processed: " + fmt.Sprint(data["data"]), nil
+            result := "processed: " + fmt.Sprint(data["data"])
+            return flyt.NewResult(result), nil
         }),
     )
 
@@ -4256,7 +4424,7 @@ func createRobustNode() flyt.Node {
     attempts := 0
     
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             attempts++
             fmt.Printf("Attempt %d...\n", attempts)
             
@@ -4288,11 +4456,11 @@ func main() {
     })
     
     node := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             config := shared.GetMap("config")
             return config, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             config := prepResult.(map[string]any)
             fmt.Printf("Using config: %v\n", config)
             return "configured", nil
@@ -4417,7 +4585,7 @@ import (
 
 func CreateCustomNode() flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Your custom logic here
             return "custom result", nil
         }),
@@ -4494,12 +4662,12 @@ Make yes/no decisions:
 
 ```go
 validationNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(string)
         isValid := len(data) > 0 && len(data) < 100
         return isValid, nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         if execResult.(bool) {
             return "valid", nil
         }
@@ -4518,7 +4686,7 @@ Route to multiple paths:
 
 ```go
 categoryNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         value := prepResult.(float64)
         
         switch {
@@ -4532,7 +4700,7 @@ categoryNode := flyt.NewNode(
             return "xlarge", nil
         }
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
     }),
 )
@@ -4686,11 +4854,11 @@ Create loops with exit conditions:
 
 ```go
 retryNode := flyt.NewNode(
-    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
         attempts := shared.GetInt("attempts")
         return attempts, nil
     }),
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         attempts := prepResult.(int)
         
         // Try operation
@@ -4708,7 +4876,7 @@ retryNode := flyt.NewNode(
             "result": result,
         }, nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         result := execResult.(map[string]any)
         
         if result["success"].(bool) {
@@ -4739,7 +4907,7 @@ Branch and merge pipelines:
 ```go
 // Split node decides which pipeline(s) to execute
 splitNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(map[string]any)
         
         needsValidation := data["validate"].(bool)
@@ -4754,7 +4922,7 @@ splitNode := flyt.NewNode(
         }
         return "skip", nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
     }),
 )
@@ -4822,11 +4990,11 @@ Route based on experiment groups:
 ```go
 func createABTestNode(testName string, distribution map[string]int) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             userID := shared.GetString("user_id")
             return userID, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             userID := prepResult.(string)
             
             // Hash user ID for consistent assignment
@@ -4847,7 +5015,7 @@ func createABTestNode(testName string, distribution map[string]int) flyt.Node {
             
             return "control", nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             variant := execResult.(string)
             shared.Set("ab_variant", variant)
             return flyt.Action(variant), nil
@@ -4890,7 +5058,7 @@ Pass configuration to nodes using closures:
 ```go
 func createAPINode(apiKey string, baseURL string) flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // apiKey and baseURL are captured in the closure
             url := fmt.Sprintf("%s/data", baseURL)
             req, _ := http.NewRequest("GET", url, nil)
@@ -4924,7 +5092,7 @@ func createCounterNode() flyt.Node {
     mu := &sync.Mutex{}
     
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             mu.Lock()
             count++
             current := count
@@ -4959,7 +5127,7 @@ func createDatabaseNode(config DatabaseConfig) flyt.Node {
     db.SetMaxOpenConns(config.MaxConns)
     
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             query := prepResult.(string)
             rows, err := db.QueryContext(ctx, query)
             if err != nil {
@@ -4992,12 +5160,12 @@ Create specialized node variants:
 ```go
 func createHTTPNode(method string, headers map[string]string) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             url := shared.GetString("url")
             body := shared.GetMap("body")
             return map[string]any{"url": url, "body": body}, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             data := prepResult.(map[string]any)
             url := data["url"].(string)
             
@@ -5049,7 +5217,7 @@ func createFileProcessorNode(bufferSize int) flyt.Node {
     buffer := make([]byte, bufferSize)
     
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             filePath := prepResult.(string)
             
             file, err := os.Open(filePath)
@@ -5078,17 +5246,17 @@ Wrap nodes with additional behavior:
 ```go
 func withLogging(name string, node flyt.Node) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             log.Printf("[%s] Starting prep", name)
             return node.Prep(ctx, shared)
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             start := time.Now()
             result, err := node.Exec(ctx, prepResult)
             log.Printf("[%s] Exec took %v", name, time.Since(start))
             return result, err
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             action, err := node.Post(ctx, shared, prepResult, execResult)
             log.Printf("[%s] Returning action: %s", name, action)
             return action, err
@@ -5107,7 +5275,7 @@ Load configuration at runtime:
 ```go
 func createConfigurableNode(configPath string) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Load config file
             data, err := os.ReadFile(configPath)
             if err != nil {
@@ -5118,7 +5286,7 @@ func createConfigurableNode(configPath string) flyt.Node {
             json.Unmarshal(data, &config)
             return config, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             config := prepResult.(map[string]any)
             // Use configuration
             return processWithConfig(config), nil
@@ -5141,7 +5309,7 @@ type Dependencies struct {
 
 func createServiceNode(deps Dependencies) flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Use injected dependencies
             deps.Logger.Println("Processing request")
             
@@ -5192,7 +5360,7 @@ Configure retries at the node level:
 
 ```go
 node := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         // This will be retried up to 3 times
         return callFlakeyAPI()
     }),
