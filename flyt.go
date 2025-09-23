@@ -1047,16 +1047,20 @@ type FlowFactory func() *Flow
 //	}
 type CustomNode struct {
 	*BaseNode
-	prepFunc         func(context.Context, *SharedStore) (any, error)
-	execFunc         func(context.Context, any) (any, error)
-	postFunc         func(context.Context, *SharedStore, any, any) (Action, error)
+	prepFunc         func(context.Context, *SharedStore) (Result, error)
+	execFunc         func(context.Context, Result) (Result, error)
+	postFunc         func(context.Context, *SharedStore, Result, Result) (Action, error)
 	execFallbackFunc func(any, error) (any, error)
 }
 
 // Prep implements Node.Prep by calling the custom prepFunc if provided
 func (n *CustomNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
 	if n.prepFunc != nil {
-		return n.prepFunc(ctx, shared)
+		result, err := n.prepFunc(ctx, shared)
+		if err != nil {
+			return nil, err
+		}
+		return result.Value(), nil
 	}
 	return n.BaseNode.Prep(ctx, shared)
 }
@@ -1064,7 +1068,7 @@ func (n *CustomNode) Prep(ctx context.Context, shared *SharedStore) (any, error)
 // Exec implements Node.Exec by calling the custom execFunc if provided
 func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	if n.execFunc != nil {
-		return n.execFunc(ctx, prepResult)
+		return n.execFunc(ctx, NewResult(prepResult))
 	}
 	return n.BaseNode.Exec(ctx, prepResult)
 }
@@ -1072,7 +1076,7 @@ func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
 // Post implements Node.Post by calling the custom postFunc if provided
 func (n *CustomNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
 	if n.postFunc != nil {
-		return n.postFunc(ctx, shared, prepResult, execResult)
+		return n.postFunc(ctx, shared, NewResult(prepResult), NewResult(execResult))
 	}
 	return n.BaseNode.Post(ctx, shared, prepResult, execResult)
 }
@@ -1097,12 +1101,12 @@ func (n *CustomNode) ExecFallback(prepResult any, err error) (any, error) {
 //
 //	node := flyt.NewNode(
 //	    flyt.WithMaxRetries(3),
-//	    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+//	    flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
 //	        // Process data
-//	        return processedData, nil
+//	        return flyt.NewResult(processedData), nil
 //	    }),
-//	    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-//	        shared.Set("result", execResult)
+//	    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+//	        shared.Set("result", execResult.Value())
 //	        return flyt.DefaultAction, nil
 //	    }),
 //	)
@@ -1162,12 +1166,12 @@ func (o *customNodeOption) apply(n *CustomNode) {
 //
 // Example:
 //
-//	flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+//	flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
 //	    data, _ := shared.Get("input")
 //	    // Preprocess data
-//	    return preprocessedData, nil
+//	    return flyt.NewResult(preprocessedData), nil
 //	})
-func WithPrepFunc(fn func(context.Context, *SharedStore) (any, error)) CustomNodeOption {
+func WithPrepFunc(fn func(context.Context, *SharedStore) (Result, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {
 			n.prepFunc = fn
@@ -1181,11 +1185,11 @@ func WithPrepFunc(fn func(context.Context, *SharedStore) (any, error)) CustomNod
 //
 // Example:
 //
-//	flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+//	flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
 //	    // Process the data
-//	    return processedResult, nil
+//	    return flyt.NewResult(processedResult), nil
 //	})
-func WithExecFunc(fn func(context.Context, any) (any, error)) CustomNodeOption {
+func WithExecFunc(fn func(context.Context, Result) (Result, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {
 			n.execFunc = fn
@@ -1199,14 +1203,14 @@ func WithExecFunc(fn func(context.Context, any) (any, error)) CustomNodeOption {
 //
 // Example:
 //
-//	flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-//	    shared.Set("output", execResult)
+//	flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+//	    shared.Set("output", execResult.Value())
 //	    if success {
 //	        return "success", nil
 //	    }
 //	    return "retry", nil
 //	})
-func WithPostFunc(fn func(context.Context, *SharedStore, any, any) (Action, error)) CustomNodeOption {
+func WithPostFunc(fn func(context.Context, *SharedStore, Result, Result) (Action, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {
 			n.postFunc = fn
