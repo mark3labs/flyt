@@ -2,7 +2,6 @@ Directory structure:
 └── flyt/
     ├── README.md
     ├── AGENTS.md
-    ├── assert.go
     ├── batch.go
     ├── batch_test.go
     ├── flyt.go
@@ -12,7 +11,6 @@ Directory structure:
     ├── LICENSE
     ├── result.go
     ├── result_test.go
-    ├── types.go
     ├── www/
     │   ├── README.md
     │   ├── package.json
@@ -723,154 +721,6 @@ FILE: AGENTS.md
 - Core types: Node, Flow, Shared, Params, Action
 - Helper functions for batch processing patterns
 - Comprehensive test coverage with TestNode implementations
-
-
-================================================
-FILE: assert.go
-================================================
-package flyt
-
-import (
-	"encoding/json"
-	"fmt"
-	"reflect"
-)
-
-// Assert provides safe type assertion with a default value
-func Assert[T any](v any, defaultVal T) T {
-	if v == nil {
-		return defaultVal
-	}
-	if typed, ok := v.(T); ok {
-		return typed
-	}
-	return defaultVal
-}
-
-// MustAssert performs type assertion and panics on failure
-func MustAssert[T any](v any) T {
-	if v == nil {
-		panic(fmt.Sprintf("MustAssert: got nil, expected %T", *new(T)))
-	}
-	typed, ok := v.(T)
-	if !ok {
-		panic(fmt.Sprintf("MustAssert: type assertion failed, got %T, expected %T", v, *new(T)))
-	}
-	return typed
-}
-
-// TryAssert attempts type assertion and returns result with ok flag
-func TryAssert[T any](v any) (T, bool) {
-	var zero T
-	if v == nil {
-		return zero, false
-	}
-	typed, ok := v.(T)
-	return typed, ok
-}
-
-// Convert attempts to convert between compatible types using JSON
-func Convert[T any](v any) (T, error) {
-	var result T
-
-	// Direct type match
-	if typed, ok := v.(T); ok {
-		return typed, nil
-	}
-
-	// Check if types are assignable
-	if v != nil {
-		srcType := reflect.TypeOf(v)
-		dstType := reflect.TypeOf(result)
-		if srcType.AssignableTo(dstType) {
-			reflect.ValueOf(&result).Elem().Set(reflect.ValueOf(v))
-			return result, nil
-		}
-	}
-
-	// Fallback to JSON conversion
-	data, err := json.Marshal(v)
-	if err != nil {
-		return result, fmt.Errorf("convert: failed to marshal: %w", err)
-	}
-
-	if err := json.Unmarshal(data, &result); err != nil {
-		return result, fmt.Errorf("convert: failed to unmarshal: %w", err)
-	}
-
-	return result, nil
-}
-
-// MustConvert converts between types or panics
-func MustConvert[T any](v any) T {
-	result, err := Convert[T](v)
-	if err != nil {
-		panic(fmt.Sprintf("MustConvert failed: %v", err))
-	}
-	return result
-}
-
-// AssertMap safely asserts to map[string]any
-func AssertMap(v any) (map[string]any, bool) {
-	if v == nil {
-		return nil, false
-	}
-	m, ok := v.(map[string]any)
-	return m, ok
-}
-
-// AssertSlice safely asserts to []any
-func AssertSlice(v any) ([]any, bool) {
-	if v == nil {
-		return nil, false
-	}
-	s, ok := v.([]any)
-	return s, ok
-}
-
-// AssertString safely asserts to string
-func AssertString(v any) (string, bool) {
-	if v == nil {
-		return "", false
-	}
-	s, ok := v.(string)
-	return s, ok
-}
-
-// ChainAssert allows chaining type assertions with fallback
-type ChainAssert struct {
-	value  any
-	result any
-	ok     bool
-}
-
-// NewChainAssert creates a new assertion chain
-func NewChainAssert(v any) *ChainAssert {
-	return &ChainAssert{value: v}
-}
-
-// Try attempts an assertion in the chain
-func (c *ChainAssert) Try(fn func(any) (any, bool)) *ChainAssert {
-	if c.ok {
-		return c
-	}
-	c.result, c.ok = fn(c.value)
-	return c
-}
-
-// OrElse provides a default value if all assertions failed
-func (c *ChainAssert) OrElse(defaultVal any) any {
-	if c.ok {
-		return c.result
-	}
-	return defaultVal
-}
-
-// Result returns the result and success flag
-func (c *ChainAssert) Result() (any, bool) {
-	return c.result, c.ok
-}
-
 
 
 ================================================
@@ -2838,16 +2688,20 @@ type FlowFactory func() *Flow
 //	}
 type CustomNode struct {
 	*BaseNode
-	prepFunc         func(context.Context, *SharedStore) (any, error)
-	execFunc         func(context.Context, any) (any, error)
-	postFunc         func(context.Context, *SharedStore, any, any) (Action, error)
+	prepFunc         func(context.Context, *SharedStore) (Result, error)
+	execFunc         func(context.Context, Result) (Result, error)
+	postFunc         func(context.Context, *SharedStore, Result, Result) (Action, error)
 	execFallbackFunc func(any, error) (any, error)
 }
 
 // Prep implements Node.Prep by calling the custom prepFunc if provided
 func (n *CustomNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
 	if n.prepFunc != nil {
-		return n.prepFunc(ctx, shared)
+		result, err := n.prepFunc(ctx, shared)
+		if err != nil {
+			return nil, err
+		}
+		return result.Value(), nil
 	}
 	return n.BaseNode.Prep(ctx, shared)
 }
@@ -2855,7 +2709,7 @@ func (n *CustomNode) Prep(ctx context.Context, shared *SharedStore) (any, error)
 // Exec implements Node.Exec by calling the custom execFunc if provided
 func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	if n.execFunc != nil {
-		return n.execFunc(ctx, prepResult)
+		return n.execFunc(ctx, NewResult(prepResult))
 	}
 	return n.BaseNode.Exec(ctx, prepResult)
 }
@@ -2863,7 +2717,7 @@ func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
 // Post implements Node.Post by calling the custom postFunc if provided
 func (n *CustomNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
 	if n.postFunc != nil {
-		return n.postFunc(ctx, shared, prepResult, execResult)
+		return n.postFunc(ctx, shared, NewResult(prepResult), NewResult(execResult))
 	}
 	return n.BaseNode.Post(ctx, shared, prepResult, execResult)
 }
@@ -2888,12 +2742,12 @@ func (n *CustomNode) ExecFallback(prepResult any, err error) (any, error) {
 //
 //	node := flyt.NewNode(
 //	    flyt.WithMaxRetries(3),
-//	    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+//	    flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
 //	        // Process data
-//	        return processedData, nil
+//	        return flyt.NewResult(processedData), nil
 //	    }),
-//	    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-//	        shared.Set("result", execResult)
+//	    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+//	        shared.Set("result", execResult.Value())
 //	        return flyt.DefaultAction, nil
 //	    }),
 //	)
@@ -2953,12 +2807,12 @@ func (o *customNodeOption) apply(n *CustomNode) {
 //
 // Example:
 //
-//	flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+//	flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
 //	    data, _ := shared.Get("input")
 //	    // Preprocess data
-//	    return preprocessedData, nil
+//	    return flyt.NewResult(preprocessedData), nil
 //	})
-func WithPrepFunc(fn func(context.Context, *SharedStore) (any, error)) CustomNodeOption {
+func WithPrepFunc(fn func(context.Context, *SharedStore) (Result, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {
 			n.prepFunc = fn
@@ -2972,11 +2826,11 @@ func WithPrepFunc(fn func(context.Context, *SharedStore) (any, error)) CustomNod
 //
 // Example:
 //
-//	flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+//	flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
 //	    // Process the data
-//	    return processedResult, nil
+//	    return flyt.NewResult(processedResult), nil
 //	})
-func WithExecFunc(fn func(context.Context, any) (any, error)) CustomNodeOption {
+func WithExecFunc(fn func(context.Context, Result) (Result, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {
 			n.execFunc = fn
@@ -2990,14 +2844,14 @@ func WithExecFunc(fn func(context.Context, any) (any, error)) CustomNodeOption {
 //
 // Example:
 //
-//	flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-//	    shared.Set("output", execResult)
+//	flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+//	    shared.Set("output", execResult.Value())
 //	    if success {
 //	        return "success", nil
 //	    }
 //	    return "retry", nil
 //	})
-func WithPostFunc(fn func(context.Context, *SharedStore, any, any) (Action, error)) CustomNodeOption {
+func WithPostFunc(fn func(context.Context, *SharedStore, Result, Result) (Action, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {
 			n.postFunc = fn
@@ -4703,90 +4557,6 @@ func TestResultWithJSON(t *testing.T) {
 	if m["key"] != "value" || m["num"].(float64) != 42 {
 		t.Errorf("JSON round-trip changed data: %v", m)
 	}
-}
-
-
-
-================================================
-FILE: types.go
-================================================
-package flyt
-
-// PrepResult represents common prep phase results
-type PrepResult struct {
-	Data   any
-	Config map[string]any
-	Items  []any
-}
-
-// ExecResult represents common exec phase results
-type ExecResult struct {
-	Success bool
-	Data    any
-	Error   string
-	Results []any
-}
-
-// BatchPrepResult for batch processing nodes
-type BatchPrepResult struct {
-	Items     []any
-	BatchSize int
-	Workers   int
-	CountKey  string
-}
-
-// BatchExecResult for batch processing results
-type BatchExecResult struct {
-	Results    []any
-	Errors     []error
-	Successful int
-	Failed     int
-}
-
-// ExtractPrepResult safely extracts PrepResult from any
-func ExtractPrepResult(v any) (*PrepResult, bool) {
-	if v == nil {
-		return nil, false
-	}
-	if result, ok := v.(*PrepResult); ok {
-		return result, true
-	}
-	if result, ok := v.(PrepResult); ok {
-		return &result, true
-	}
-	return nil, false
-}
-
-// ExtractExecResult safely extracts ExecResult from any
-func ExtractExecResult(v any) (*ExecResult, bool) {
-	if v == nil {
-		return nil, false
-	}
-	if result, ok := v.(*ExecResult); ok {
-		return result, true
-	}
-	if result, ok := v.(ExecResult); ok {
-		return &result, true
-	}
-	return nil, false
-}
-
-// MustExtractPrepResult extracts PrepResult or panics
-func MustExtractPrepResult(v any) *PrepResult {
-	result, ok := ExtractPrepResult(v)
-	if !ok {
-		panic("failed to extract PrepResult")
-	}
-	return result
-}
-
-// MustExtractExecResult extracts ExecResult or panics
-func MustExtractExecResult(v any) *ExecResult {
-	result, ok := ExtractExecResult(v)
-	if !ok {
-		panic("failed to extract ExecResult")
-	}
-	return result
 }
 
 
