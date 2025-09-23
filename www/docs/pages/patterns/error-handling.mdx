@@ -8,7 +8,7 @@ Configure retries at the node level:
 
 ```go
 node := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         // This will be retried up to 3 times
         return callFlakeyAPI()
     }),

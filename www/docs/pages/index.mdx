@@ -84,40 +84,40 @@ import (
 func main() {
     // Create nodes that share data via SharedStore
     fetchNode := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, _ any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, _ any) (any, error) {
             fmt.Println("Fetching data...")
             return map[string]int{"value": 42}, nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
             shared.Set("data", execResult)
             return flyt.DefaultAction, nil
         }),
     )
     
     processNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Type-safe access to data
             data := shared.GetMap("data")
             return data, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, data any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, data any) (any, error) {
             val := data.(map[string]any)["value"].(int)
             fmt.Printf("Processing: %d\n", val)
             return val * 2, nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
             shared.Set("result", execResult)
             return flyt.DefaultAction, nil
         }),
     )
     
     saveNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Type-safe getter for integer result
             result := shared.GetInt("result")
             return result, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, result any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, result any) (any, error) {
             fmt.Printf("Saving result: %d\n", result)
             return nil, nil
         }),

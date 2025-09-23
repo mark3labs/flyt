@@ -115,11 +115,11 @@ type FlowSelector struct {
 
 func (fs *FlowSelector) CreateSelectorNode() flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             flowType := prepResult.(string)
             return flowType, nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             return flyt.Action(execResult.(string)), nil
         }),
     )
@@ -202,18 +202,18 @@ func createRecursiveProcessingFlow(maxDepth int) *flyt.Flow {
     var flow *flyt.Flow
     
     depthCheck := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             depth := shared.GetInt("recursion_depth")
             return depth, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             depth := prepResult.(int)
             if depth >= maxDepth {
                 return "terminate", nil
             }
             return "recurse", nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             if execResult.(string) == "recurse" {
                 depth := prepResult.(int)
                 shared.Set("recursion_depth", depth+1)
@@ -240,14 +240,14 @@ Wrap flows with additional behavior:
 ```go
 func withLogging(name string, flow *flyt.Flow) *flyt.Flow {
     logStart := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             log.Printf("[%s] Flow starting", name)
             return prepResult, nil
         }),
     )
     
     logEnd := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             log.Printf("[%s] Flow completed", name)
             return prepResult, nil
         }),
@@ -274,7 +274,7 @@ func TestFlowAsNode(t *testing.T) {
     // Create a simple flow
     innerFlow := flyt.NewFlow(
         flyt.NewNode(
-            flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
                 return "inner_result", nil
             }),
         ),
@@ -305,7 +305,7 @@ Using flows as nodes:
 // Lightweight flow - good as node
 func createLightweightFlow() *flyt.Flow {
     node := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Simple operation
             return transform(prepResult), nil
         }),
@@ -323,7 +323,7 @@ func createHeavyFlow() *flyt.Flow {
 // Alternative: Use node with embedded logic
 func createOptimizedNode() flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Inline the flow logic for performance
             result := step1(prepResult)
             result = step2(result)

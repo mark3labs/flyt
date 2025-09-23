@@ -10,13 +10,13 @@ Run a flow for each set of inputs:
 // Create a flow factory - returns a new flow instance for each iteration
 flowFactory := func() *flyt.Flow {
     validateNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Each flow has its own SharedStore with merged FlowInputs
             userID := shared.GetInt("user_id")
             email := shared.GetString("email")
             return map[string]any{"user_id": userID, "email": email}, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             data := prepResult.(map[string]any)
             // Process user data
             return processUser(data), nil
@@ -117,7 +117,7 @@ func createConfiguredBatchFlow(config Config) *flyt.Flow {
     flowFactory := func() *flyt.Flow {
         // Each flow gets the same configuration
         node := flyt.NewNode(
-            flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
                 // Use config in processing
                 return processWithConfig(prepResult, config), nil
             }),
@@ -157,7 +157,7 @@ type ResultCollector struct {
 func createAggregatingBatchFlow(collector *ResultCollector) *flyt.Flow {
     flowFactory := func() *flyt.Flow {
         node := flyt.NewNode(
-            flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+            flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
                 result, err := process(prepResult)
                 
                 collector.mu.Lock()
@@ -192,7 +192,7 @@ type ProgressTracker struct {
 func createProgressBatchFlow(tracker *ProgressTracker) *flyt.Flow {
     flowFactory := func() *flyt.Flow {
         node := flyt.NewNode(
-            flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+            flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
                 if execResult != nil {
                     atomic.AddInt32(&tracker.completed, 1)
                 } else {
@@ -287,7 +287,7 @@ Handle failures in batch flows:
 ```go
 flowFactory := func() *flyt.Flow {
     node := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             result, err := riskyOperation(prepResult)
             if err != nil {
                 // Store error for later analysis

@@ -11,20 +11,22 @@ import (
 )
 
 // CreateSummarizeNode creates a node that summarizes text using an LLM
+// This version uses Result types for better type safety
 func CreateSummarizeNode(apiKey string) flyt.Node {
 	return flyt.NewNode(
-		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-			// Read text from shared store
-			text, ok := shared.Get("text")
-			if !ok {
-				return "", fmt.Errorf("no text found in shared store")
-			}
-			return text, nil
-		}),
-		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-			text := prepResult.(string)
+		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
+			// Read text from shared store with type-safe access
+			text := shared.GetStringOr("text", "")
 			if text == "" {
-				return "Empty text", nil
+				return flyt.Result{}, fmt.Errorf("no text found in shared store")
+			}
+			return flyt.NewResult(text), nil
+		}),
+		flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+			// Type-safe string extraction
+			text := prepResult.AsStringOr("")
+			if text == "" {
+				return flyt.NewResult("Empty text"), nil
 			}
 
 			// Create prompt for summarization
@@ -34,14 +36,14 @@ func CreateSummarizeNode(apiKey string) flyt.Node {
 			summary, err := CallLLM(apiKey, prompt)
 			if err != nil {
 				// Simulate retry behavior - the framework will retry based on node options
-				return "", fmt.Errorf("LLM call failed: %w", err)
+				return flyt.Result{}, fmt.Errorf("LLM call failed: %w", err)
 			}
 
-			return summary, nil
+			return flyt.NewResult(summary), nil
 		}),
-		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-			// Store the summary in shared store
-			summary := execResult.(string)
+		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+			// Store the summary in shared store with type-safe access
+			summary := execResult.AsStringOr("Failed to generate summary")
 			shared.Set("summary", summary)
 
 			// Log the result
@@ -56,18 +58,19 @@ func CreateSummarizeNode(apiKey string) flyt.Node {
 }
 
 // CreateSummarizeNodeWithFallback demonstrates custom error handling
+// This version uses the Any variants for simpler code when type safety isn't critical
 func CreateSummarizeNodeWithFallback(apiKey string) flyt.Node {
 	attempts := 0
 
 	return flyt.NewNode(
-		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			text, ok := shared.Get("text")
 			if !ok {
 				return "", fmt.Errorf("no text found in shared store")
 			}
 			return text, nil
 		}),
-		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			attempts++
 			text := prepResult.(string)
 
@@ -88,7 +91,7 @@ func CreateSummarizeNodeWithFallback(apiKey string) flyt.Node {
 
 			return summary, nil
 		}),
-		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			summary := execResult.(string)
 
 			// If we got here after retries, note that

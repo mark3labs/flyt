@@ -134,10 +134,6 @@ export default defineConfig({
           text: 'Summarize',
           link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/summarize',
         },
-        {
-          text: 'Tracing',
-          link: 'https://github.com/mark3labs/flyt/tree/main/cookbook/tracing',
-        },
       ],
     },
     {

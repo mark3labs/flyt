@@ -450,6 +450,69 @@ func (n *ValidationNode) Post(ctx context.Context, shared *flyt.SharedStore, pre
 }
 ```
 
+## Using Result Type with Custom Nodes
+
+When implementing custom nodes, you can leverage the Result type for better type safety:
+
+```go
+type TypeSafeNode struct {
+    *flyt.BaseNode
+}
+
+func (n *TypeSafeNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Return Result wrapped value
+    data := shared.GetMap("config")
+    return flyt.NewResult(data).Value(), nil
+}
+
+func (n *TypeSafeNode) Exec(ctx context.Context, prepResult any) (any, error) {
+    // Wrap input in Result for type-safe access
+    input := flyt.NewResult(prepResult)
+    
+    // Use Result's convenience methods
+    if config := input.AsMapOr(nil); config != nil {
+        timeout := flyt.NewResult(config["timeout"]).AsIntOr(30)
+        retries := flyt.NewResult(config["retries"]).AsIntOr(3)
+        
+        result := n.processWithConfig(timeout, retries)
+        return result, nil
+    }
+    
+    return nil, fmt.Errorf("invalid configuration")
+}
+
+func (n *TypeSafeNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    // Use Result for safe type conversion
+    result := flyt.NewResult(execResult)
+    
+    if result.IsNil() {
+        return "failed", nil
+    }
+    
+    // Bind to struct for complex types
+    var output ProcessedData
+    if err := result.Bind(&output); err == nil {
+        shared.Set("processed", output)
+        return "success", nil
+    }
+    
+    return flyt.DefaultAction, nil
+}
+```
+
+### Helper Functions vs Custom Nodes
+
+**Use helper functions (WithExecFunc, etc.) when:**
+- Building simple, stateless operations
+- Prototyping workflows quickly
+- Creating one-off transformations
+
+**Implement custom nodes when:**
+- Managing state or resources
+- Need complex initialization
+- Building reusable components
+- Require custom retry logic
+
 ## Best Practices
 
 1. **Clear Interfaces**: Define clear interfaces for custom nodes

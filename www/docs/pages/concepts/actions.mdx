@@ -41,11 +41,11 @@ flow.Connect(node1, flyt.DefaultAction, node2)
 
 ```go
 validationNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(string)
         return len(data) > 0, nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         if execResult.(bool) {
             return "valid", nil
         }
@@ -62,7 +62,7 @@ flow.Connect(validationNode, "invalid", errorNode)
 
 ```go
 categoryNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         value := prepResult.(int)
         if value < 10 {
             return "small", nil
@@ -71,7 +71,7 @@ categoryNode := flyt.NewNode(
         }
         return "large", nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
     }),
 )

@@ -11,7 +11,7 @@ Each node should do one thing well:
 ```go
 // ❌ Bad: Node doing too much
 node := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         // Fetch data
         data := fetchFromAPI()
         // Validate

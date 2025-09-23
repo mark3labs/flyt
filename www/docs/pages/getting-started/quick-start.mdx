@@ -4,7 +4,9 @@ This guide will help you build your first Flyt workflow in 5 minutes.
 
 ## Your First Node
 
-Let's start with a simple node that processes data:
+Let's start with a simple node that processes data. You can choose between two approaches:
+
+### Using Result Type (Recommended for Type Safety)
 
 ```go
 package main
@@ -16,9 +18,35 @@ import (
 )
 
 func main() {
-    // Create a node with just an Exec function
+    // Create a node with Result type for better type safety
     node := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+            fmt.Println("Processing data...")
+            return flyt.NewResult("Hello, Flyt!"), nil
+        }),
+    )
+
+    // Create shared store and context
+    shared := flyt.NewSharedStore()
+    ctx := context.Background()
+
+    // Run the node
+    action, err := flyt.Run(ctx, node, shared)
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Completed with action: %s\n", action)
+}
+```
+
+### Using Any Type (Simple Approach)
+
+```go
+func main() {
+    // Create a node with any type for simpler code
+    node := flyt.NewNode(
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             fmt.Println("Processing data...")
             return "Hello, Flyt!", nil
         }),
@@ -52,28 +80,31 @@ import (
 )
 
 func main() {
-    // Create nodes
+    // Create nodes using Result type for type safety
     fetchNode := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
             fmt.Println("Fetching data...")
-            return map[string]string{"data": "important info"}, nil
+            data := map[string]string{"data": "important info"}
+            return flyt.NewResult(data), nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-            shared.Set("fetched_data", execResult)
+        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+            shared.Set("fetched_data", execResult.Value())
             return flyt.DefaultAction, nil
         }),
     )
 
     processNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
             // Use GetMap for type-safe access
             data := shared.GetMap("fetched_data")
-            return data, nil
+            return flyt.NewResult(data), nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
-            data := prepResult.(map[string]any)
+        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+            // Type-safe map access
+            data := prepResult.AsMapOr(nil)
             fmt.Printf("Processing: %v\n", data["data"])
-            return "processed: " + fmt.Sprint(data["data"]), nil
+            result := "processed: " + fmt.Sprint(data["data"])
+            return flyt.NewResult(result), nil
         }),
     )
 
@@ -103,7 +134,7 @@ func createRobustNode() flyt.Node {
     attempts := 0
     
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             attempts++
             fmt.Printf("Attempt %d...\n", attempts)
             
@@ -135,11 +166,11 @@ func main() {
     })
     
     node := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             config := shared.GetMap("config")
             return config, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             config := prepResult.(map[string]any)
             fmt.Printf("Using config: %v\n", config)
             return "configured", nil

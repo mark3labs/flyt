@@ -33,14 +33,14 @@ Create modular flow components:
 // Reusable authentication flow
 func createAuthFlow() *flyt.Flow {
     checkToken := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             token := prepResult.(string)
             return validateToken(token)
         }),
     )
     
     refreshToken := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             return refreshAuthToken()
         }),
     )
@@ -112,11 +112,11 @@ Dynamically choose nested flows:
 
 ```go
 routerNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         request := prepResult.(Request)
         return request.Type, nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
     }),
 )
@@ -134,7 +134,7 @@ Pass context through nested flows:
 ```go
 func createNestedFlowWithContext(parentContext map[string]any) *flyt.Flow {
     node := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Access parent context
             for k, v := range parentContext {
                 shared.Set(k, v)
@@ -144,7 +144,7 @@ func createNestedFlowWithContext(parentContext map[string]any) *flyt.Flow {
             parentData := shared.GetMap("parent_data")
             return parentData, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Process with parent context
             return processWithContext(prepResult, parentContext), nil
         }),
@@ -183,18 +183,18 @@ Create recursive workflow patterns:
 ```go
 func createRecursiveFlow(maxDepth int) *flyt.Flow {
     checkDepth := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             depth := shared.GetInt("depth")
             return depth, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             depth := prepResult.(int)
             if depth >= maxDepth {
                 return "max_depth", nil
             }
             return "continue", nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             if execResult.(string) == "continue" {
                 depth := prepResult.(int)
                 shared.Set("depth", depth+1)
@@ -221,7 +221,7 @@ Execute nested flows in parallel:
 ```go
 func createParallelNestedFlow() *flyt.Flow {
     splitNode := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Split data for parallel processing
             data := prepResult.(Data)
             shared.Set("part1", data.Part1)
@@ -236,7 +236,7 @@ func createParallelNestedFlow() *flyt.Flow {
     
     // Merge results
     mergeNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             result1 := shared.GetMap("result1")
             result2 := shared.GetMap("result2")
             return map[string]any{
@@ -310,7 +310,7 @@ func TestNestedFlow(t *testing.T) {
     
     // Test main flow with mocked sub-flow
     mockSubFlow := flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             return "mocked_result", nil
         }),
     )

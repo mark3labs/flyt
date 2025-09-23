@@ -8,12 +8,12 @@ Make yes/no decisions:
 
 ```go
 validationNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(string)
         isValid := len(data) > 0 && len(data) < 100
         return isValid, nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         if execResult.(bool) {
             return "valid", nil
         }
@@ -32,7 +32,7 @@ Route to multiple paths:
 
 ```go
 categoryNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         value := prepResult.(float64)
         
         switch {
@@ -46,7 +46,7 @@ categoryNode := flyt.NewNode(
             return "xlarge", nil
         }
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
     }),
 )
@@ -200,11 +200,11 @@ Create loops with exit conditions:
 
 ```go
 retryNode := flyt.NewNode(
-    flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
         attempts := shared.GetInt("attempts")
         return attempts, nil
     }),
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         attempts := prepResult.(int)
         
         // Try operation
@@ -222,7 +222,7 @@ retryNode := flyt.NewNode(
             "result": result,
         }, nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         result := execResult.(map[string]any)
         
         if result["success"].(bool) {
@@ -253,7 +253,7 @@ Branch and merge pipelines:
 ```go
 // Split node decides which pipeline(s) to execute
 splitNode := flyt.NewNode(
-    flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(map[string]any)
         
         needsValidation := data["validate"].(bool)
@@ -268,7 +268,7 @@ splitNode := flyt.NewNode(
         }
         return "skip", nil
     }),
-    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
     }),
 )
@@ -336,11 +336,11 @@ Route based on experiment groups:
 ```go
 func createABTestNode(testName string, distribution map[string]int) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             userID := shared.GetString("user_id")
             return userID, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             userID := prepResult.(string)
             
             // Hash user ID for consistent assignment
@@ -361,7 +361,7 @@ func createABTestNode(testName string, distribution map[string]int) flyt.Node {
             
             return "control", nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             variant := execResult.(string)
             shared.Set("ab_variant", variant)
             return flyt.Action(variant), nil

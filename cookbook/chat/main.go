@@ -14,7 +14,7 @@ import (
 // CreateChatNode creates an interactive chat node using the NewNode helper
 func CreateChatNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
-		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			// Initialize messages if this is the first run
 			messages, ok := shared.Get("messages")
 			if !ok {
@@ -47,7 +47,7 @@ func CreateChatNode(llm *LLM) flyt.Node {
 
 			return messageList, nil
 		}),
-		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			if prepResult == nil {
 				return nil, nil
 			}
@@ -62,7 +62,7 @@ func CreateChatNode(llm *LLM) flyt.Node {
 
 			return response, nil
 		}),
-		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			if prepResult == nil || execResult == nil {
 				fmt.Println("\nGoodbye!")
 				return "end", nil

@@ -14,7 +14,7 @@ import (
 // CreateStreamNode creates a node that streams LLM responses
 func CreateStreamNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
-		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			// Get messages from shared store
 			messages, ok := shared.Get("messages")
 			if !ok {
@@ -25,7 +25,7 @@ func CreateStreamNode(llm *LLM) flyt.Node {
 				"messages": messages.([]Message),
 			}, nil
 		}),
-		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			data := prepResult.(map[string]any)
 			messages := data["messages"].([]Message)
 
@@ -48,7 +48,7 @@ func CreateStreamNode(llm *LLM) flyt.Node {
 
 			return response.String(), nil
 		}),
-		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			if execResult != nil {
 				// Add assistant's response to messages
 				messages, _ := shared.Get("messages")
@@ -69,7 +69,7 @@ func CreateStreamNode(llm *LLM) flyt.Node {
 func CreateInteractiveChatFlow(llm *LLM) *flyt.Flow {
 	// Create input node
 	inputNode := flyt.NewNode(
-		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			// Initialize messages if this is the first run
 			messages, ok := shared.Get("messages")
 			if !ok {
@@ -79,7 +79,7 @@ func CreateInteractiveChatFlow(llm *LLM) *flyt.Flow {
 			}
 			return nil, nil
 		}),
-		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			reader := bufio.NewReader(os.Stdin)
 			fmt.Print("\n💭 You: ")
 			input, err := reader.ReadString('\n')
@@ -94,7 +94,7 @@ func CreateInteractiveChatFlow(llm *LLM) *flyt.Flow {
 
 			return input, nil
 		}),
-		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			if execResult == nil {
 				fmt.Println("\n👋 Goodbye!")
 				return "exit", nil

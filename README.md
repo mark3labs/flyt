@@ -167,9 +167,10 @@ processNode := flyt.NewNode(
 Actions are strings returned by a node's Post phase that determine what happens next:
 
 ```go
-func (n *MyNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
-    // Type-safe access to result
-    if execResult.AsBoolOr(false) {
+func (n *MyNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    // Convert to Result for type-safe access
+    result := flyt.R(execResult)
+    if result.AsBoolOr(false) {
         return "success", nil  // Go to node connected with "success"
     }
     return "retry", nil       // Go to node connected with "retry"
@@ -245,16 +246,16 @@ user := User{
 shared.Set("user", user)
 
 // Later, in a node's Prep function, bind it back to a struct
-func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
+func (n *MyNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
     var user User
     err := shared.Bind("user", &user)  // Binds stored data to struct
     if err != nil {
-        return flyt.R(nil), err
+        return nil, err
     }
     // Or use MustBind (panics on failure - use for required data)
     // shared.MustBind("user", &user)
     
-    return flyt.R(user), nil
+    return user, nil
 }
 
 // Utility methods
@@ -333,23 +334,25 @@ type CachedAPINode struct {
     cache map[string]any
 }
 
-func (n *CachedAPINode) ExecFallback(prepResult flyt.Result, err error) (flyt.Result, error) {
+func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
     // Return cached data when API fails
-    key := prepResult.MustString()
+    result := flyt.R(prepResult)
+    key := result.MustString()
     if cached, ok := n.cache[key]; ok {
-        return flyt.R(cached), nil
+        return cached, nil
     }
     // Return default value if no cache
-    return flyt.R(map[string]any{"status": "unavailable"}), nil
+    return map[string]any{"status": "unavailable"}, nil
 }
 
-func (n *CachedAPINode) Exec(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
-    key := prepResult.MustString()
+func (n *CachedAPINode) Exec(ctx context.Context, prepResult any) (any, error) {
+    result := flyt.R(prepResult)
+    key := result.MustString()
     data, err := callAPI(key)
     if err == nil {
         n.cache[key] = data // Update cache on success
     }
-    return flyt.R(data), err
+    return data, err
 }
 ```
 
@@ -397,13 +400,13 @@ func NewRateLimitedNode(rps int) *RateLimitedNode {
     }
 }
 
-func (n *RateLimitedNode) Exec(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+func (n *RateLimitedNode) Exec(ctx context.Context, prepResult any) (any, error) {
     if err := n.limiter.Wait(ctx); err != nil {
-        return flyt.R(nil), err
+        return nil, err
     }
     // Process with rate limiting
-    data, err := process(prepResult.Value())
-    return flyt.R(data), err
+    data, err := process(prepResult)
+    return data, err
 }
 ```
 
@@ -430,10 +433,10 @@ func (n *CustomRetryNode) GetWait() time.Duration {
     return time.Duration(n.attempts) * time.Second
 }
 
-func (n *CustomRetryNode) Exec(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+func (n *CustomRetryNode) Exec(ctx context.Context, prepResult any) (any, error) {
     n.attempts++
-    data, err := callAPI(prepResult.Value())
-    return flyt.R(data), err
+    data, err := callAPI(prepResult)
+    return data, err
 }
 ```
 
@@ -443,9 +446,9 @@ Process multiple items concurrently:
 
 ```go
 // Simple batch node for processing items
-processFunc := func(ctx context.Context, item any) (flyt.Result, error) {
+processFunc := func(ctx context.Context, item any) (any, error) {
     // Process each item
-    return flyt.R(fmt.Sprintf("processed: %v", item)), nil
+    return fmt.Sprintf("processed: %v", item), nil
 }
 
 batchNode := flyt.NewBatchNode(processFunc, true) // true for concurrent
@@ -465,9 +468,9 @@ config := &flyt.BatchConfig{
     CountKey:    "total",   // Custom key for processed count
 }
 
-processFunc := func(ctx context.Context, item any) (flyt.Result, error) {
+processFunc := func(ctx context.Context, item any) (any, error) {
     data, err := processItem(item)
-    return flyt.R(data), err
+    return data, err
 }
 
 batchNode := flyt.NewBatchNodeWithConfig(processFunc, true, config)

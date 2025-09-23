@@ -13,7 +13,7 @@ import (
 // It uses an LLM to analyze the question and context to make this decision.
 func NewDecideActionNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
-		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			question := shared.GetString("question")
 			context := shared.GetStringOr("context", "No previous search")
 			searchCount := shared.GetInt("search_count")
@@ -24,7 +24,7 @@ func NewDecideActionNode(llm *LLM) flyt.Node {
 				"search_count": searchCount,
 			}, nil
 		}),
-		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			data := prepResult.(map[string]any)
 			question := data["question"].(string)
 			contextStr := data["context"].(string)
@@ -72,7 +72,7 @@ Example responses:
 				"searchCount": searchCount,
 			}, nil
 		}),
-		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			data := execResult.(map[string]any)
 			response := data["response"].(string)
 
@@ -104,14 +104,14 @@ Example responses:
 // NewSearchWebNode creates a node that searches the web for information
 func NewSearchWebNode(searcher Searcher) flyt.Node {
 	return flyt.NewNode(
-		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			query := shared.GetString("search_query")
 
 			return map[string]any{
 				"query": query,
 			}, nil
 		}),
-		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			data := prepResult.(map[string]any)
 			query := data["query"].(string)
 
@@ -128,7 +128,7 @@ func NewSearchWebNode(searcher Searcher) flyt.Node {
 				"query":   query,
 			}, nil
 		}),
-		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			data := execResult.(map[string]any)
 			results := data["results"].(string)
 			query := data["query"].(string)
@@ -148,7 +148,7 @@ func NewSearchWebNode(searcher Searcher) flyt.Node {
 // NewAnswerQuestionNode creates a node that generates the final answer
 func NewAnswerQuestionNode(llm *LLM) flyt.Node {
 	return flyt.NewNode(
-		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			question := shared.GetString("question")
 			context := shared.GetString("context")
 
@@ -157,7 +157,7 @@ func NewAnswerQuestionNode(llm *LLM) flyt.Node {
 				"context":  context,
 			}, nil
 		}),
-		flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			data := prepResult.(map[string]any)
 			question := data["question"].(string)
 			contextStr := ""
@@ -181,7 +181,7 @@ Provide a short concise answer using the research results.`, question, contextSt
 
 			return answer, nil
 		}),
-		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			answer := execResult.(string)
 
 			shared.Set("answer", answer)

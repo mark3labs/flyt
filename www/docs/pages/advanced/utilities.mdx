@@ -402,7 +402,7 @@ func (m *MockSharedStore) Set(key string, value any) {
 ```go
 func TestNode(execFn func(context.Context, any) (any, error)) flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(execFn),
+        flyt.WithExecFuncAny(execFn),
     )
 }
 

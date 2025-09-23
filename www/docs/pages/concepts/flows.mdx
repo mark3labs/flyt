@@ -163,15 +163,15 @@ Add logging nodes for debugging:
 ```go
 func createLoggingNode(name string) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             log.Printf("[%s] Prep: SharedStore keys: %v", name, shared.GetAll())
             return nil, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             log.Printf("[%s] Exec", name)
             return prepResult, nil
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             log.Printf("[%s] Post: Result: %v", name, execResult)
             return flyt.DefaultAction, nil
         }),

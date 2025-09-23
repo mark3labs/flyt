@@ -9,7 +9,7 @@ Pass configuration to nodes using closures:
 ```go
 func createAPINode(apiKey string, baseURL string) flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // apiKey and baseURL are captured in the closure
             url := fmt.Sprintf("%s/data", baseURL)
             req, _ := http.NewRequest("GET", url, nil)
@@ -43,7 +43,7 @@ func createCounterNode() flyt.Node {
     mu := &sync.Mutex{}
     
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             mu.Lock()
             count++
             current := count
@@ -78,7 +78,7 @@ func createDatabaseNode(config DatabaseConfig) flyt.Node {
     db.SetMaxOpenConns(config.MaxConns)
     
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             query := prepResult.(string)
             rows, err := db.QueryContext(ctx, query)
             if err != nil {
@@ -111,12 +111,12 @@ Create specialized node variants:
 ```go
 func createHTTPNode(method string, headers map[string]string) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             url := shared.GetString("url")
             body := shared.GetMap("body")
             return map[string]any{"url": url, "body": body}, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             data := prepResult.(map[string]any)
             url := data["url"].(string)
             
@@ -168,7 +168,7 @@ func createFileProcessorNode(bufferSize int) flyt.Node {
     buffer := make([]byte, bufferSize)
     
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             filePath := prepResult.(string)
             
             file, err := os.Open(filePath)
@@ -197,17 +197,17 @@ Wrap nodes with additional behavior:
 ```go
 func withLogging(name string, node flyt.Node) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             log.Printf("[%s] Starting prep", name)
             return node.Prep(ctx, shared)
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             start := time.Now()
             result, err := node.Exec(ctx, prepResult)
             log.Printf("[%s] Exec took %v", name, time.Since(start))
             return result, err
         }),
-        flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             action, err := node.Post(ctx, shared, prepResult, execResult)
             log.Printf("[%s] Returning action: %s", name, action)
             return action, err
@@ -226,7 +226,7 @@ Load configuration at runtime:
 ```go
 func createConfigurableNode(configPath string) flyt.Node {
     return flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Load config file
             data, err := os.ReadFile(configPath)
             if err != nil {
@@ -237,7 +237,7 @@ func createConfigurableNode(configPath string) flyt.Node {
             json.Unmarshal(data, &config)
             return config, nil
         }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             config := prepResult.(map[string]any)
             // Use configuration
             return processWithConfig(config), nil
@@ -260,7 +260,7 @@ type Dependencies struct {
 
 func createServiceNode(deps Dependencies) flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Use injected dependencies
             deps.Logger.Println("Processing request")
             

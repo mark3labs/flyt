@@ -1036,15 +1036,33 @@ type FlowFactory func() *Flow
 // for Prep, Exec, and Post phases. This allows creating nodes
 // without defining new types, useful for simple operations.
 //
-// Example:
+// CustomNode supports two styles of functions:
 //
-//	node := &flyt.CustomNode{
-//	    BaseNode: flyt.NewBaseNode(),
-//	    execFunc: func(ctx context.Context, prepResult any) (any, error) {
-//	        // Process data
-//	        return result, nil
-//	    },
-//	}
+//  1. Result-based functions (WithPrepFunc, WithExecFunc, WithPostFunc):
+//     These use the Result type which provides convenient type assertion methods.
+//     Best for complex data processing where type safety and conversion helpers are valuable.
+//
+//  2. Any-based functions (WithPrepFuncAny, WithExecFuncAny, WithPostFuncAny):
+//     These use standard any types matching the Node interface directly.
+//     Best for simple operations or when migrating existing code.
+//
+// Example with Result types:
+//
+//	node := flyt.NewNode(
+//	    flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+//	        data := prepResult.MustString()  // Type-safe access
+//	        return flyt.NewResult(processData(data)), nil
+//	    }),
+//	)
+//
+// Example with any types:
+//
+//	node := flyt.NewNode(
+//	    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+//	        data := prepResult.(string)  // Manual type assertion
+//	        return processData(data), nil
+//	    }),
+//	)
 type CustomNode struct {
 	*BaseNode
 	prepFunc         func(context.Context, *SharedStore) (Result, error)
@@ -1094,20 +1112,38 @@ func (n *CustomNode) ExecFallback(prepResult any, err error) (any, error) {
 // It accepts both NodeOption (for BaseNode configuration) and CustomNodeOption
 // (for custom function implementations).
 //
+// You can choose between two styles of custom functions:
+//
+// Result-based (recommended for complex operations):
+//   - WithPrepFunc, WithExecFunc, WithPostFunc
+//   - Provides type-safe accessors and conversion helpers
+//   - Better for complex data transformations
+//
+// Any-based (recommended for simple operations):
+//   - WithPrepFuncAny, WithExecFuncAny, WithPostFuncAny
+//   - Direct any types matching Node interface
+//   - Better for simple pass-through or basic operations
+//
 // Parameters:
 //   - opts: Mix of NodeOption and CustomNodeOption values
 //
-// Example:
+// Example with Result types:
 //
 //	node := flyt.NewNode(
 //	    flyt.WithMaxRetries(3),
 //	    flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
-//	        // Process data
-//	        return flyt.NewResult(processedData), nil
+//	        userId := prepResult.AsIntOr(0)
+//	        user := fetchUser(userId)
+//	        return flyt.NewResult(user), nil
 //	    }),
-//	    flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
-//	        shared.Set("result", execResult.Value())
-//	        return flyt.DefaultAction, nil
+//	)
+//
+// Example with any types:
+//
+//	node := flyt.NewNode(
+//	    flyt.WithMaxRetries(3),
+//	    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+//	        return processData(prepResult), nil
 //	    }),
 //	)
 func NewNode(opts ...any) Node {
@@ -1233,6 +1269,78 @@ func WithExecFallbackFunc(fn func(any, error) (any, error)) CustomNodeOption {
 	return &customNodeOption{
 		f: func(n *CustomNode) {
 			n.execFallbackFunc = fn
+		},
+	}
+}
+
+// WithPrepFuncAny sets a custom Prep implementation for a CustomNode using any types.
+// This is an alternative to WithPrepFunc that doesn't require Result types,
+// useful for simpler cases or when migrating existing code.
+//
+// Example:
+//
+//	flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+//	    data, _ := shared.Get("input")
+//	    // Preprocess data
+//	    return preprocessedData, nil
+//	})
+func WithPrepFuncAny(fn func(context.Context, *SharedStore) (any, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.prepFunc = func(ctx context.Context, shared *SharedStore) (Result, error) {
+				val, err := fn(ctx, shared)
+				if err != nil {
+					return Result{}, err
+				}
+				return NewResult(val), nil
+			}
+		},
+	}
+}
+
+// WithExecFuncAny sets a custom Exec implementation for a CustomNode using any types.
+// This is an alternative to WithExecFunc that doesn't require Result types,
+// useful for simpler cases or when you don't need the type assertion helpers.
+//
+// Example:
+//
+//	flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+//	    // Process the data
+//	    return processedResult, nil
+//	})
+func WithExecFuncAny(fn func(context.Context, any) (any, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
+				val, err := fn(ctx, prepResult.Value())
+				if err != nil {
+					return Result{}, err
+				}
+				return NewResult(val), nil
+			}
+		},
+	}
+}
+
+// WithPostFuncAny sets a custom Post implementation for a CustomNode using any types.
+// This is an alternative to WithPostFunc that doesn't require Result types,
+// useful for simpler cases or backward compatibility.
+//
+// Example:
+//
+//	flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+//	    shared.Set("output", execResult)
+//	    if success {
+//	        return "success", nil
+//	    }
+//	    return "retry", nil
+//	})
+func WithPostFuncAny(fn func(context.Context, *SharedStore, any, any) (Action, error)) CustomNodeOption {
+	return &customNodeOption{
+		f: func(n *CustomNode) {
+			n.postFunc = func(ctx context.Context, shared *SharedStore, prepResult, execResult Result) (Action, error) {
+				return fn(ctx, shared, prepResult.Value(), execResult.Value())
+			}
 		},
 	}
 }

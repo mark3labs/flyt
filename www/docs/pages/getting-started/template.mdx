@@ -101,7 +101,7 @@ import (
 
 func CreateCustomNode() flyt.Node {
     return flyt.NewNode(
-        flyt.WithExecFunc(func(ctx context.Context, prepResult any) (any, error) {
+        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Your custom logic here
             return "custom result", nil
         }),
