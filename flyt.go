@@ -728,6 +728,10 @@ func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
 //	flow.Connect(validateNode, ActionSuccess, processNode)
 //	flow.Connect(validateNode, ActionFail, errorNode)
 //
+//	// Or with chaining:
+//	flow.Connect(validateNode, ActionSuccess, processNode)
+//	     .Connect(validateNode, ActionFail, errorNode)
+//
 //	// Run flow
 //	err := flow.Run(ctx, shared)
 type Flow struct {
@@ -757,6 +761,7 @@ func NewFlow(start Node) *Flow {
 // Connect adds a transition from one node to another based on an action.
 // When the 'from' node returns the specified action, execution continues
 // with the 'to' node. Multiple actions can be connected from a single node.
+// Returns the flow instance for method chaining.
 //
 // Parameters:
 //   - from: The source node
@@ -768,11 +773,18 @@ func NewFlow(start Node) *Flow {
 //	flow.Connect(nodeA, "success", nodeB)
 //	flow.Connect(nodeA, "retry", nodeA)  // Self-loop for retry
 //	flow.Connect(nodeA, "fail", errorNode)
-func (f *Flow) Connect(from Node, action Action, to Node) {
+//
+// Example with chaining:
+//
+//	flow.Connect(nodeA, "success", nodeB)
+//	     .Connect(nodeB, "success", finalNode)
+//	     .Connect(nodeB, "fail", errorNode)
+func (f *Flow) Connect(from Node, action Action, to Node) *Flow {
 	if f.transitions[from] == nil {
 		f.transitions[from] = make(map[Action]Node)
 	}
 	f.transitions[from][action] = to
+	return f
 }
 
 // Run executes the flow starting from the start node.

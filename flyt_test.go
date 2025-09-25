@@ -689,4 +689,142 @@ func BenchmarkSharedStoreConcurrentAccess(b *testing.B) {
 	})
 }
 
+// TestFlowConnectChaining tests that Connect method can be chained
+func TestFlowConnectChaining(t *testing.T) {
+	// Create nodes
+	node1 := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "node1",
+		action:   "next",
+	}
+
+	node2 := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "node2",
+		action:   "final",
+	}
+
+	node3 := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "node3",
+		action:   DefaultAction,
+	}
+
+	// Test chaining
+	flow := NewFlow(node1)
+	flow.Connect(node1, "next", node2).
+		Connect(node2, "final", node3)
+
+	// Run the flow
+	ctx := context.Background()
+	shared := NewSharedStore()
+	err := flow.Run(ctx, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify execution order
+	if !node1.executed {
+		t.Error("node1 not executed")
+	}
+	if !node2.executed {
+		t.Error("node2 not executed")
+	}
+	if !node3.executed {
+		t.Error("node3 not executed")
+	}
+}
+
+// TestFlowConnectChainingWithMultipleActions tests chaining with multiple actions from same node
+func TestFlowConnectChainingWithMultipleActions(t *testing.T) {
+	// Create nodes
+	decisionNode := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "decision",
+		action:   "branch",
+	}
+
+	successNode := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "success",
+		action:   DefaultAction,
+	}
+
+	failNode := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "fail",
+		action:   DefaultAction,
+	}
+
+	retryNode := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "retry",
+		action:   DefaultAction,
+	}
+
+	// Test chaining with multiple actions from same node
+	flow := NewFlow(decisionNode)
+	flow.Connect(decisionNode, "branch", successNode).
+		Connect(decisionNode, "fail", failNode).
+		Connect(decisionNode, "retry", retryNode)
+
+	// Run the flow
+	ctx := context.Background()
+	shared := NewSharedStore()
+	err := flow.Run(ctx, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify execution
+	if !decisionNode.executed {
+		t.Error("decisionNode not executed")
+	}
+	if !successNode.executed {
+		t.Error("successNode not executed")
+	}
+	if failNode.executed {
+		t.Error("failNode should not be executed")
+	}
+	if retryNode.executed {
+		t.Error("retryNode should not be executed")
+	}
+}
+
+// TestFlowConnectChainingBackwardsCompatibility tests that traditional usage still works
+func TestFlowConnectChainingBackwardsCompatibility(t *testing.T) {
+	// Create nodes
+	node1 := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "node1",
+		action:   "next",
+	}
+
+	node2 := &TestNode{
+		BaseNode: NewBaseNode(),
+		name:     "node2",
+		action:   DefaultAction,
+	}
+
+	// Test that traditional non-chaining usage still works
+	flow := NewFlow(node1)
+	flow.Connect(node1, "next", node2) // Traditional usage without chaining
+
+	// Run the flow
+	ctx := context.Background()
+	shared := NewSharedStore()
+	err := flow.Run(ctx, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify execution
+	if !node1.executed {
+		t.Error("node1 not executed")
+	}
+	if !node2.executed {
+		t.Error("node2 not executed")
+	}
+}
+
 // BenchmarkBatchNodeProcessing benchmarks batch processing
