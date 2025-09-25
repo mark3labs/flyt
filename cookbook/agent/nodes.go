@@ -97,8 +97,7 @@ Example responses:
 			}
 
 			return flyt.Action(action), nil
-		}).
-		Build()
+		})
 }
 
 // NewSearchWebNode creates a node that searches the web for information
@@ -141,8 +140,7 @@ func NewSearchWebNode(searcher Searcher) flyt.Node {
 			fmt.Println("📚 Found information, analyzing results...")
 
 			return "decide", nil
-		}).
-		Build()
+		})
 }
 
 // NewAnswerQuestionNode creates a node that generates the final answer
@@ -189,6 +187,5 @@ Provide a short concise answer using the research results.`, question, contextSt
 
 			// End the flow
 			return "done", nil
-		}).
-		Build()
+		})
 }

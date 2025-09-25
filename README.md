@@ -113,8 +113,8 @@ node := flyt.NewNode().
         return flyt.R("done"), nil
     })
 
-// The Build() method is optional since NodeBuilder implements Node
-// node := flyt.NewNode().WithExecFunc(fn).Build()
+// NodeBuilder directly implements Node interface, so you can use it as-is
+// node := flyt.NewNode().WithExecFunc(fn)
 ```
 
 You can mix traditional and builder patterns:

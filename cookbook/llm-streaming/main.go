@@ -61,8 +61,7 @@ func CreateStreamNode(llm *LLM) flyt.Node {
 			}
 
 			return flyt.DefaultAction, nil
-		}).
-		Build()
+		})
 }
 
 // CreateInteractiveChatFlow creates a flow that continuously prompts for input and streams responses
@@ -110,8 +109,7 @@ func CreateInteractiveChatFlow(llm *LLM) *flyt.Flow {
 			shared.Set("messages", messageList)
 
 			return "stream", nil
-		}).
-		Build()
+		})
 
 	// Create stream node
 	streamNode := CreateStreamNode(llm)

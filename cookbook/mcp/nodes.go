@@ -36,8 +36,7 @@ func NewGetToolsNode(mcpClient *MCPClient) flyt.Node {
 				shared.Set("tools", execResult)
 			}
 			return flyt.Action("decide"), nil
-		}).
-		Build()
+		})
 }
 
 // NewDecideToolNode creates a node that uses LLM with function calling to select appropriate tool
@@ -137,8 +136,7 @@ func NewDecideToolNode(llm *LLM) flyt.Node {
 			fc := data["function_call"].(map[string]interface{})
 			shared.Set("function_call", fc)
 			return flyt.Action("execute"), nil
-		}).
-		Build()
+		})
 }
 
 // NewExecuteToolNode creates a node that executes the selected tool with parameters
@@ -197,6 +195,5 @@ func NewExecuteToolNode(mcpClient *MCPClient) flyt.Node {
 			shared.Set("messages", data["messages"])
 			// Go back to decide node to continue the conversation
 			return flyt.Action("decide"), nil
-		}).
-		Build()
+		})
 }

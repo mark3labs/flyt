@@ -81,8 +81,7 @@ func CreateChatNode(llm *LLM) flyt.Node {
 			shared.Set("messages", messageList)
 
 			return "continue", nil
-		}).
-		Build()
+		})
 }
 
 func main() {

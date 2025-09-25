@@ -97,8 +97,7 @@ func createDownloadNode() flyt.Node {
 			shared.Set("mimeType", result["mimeType"])
 			log.Printf("Download node completed, MIME type: %s", result["mimeType"])
 			return flyt.DefaultAction, nil
-		}).
-		Build()
+		})
 }
 
 // Simple node that calls Claude to extract text
@@ -215,8 +214,7 @@ func createExtractTextNode() flyt.Node {
 			log.Printf("Extract text failed after all retries: %v", err)
 			// Return nil to indicate failure, which will trigger skip action in Post
 			return nil, nil
-		}).
-		Build()
+		})
 }
 
 // Simple node that saves text to S3
@@ -264,8 +262,7 @@ func createSaveTextNode() flyt.Node {
 
 			log.Printf("Successfully saved extracted text to: s3://%s/%s", bucketName, filename)
 			return filename, nil
-		}).
-		Build()
+		})
 }
 
 // Simple node that cleans up the original file from S3
@@ -304,8 +301,7 @@ func createCleanupNode() flyt.Node {
 
 			log.Printf("Successfully deleted original file: s3://%s/%s", bucket, key)
 			return fmt.Sprintf("Deleted s3://%s/%s", bucket, key), nil
-		}).
-		Build()
+		})
 }
 
 // Create a flow factory that returns a new flow instance for each S3 record
@@ -369,8 +365,7 @@ func createImageProcessingFlowFactory(tracker *ProgressTracker) func() *flyt.Flo
 					atomic.LoadInt32(&tracker.failed))
 
 				return flyt.DefaultAction, nil
-			}).
-			Build()
+			})
 
 		// Create flow
 		flow := flyt.NewFlow(downloadNode)

@@ -51,9 +51,8 @@ func CreateSummarizeNode(apiKey string) flyt.Node {
 
 			return flyt.DefaultAction, nil
 		}).
-		WithMaxRetries(3).     // Configure retries
-		WithWait(time.Second). // Configure wait time
-		Build()
+		WithMaxRetries(3).    // Configure retries
+		WithWait(time.Second) // Configure wait time
 }
 
 // CreateSummarizeNodeWithFallback demonstrates custom error handling
@@ -106,8 +105,7 @@ func CreateSummarizeNodeWithFallback(apiKey string) flyt.Node {
 			return flyt.DefaultAction, nil
 		}).
 		WithMaxRetries(3).
-		WithWait(500 * time.Millisecond).
-		Build()
+		WithWait(500 * time.Millisecond)
 }
 
 func main() {

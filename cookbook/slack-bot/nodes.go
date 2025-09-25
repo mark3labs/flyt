@@ -48,8 +48,7 @@ func NewParseMessageNode(slackService *SlackService) flyt.Node {
 			shared.Set("cleaned_message", execResult)
 			log.Printf("Parsed message: %v", execResult)
 			return flyt.DefaultAction, nil
-		}).
-		Build()
+		})
 }
 
 // NewLLMNode creates a node that processes the message through OpenAI with function calling
@@ -156,8 +155,7 @@ func NewLLMNode(llmService *LLMService) flyt.Node {
 			default:
 				return flyt.DefaultAction, nil
 			}
-		}).
-		Build()
+		})
 }
 
 // NewToolExecutorNode creates a node that executes tool calls requested by the LLM
@@ -196,8 +194,7 @@ func NewToolExecutorNode() flyt.Node {
 			shared.Set("tool_responses", execResult)
 			log.Printf("Tool execution completed with %d results", len(execResult.(map[string]string)))
 			return flyt.DefaultAction, nil // Goes back to LLM node
-		}).
-		Build()
+		})
 }
 
 // NewFormatResponseNode creates a node that formats the final response for Slack
@@ -236,6 +233,5 @@ func NewFormatResponseNode() flyt.Node {
 			shared.Set("response", execResult)
 			log.Println("Response formatted for Slack")
 			return flyt.DefaultAction, nil
-		}).
-		Build()
+		})
 }

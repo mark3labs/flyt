@@ -120,10 +120,3 @@ func (b *NodeBuilder) WithPostFuncAny(fn func(context.Context, *SharedStore, any
 	}
 	return b
 }
-
-// Build returns the configured Node.
-// This method is optional as NodeBuilder already implements Node,
-// but it provides explicit intent when ending the builder chain.
-func (b *NodeBuilder) Build() Node {
-	return b
-}

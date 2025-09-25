@@ -226,8 +226,7 @@ func TestNodeBuilderChaining(t *testing.T) {
 				return flyt.NewNode().
 					WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
 						return flyt.R("built"), nil
-					}).
-					Build() // Explicitly call Build()
+					})
 			},
 			validate: func(t *testing.T, node flyt.Node) {
 				ctx := context.Background()
