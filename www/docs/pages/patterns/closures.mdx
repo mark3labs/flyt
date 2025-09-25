@@ -8,8 +8,9 @@ Pass configuration to nodes using closures:
 
 ```go
 func createAPINode(apiKey string, baseURL string) flyt.Node {
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Using fluent API with closure
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // apiKey and baseURL are captured in the closure
             url := fmt.Sprintf("%s/data", baseURL)
             req, _ := http.NewRequest("GET", url, nil)
@@ -25,8 +26,7 @@ func createAPINode(apiKey string, baseURL string) flyt.Node {
             var data map[string]any
             json.NewDecoder(resp.Body).Decode(&data)
             return data, nil
-        }),
-    )
+        })
 }
 
 // Usage
@@ -42,16 +42,16 @@ func createCounterNode() flyt.Node {
     count := 0
     mu := &sync.Mutex{}
     
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Fluent API with stateful closure
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             mu.Lock()
             count++
             current := count
             mu.Unlock()
             
             return fmt.Sprintf("Execution #%d", current), nil
-        }),
-    )
+        })
 }
 ```
 
@@ -77,8 +77,9 @@ func createDatabaseNode(config DatabaseConfig) flyt.Node {
     db, _ := sql.Open("mysql", dsn)
     db.SetMaxOpenConns(config.MaxConns)
     
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Clean fluent API with configuration
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             query := prepResult.(string)
             rows, err := db.QueryContext(ctx, query)
             if err != nil {
@@ -89,8 +90,7 @@ func createDatabaseNode(config DatabaseConfig) flyt.Node {
             var results []map[string]any
             // Process rows...
             return results, nil
-        }),
-    )
+        })
 }
 
 // Usage
@@ -110,13 +110,14 @@ Create specialized node variants:
 
 ```go
 func createHTTPNode(method string, headers map[string]string) flyt.Node {
-    return flyt.NewNode(
-        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Fluent API for factory function
+    return flyt.NewNode().
+        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             url := shared.GetString("url")
             body := shared.GetMap("body")
             return map[string]any{"url": url, "body": body}, nil
-        }),
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+        }).
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             data := prepResult.(map[string]any)
             url := data["url"].(string)
             
@@ -143,8 +144,7 @@ func createHTTPNode(method string, headers map[string]string) flyt.Node {
             var result map[string]any
             json.NewDecoder(resp.Body).Decode(&result)
             return result, nil
-        }),
-    )
+        })
 }
 
 // Create specialized nodes
@@ -167,8 +167,9 @@ func createFileProcessorNode(bufferSize int) flyt.Node {
     // Pre-allocate buffer
     buffer := make([]byte, bufferSize)
     
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Fluent API with resource management
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             filePath := prepResult.(string)
             
             file, err := os.Open(filePath)
@@ -185,8 +186,7 @@ func createFileProcessorNode(bufferSize int) flyt.Node {
             
             // Process buffer[:n]
             return processData(buffer[:n]), nil
-        }),
-    )
+        })
 }
 ```
 

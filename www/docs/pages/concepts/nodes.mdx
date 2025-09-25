@@ -77,8 +77,9 @@ Flyt provides two styles of helper functions for creating nodes:
 Use `WithPrepFunc`, `WithExecFunc`, and `WithPostFunc` for type-safe operations with the Result type:
 
 ```go
-node := flyt.NewNode(
-    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
+// Using fluent API for cleaner chaining
+node := flyt.NewNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
         // Use type-safe getters
         message := shared.GetString("message")
         retryCount := shared.GetIntOr("retry_count", 0)
@@ -87,8 +88,8 @@ node := flyt.NewNode(
             "message": message,
             "retry": retryCount,
         }), nil
-    }),
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+    }).
+    WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
         // Type-safe access to data
         data := prepResult.AsMapOr(nil)
         message := data["message"].(string)
@@ -96,8 +97,8 @@ node := flyt.NewNode(
         // Process and return Result
         processed := processMessage(message)
         return flyt.NewResult(processed), nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
         // Type-safe result handling
         result := execResult.Value()
         shared.Set("result", result)
@@ -106,8 +107,7 @@ node := flyt.NewNode(
             return "max_retries", nil
         }
         return flyt.DefaultAction, nil
-    }),
-)
+    })
 ```
 
 #### Any-based Functions (Simple)
@@ -115,8 +115,9 @@ node := flyt.NewNode(
 Use `WithPrepFuncAny`, `WithExecFuncAny`, and `WithPostFuncAny` for simpler cases or backward compatibility:
 
 ```go
-node := flyt.NewNode(
-    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+// Using fluent API with any-based functions
+node := flyt.NewNode().
+    WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
         // Direct any types
         message := shared.GetString("message")
         retryCount := shared.GetIntOr("retry_count", 0)
@@ -125,13 +126,13 @@ node := flyt.NewNode(
             "message": message,
             "retry": retryCount,
         }, nil
-    }),
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    }).
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(map[string]any)
         // Process the data
         return processMessage(data["message"].(string)), nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         // Store result and determine action
         shared.Set("result", execResult)
         
@@ -139,8 +140,7 @@ node := flyt.NewNode(
             return "max_retries", nil
         }
         return flyt.DefaultAction, nil
-    }),
-)
+    })
 ```
 
 ### Choosing Between Result and Any
@@ -192,24 +192,31 @@ func (n *DatabaseNode) Exec(ctx context.Context, prepResult any) (any, error) {
 Configure node behavior with options:
 
 ```go
-// With Result type
-node := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, input flyt.Result) (flyt.Result, error) {
+// With Result type using fluent API
+node := flyt.NewNode().
+    WithExecFunc(func(ctx context.Context, input flyt.Result) (flyt.Result, error) {
         // Type-safe operations
         return flyt.NewResult(processData(input.Value())), nil
-    }),
-    flyt.WithMaxRetries(3),        // Retry up to 3 times
-    flyt.WithWait(time.Second * 2), // Wait 2 seconds between retries
-)
+    }).
+    WithMaxRetries(3).        // Retry up to 3 times
+    WithWait(time.Second * 2) // Wait 2 seconds between retries
 
-// With any type
-node := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, input any) (any, error) {
+// With any type using fluent API  
+node := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, input any) (any, error) {
         // Direct any handling
         return processData(input), nil
+    }).
+    WithMaxRetries(3).        // Retry up to 3 times
+    WithWait(time.Second * 2) // Wait 2 seconds between retries
+
+// Traditional style still supported
+node := flyt.NewNode(
+    flyt.WithExecFuncAny(func(ctx context.Context, input any) (any, error) {
+        return processData(input), nil
     }),
-    flyt.WithMaxRetries(3),        // Retry up to 3 times
-    flyt.WithWait(time.Second * 2), // Wait 2 seconds between retries
+    flyt.WithMaxRetries(3),
+    flyt.WithWait(time.Second * 2),
 )
 ```
 

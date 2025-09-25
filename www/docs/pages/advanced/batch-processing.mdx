@@ -174,12 +174,13 @@ Process large datasets in chunks:
 
 ```go
 func createChunkedProcessor(chunkSize int) flyt.Node {
-    return flyt.NewNode(
-        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Using fluent API for chunked processing
+    return flyt.NewNode().
+        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             items := shared.GetSlice("items")
             return items, nil
-        }),
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+        }).
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             items := prepResult.([]any)
             results := make([]any, 0, len(items))
             
@@ -196,8 +197,7 @@ func createChunkedProcessor(chunkSize int) flyt.Node {
             }
             
             return results, nil
-        }),
-    )
+        })
 }
 ```
 

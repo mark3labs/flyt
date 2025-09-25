@@ -82,46 +82,43 @@ import (
 )
 
 func main() {
-    // Create nodes that share data via SharedStore
-    fetchNode := flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, _ any) (any, error) {
+    // Create nodes using fluent API
+    fetchNode := flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, _ any) (any, error) {
             fmt.Println("Fetching data...")
             return map[string]int{"value": 42}, nil
-        }),
-        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
+        }).
+        WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
             shared.Set("data", execResult)
             return flyt.DefaultAction, nil
-        }),
-    )
+        })
     
-    processNode := flyt.NewNode(
-        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    processNode := flyt.NewNode().
+        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Type-safe access to data
             data := shared.GetMap("data")
             return data, nil
-        }),
-        flyt.WithExecFuncAny(func(ctx context.Context, data any) (any, error) {
+        }).
+        WithExecFuncAny(func(ctx context.Context, data any) (any, error) {
             val := data.(map[string]any)["value"].(int)
             fmt.Printf("Processing: %d\n", val)
             return val * 2, nil
-        }),
-        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
+        }).
+        WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, _, execResult any) (flyt.Action, error) {
             shared.Set("result", execResult)
             return flyt.DefaultAction, nil
-        }),
-    )
+        })
     
-    saveNode := flyt.NewNode(
-        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    saveNode := flyt.NewNode().
+        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             // Type-safe getter for integer result
             result := shared.GetInt("result")
             return result, nil
-        }),
-        flyt.WithExecFuncAny(func(ctx context.Context, result any) (any, error) {
+        }).
+        WithExecFuncAny(func(ctx context.Context, result any) (any, error) {
             fmt.Printf("Saving result: %d\n", result)
             return nil, nil
-        }),
-    )
+        })
     
     // Build and run flow
     flow := flyt.NewFlow(fetchNode)

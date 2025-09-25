@@ -100,12 +100,12 @@ import (
 )
 
 func CreateCustomNode() flyt.Node {
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Using fluent API
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Your custom logic here
             return "custom result", nil
-        }),
-    )
+        })
 }
 ```
 

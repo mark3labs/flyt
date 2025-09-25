@@ -7,19 +7,19 @@ Build resilient workflows with proper error handling and retry strategies.
 Configure retries at the node level:
 
 ```go
-node := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+// Using fluent API for clean configuration
+node := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         // This will be retried up to 3 times
         return callFlakeyAPI()
-    }),
-    flyt.WithMaxRetries(3),
-    flyt.WithWait(time.Second), // Wait 1 second between retries
-    flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+    }).
+    WithMaxRetries(3).
+    WithWait(time.Second). // Wait 1 second between retries
+    WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
         // Called after all retries fail
         log.Printf("API failed after retries: %v", err)
         return nil, nil // Return nil to handle in Post
-    }),
-)
+    })
 ```
 
 ## Exponential Backoff

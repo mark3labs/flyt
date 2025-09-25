@@ -18,8 +18,15 @@ import (
 )
 
 func main() {
-    // Create a node with Result type for better type safety
-    node := flyt.NewNode(
+    // Create a node with Result type using fluent API
+    node := flyt.NewNode().
+        WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+            fmt.Println("Processing data...")
+            return flyt.NewResult("Hello, Flyt!"), nil
+        })
+
+    // Or using traditional style with options
+    node = flyt.NewNode(
         flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
             fmt.Println("Processing data...")
             return flyt.NewResult("Hello, Flyt!"), nil
@@ -44,13 +51,12 @@ func main() {
 
 ```go
 func main() {
-    // Create a node with any type for simpler code
-    node := flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Create a node with any type using fluent API
+    node := flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             fmt.Println("Processing data...")
             return "Hello, Flyt!", nil
-        }),
-    )
+        })
 
     // Create shared store and context
     shared := flyt.NewSharedStore()
@@ -133,8 +139,9 @@ Let's add retry logic and error handling:
 func createRobustNode() flyt.Node {
     attempts := 0
     
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Using fluent API for configuration
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             attempts++
             fmt.Printf("Attempt %d...\n", attempts)
             
@@ -144,10 +151,9 @@ func createRobustNode() flyt.Node {
             }
             
             return "Success!", nil
-        }),
-        flyt.WithMaxRetries(3),
-        flyt.WithWait(time.Second),
-    )
+        }).
+        WithMaxRetries(3).
+        WithWait(time.Second)
 }
 ```
 

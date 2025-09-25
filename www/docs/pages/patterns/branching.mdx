@@ -7,19 +7,19 @@ Control flow execution dynamically based on runtime conditions using action-base
 Make yes/no decisions:
 
 ```go
-validationNode := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+// Using fluent API for clear node configuration
+validationNode := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(string)
         isValid := len(data) > 0 && len(data) < 100
         return isValid, nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         if execResult.(bool) {
             return "valid", nil
         }
         return "invalid", nil
-    }),
-)
+    })
 
 flow := flyt.NewFlow(validationNode)
 flow.Connect(validationNode, "valid", processNode)
@@ -31,8 +31,9 @@ flow.Connect(validationNode, "invalid", errorNode)
 Route to multiple paths:
 
 ```go
-categoryNode := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+// Fluent API for multi-way branching
+categoryNode := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         value := prepResult.(float64)
         
         switch {
@@ -45,11 +46,10 @@ categoryNode := flyt.NewNode(
         default:
             return "xlarge", nil
         }
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
-    }),
-)
+    })
 
 flow := flyt.NewFlow(categoryNode)
 flow.Connect(categoryNode, "small", smallHandler)
@@ -199,12 +199,13 @@ balancer := NewLoadBalancer(map[string]int{
 Create loops with exit conditions:
 
 ```go
-retryNode := flyt.NewNode(
-    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+// Clean fluent API for conditional loops
+retryNode := flyt.NewNode().
+    WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
         attempts := shared.GetInt("attempts")
         return attempts, nil
-    }),
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    }).
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         attempts := prepResult.(int)
         
         // Try operation
@@ -221,8 +222,8 @@ retryNode := flyt.NewNode(
             "success": true,
             "result": result,
         }, nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         result := execResult.(map[string]any)
         
         if result["success"].(bool) {
@@ -237,8 +238,7 @@ retryNode := flyt.NewNode(
         }
         
         return "failed", nil  // Exit loop
-    }),
-)
+    })
 
 flow := flyt.NewFlow(retryNode)
 flow.Connect(retryNode, "retry", retryNode)  // Loop back to self
@@ -252,8 +252,8 @@ Branch and merge pipelines:
 
 ```go
 // Split node decides which pipeline(s) to execute
-splitNode := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+splitNode := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(map[string]any)
         
         needsValidation := data["validate"].(bool)
@@ -267,11 +267,10 @@ splitNode := flyt.NewNode(
             return "enrich_only", nil
         }
         return "skip", nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
-    }),
-)
+    })
 
 // Build flow with different pipelines
 flow := flyt.NewFlow(splitNode)
@@ -335,12 +334,13 @@ Route based on experiment groups:
 
 ```go
 func createABTestNode(testName string, distribution map[string]int) flyt.Node {
-    return flyt.NewNode(
-        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Using fluent API with chained configuration
+    return flyt.NewNode().
+        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             userID := shared.GetString("user_id")
             return userID, nil
-        }),
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+        }).
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             userID := prepResult.(string)
             
             // Hash user ID for consistent assignment
@@ -360,13 +360,12 @@ func createABTestNode(testName string, distribution map[string]int) flyt.Node {
             }
             
             return "control", nil
-        }),
-        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        }).
+        WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             variant := execResult.(string)
             shared.Set("ab_variant", variant)
             return flyt.Action(variant), nil
-        }),
-    )
+        })
 }
 
 // Usage
