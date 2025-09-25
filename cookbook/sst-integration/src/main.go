@@ -92,7 +92,14 @@ func createDownloadNode() flyt.Node {
 		}).
 		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			// Store the image data and mime type for the next node
-			result := execResult.(map[string]any)
+			var result map[string]any
+			if r, ok := execResult.(flyt.Result); ok {
+				if err := r.Bind(&result); err != nil {
+					return flyt.DefaultAction, fmt.Errorf("failed to bind result: %w", err)
+				}
+			} else {
+				result = execResult.(map[string]any)
+			}
 			shared.Set("imageData", result["imageData"])
 			shared.Set("mimeType", result["mimeType"])
 			log.Printf("Download node completed, MIME type: %s", result["mimeType"])
@@ -191,22 +198,48 @@ func createExtractTextNode() flyt.Node {
 			return &extracted, nil
 		}).
 		WithPostFuncAny(func(ctx context.Context, store *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-			// Check if extraction failed
-			if execResult == nil {
-				log.Println("Extract text failed after retries, moving to cleanup")
-				return "skip", nil
+			// Handle Result wrapper if present
+			if r, ok := execResult.(flyt.Result); ok {
+				if r.IsError() {
+					log.Printf("Extract text failed: %v", r.Error())
+					return "skip", nil
+				}
+				if r.IsNil() {
+					log.Println("Extract text failed after retries, moving to cleanup")
+					return "skip", nil
+				}
+				// Check for unsupported type
+				if str, ok := r.Value().(string); ok && strings.HasPrefix(str, "Unsupported image type:") {
+					log.Printf("Skipping save for unsupported type: %s", str)
+					return "skip", nil
+				}
+				// Bind the extracted response
+				var response ExtractedResponse
+				if err := r.Bind(&response); err != nil {
+					// Try binding as pointer
+					var responsePtr *ExtractedResponse
+					if err := r.Bind(&responsePtr); err != nil {
+						log.Printf("Failed to bind extracted response: %v", err)
+						return "skip", nil
+					}
+					store.Set("extractedResponse", responsePtr)
+				} else {
+					store.Set("extractedResponse", &response)
+				}
+			} else {
+				// Handle non-Result types
+				if execResult == nil {
+					log.Println("Extract text failed after retries, moving to cleanup")
+					return "skip", nil
+				}
+				if str, ok := execResult.(string); ok && strings.HasPrefix(str, "Unsupported image type:") {
+					log.Printf("Skipping save for unsupported type: %s", str)
+					return "skip", nil
+				}
+				response := execResult.(*ExtractedResponse)
+				store.Set("extractedResponse", response)
+				log.Printf("Extract text node completed, title: %s, content length: %d", response.Title, len(response.Content))
 			}
-
-			// Check for unsupported type
-			if str, ok := execResult.(string); ok && strings.HasPrefix(str, "Unsupported image type:") {
-				log.Printf("Skipping save for unsupported type: %s", str)
-				return "skip", nil
-			}
-
-			// Store the extracted response for the next node
-			response := execResult.(*ExtractedResponse)
-			store.Set("extractedResponse", response)
-			log.Printf("Extract text node completed, title: %s, content length: %d", response.Title, len(response.Content))
 
 			return flyt.DefaultAction, nil
 		}).
