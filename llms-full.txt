@@ -918,12 +918,13 @@ Process large datasets in chunks:
 
 ```go
 func createChunkedProcessor(chunkSize int) flyt.Node {
-    return flyt.NewNode(
-        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Using fluent API for chunked processing
+    return flyt.NewNode().
+        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             items := shared.GetSlice("items")
             return items, nil
-        }),
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+        }).
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             items := prepResult.([]any)
             results := make([]any, 0, len(items))
             
@@ -940,8 +941,7 @@ func createChunkedProcessor(chunkSize int) flyt.Node {
             }
             
             return results, nil
-        }),
-    )
+        })
 }
 ```
 
@@ -3209,18 +3209,18 @@ flow.Connect(node1, flyt.DefaultAction, node2)
 #### Simple Branching
 
 ```go
-validationNode := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+// Using fluent API for cleaner code
+validationNode := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(string)
         return len(data) > 0, nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         if execResult.(bool) {
             return "valid", nil
         }
         return "invalid", nil
-    }),
-)
+    })
 
 flow := flyt.NewFlow(validationNode)
 flow.Connect(validationNode, "valid", processNode)
@@ -3230,8 +3230,9 @@ flow.Connect(validationNode, "invalid", errorNode)
 #### Multi-Way Branching
 
 ```go
-categoryNode := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+// Fluent API for multi-way branching
+categoryNode := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         value := prepResult.(int)
         if value < 10 {
             return "small", nil
@@ -3239,11 +3240,10 @@ categoryNode := flyt.NewNode(
             return "medium", nil
         }
         return "large", nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
-    }),
-)
+    })
 
 flow := flyt.NewFlow(categoryNode)
 flow.Connect(categoryNode, "small", smallHandler)
@@ -3644,8 +3644,9 @@ Flyt provides two styles of helper functions for creating nodes:
 Use `WithPrepFunc`, `WithExecFunc`, and `WithPostFunc` for type-safe operations with the Result type:
 
 ```go
-node := flyt.NewNode(
-    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
+// Using fluent API for cleaner chaining
+node := flyt.NewNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
         // Use type-safe getters
         message := shared.GetString("message")
         retryCount := shared.GetIntOr("retry_count", 0)
@@ -3654,8 +3655,8 @@ node := flyt.NewNode(
             "message": message,
             "retry": retryCount,
         }), nil
-    }),
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+    }).
+    WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
         // Type-safe access to data
         data := prepResult.AsMapOr(nil)
         message := data["message"].(string)
@@ -3663,8 +3664,8 @@ node := flyt.NewNode(
         // Process and return Result
         processed := processMessage(message)
         return flyt.NewResult(processed), nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
         // Type-safe result handling
         result := execResult.Value()
         shared.Set("result", result)
@@ -3673,8 +3674,7 @@ node := flyt.NewNode(
             return "max_retries", nil
         }
         return flyt.DefaultAction, nil
-    }),
-)
+    })
 ```
 
 ##### Any-based Functions (Simple)
@@ -3682,8 +3682,9 @@ node := flyt.NewNode(
 Use `WithPrepFuncAny`, `WithExecFuncAny`, and `WithPostFuncAny` for simpler cases or backward compatibility:
 
 ```go
-node := flyt.NewNode(
-    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+// Using fluent API with any-based functions
+node := flyt.NewNode().
+    WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
         // Direct any types
         message := shared.GetString("message")
         retryCount := shared.GetIntOr("retry_count", 0)
@@ -3692,13 +3693,13 @@ node := flyt.NewNode(
             "message": message,
             "retry": retryCount,
         }, nil
-    }),
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    }).
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(map[string]any)
         // Process the data
         return processMessage(data["message"].(string)), nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         // Store result and determine action
         shared.Set("result", execResult)
         
@@ -3706,8 +3707,7 @@ node := flyt.NewNode(
             return "max_retries", nil
         }
         return flyt.DefaultAction, nil
-    }),
-)
+    })
 ```
 
 #### Choosing Between Result and Any
@@ -3761,24 +3761,31 @@ func (n *DatabaseNode) Exec(ctx context.Context, prepResult any) (any, error) {
 Configure node behavior with options:
 
 ```go
-// With Result type
-node := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, input flyt.Result) (flyt.Result, error) {
+// With Result type using fluent API
+node := flyt.NewNode().
+    WithExecFunc(func(ctx context.Context, input flyt.Result) (flyt.Result, error) {
         // Type-safe operations
         return flyt.NewResult(processData(input.Value())), nil
-    }),
-    flyt.WithMaxRetries(3),        // Retry up to 3 times
-    flyt.WithWait(time.Second * 2), // Wait 2 seconds between retries
-)
+    }).
+    WithMaxRetries(3).        // Retry up to 3 times
+    WithWait(time.Second * 2) // Wait 2 seconds between retries
 
-// With any type
-node := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, input any) (any, error) {
+// With any type using fluent API  
+node := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, input any) (any, error) {
         // Direct any handling
         return processData(input), nil
+    }).
+    WithMaxRetries(3).        // Retry up to 3 times
+    WithWait(time.Second * 2) // Wait 2 seconds between retries
+
+// Traditional style still supported
+node := flyt.NewNode(
+    flyt.WithExecFuncAny(func(ctx context.Context, input any) (any, error) {
+        return processData(input), nil
     }),
-    flyt.WithMaxRetries(3),        // Retry up to 3 times
-    flyt.WithWait(time.Second * 2), // Wait 2 seconds between retries
+    flyt.WithMaxRetries(3),
+    flyt.WithWait(time.Second * 2),
 )
 ```
 
@@ -4308,8 +4315,15 @@ import (
 )
 
 func main() {
-    // Create a node with Result type for better type safety
-    node := flyt.NewNode(
+    // Create a node with Result type using fluent API
+    node := flyt.NewNode().
+        WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+            fmt.Println("Processing data...")
+            return flyt.NewResult("Hello, Flyt!"), nil
+        })
+
+    // Or using traditional style with options
+    node = flyt.NewNode(
         flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
             fmt.Println("Processing data...")
             return flyt.NewResult("Hello, Flyt!"), nil
@@ -4334,13 +4348,12 @@ func main() {
 
 ```go
 func main() {
-    // Create a node with any type for simpler code
-    node := flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Create a node with any type using fluent API
+    node := flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             fmt.Println("Processing data...")
             return "Hello, Flyt!", nil
-        }),
-    )
+        })
 
     // Create shared store and context
     shared := flyt.NewSharedStore()
@@ -4423,8 +4436,9 @@ Let's add retry logic and error handling:
 func createRobustNode() flyt.Node {
     attempts := 0
     
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Using fluent API for configuration
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             attempts++
             fmt.Printf("Attempt %d...\n", attempts)
             
@@ -4434,10 +4448,9 @@ func createRobustNode() flyt.Node {
             }
             
             return "Success!", nil
-        }),
-        flyt.WithMaxRetries(3),
-        flyt.WithWait(time.Second),
-    )
+        }).
+        WithMaxRetries(3).
+        WithWait(time.Second)
 }
 ```
 
@@ -4584,12 +4597,12 @@ import (
 )
 
 func CreateCustomNode() flyt.Node {
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Using fluent API
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // Your custom logic here
             return "custom result", nil
-        }),
-    )
+        })
 }
 ```
 
@@ -4661,19 +4674,19 @@ Control flow execution dynamically based on runtime conditions using action-base
 Make yes/no decisions:
 
 ```go
-validationNode := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+// Using fluent API for clear node configuration
+validationNode := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(string)
         isValid := len(data) > 0 && len(data) < 100
         return isValid, nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         if execResult.(bool) {
             return "valid", nil
         }
         return "invalid", nil
-    }),
-)
+    })
 
 flow := flyt.NewFlow(validationNode)
 flow.Connect(validationNode, "valid", processNode)
@@ -4685,8 +4698,9 @@ flow.Connect(validationNode, "invalid", errorNode)
 Route to multiple paths:
 
 ```go
-categoryNode := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+// Fluent API for multi-way branching
+categoryNode := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         value := prepResult.(float64)
         
         switch {
@@ -4699,11 +4713,10 @@ categoryNode := flyt.NewNode(
         default:
             return "xlarge", nil
         }
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
-    }),
-)
+    })
 
 flow := flyt.NewFlow(categoryNode)
 flow.Connect(categoryNode, "small", smallHandler)
@@ -4853,12 +4866,13 @@ balancer := NewLoadBalancer(map[string]int{
 Create loops with exit conditions:
 
 ```go
-retryNode := flyt.NewNode(
-    flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+// Clean fluent API for conditional loops
+retryNode := flyt.NewNode().
+    WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
         attempts := shared.GetInt("attempts")
         return attempts, nil
-    }),
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    }).
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         attempts := prepResult.(int)
         
         // Try operation
@@ -4875,8 +4889,8 @@ retryNode := flyt.NewNode(
             "success": true,
             "result": result,
         }, nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         result := execResult.(map[string]any)
         
         if result["success"].(bool) {
@@ -4891,8 +4905,7 @@ retryNode := flyt.NewNode(
         }
         
         return "failed", nil  // Exit loop
-    }),
-)
+    })
 
 flow := flyt.NewFlow(retryNode)
 flow.Connect(retryNode, "retry", retryNode)  // Loop back to self
@@ -4906,8 +4919,8 @@ Branch and merge pipelines:
 
 ```go
 // Split node decides which pipeline(s) to execute
-splitNode := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+splitNode := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         data := prepResult.(map[string]any)
         
         needsValidation := data["validate"].(bool)
@@ -4921,11 +4934,10 @@ splitNode := flyt.NewNode(
             return "enrich_only", nil
         }
         return "skip", nil
-    }),
-    flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+    }).
+    WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
         return flyt.Action(execResult.(string)), nil
-    }),
-)
+    })
 
 // Build flow with different pipelines
 flow := flyt.NewFlow(splitNode)
@@ -4989,12 +5001,13 @@ Route based on experiment groups:
 
 ```go
 func createABTestNode(testName string, distribution map[string]int) flyt.Node {
-    return flyt.NewNode(
-        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Using fluent API with chained configuration
+    return flyt.NewNode().
+        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             userID := shared.GetString("user_id")
             return userID, nil
-        }),
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+        }).
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             userID := prepResult.(string)
             
             // Hash user ID for consistent assignment
@@ -5014,13 +5027,12 @@ func createABTestNode(testName string, distribution map[string]int) flyt.Node {
             }
             
             return "control", nil
-        }),
-        flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+        }).
+        WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
             variant := execResult.(string)
             shared.Set("ab_variant", variant)
             return flyt.Action(variant), nil
-        }),
-    )
+        })
 }
 
 // Usage
@@ -5057,8 +5069,9 @@ Pass configuration to nodes using closures:
 
 ```go
 func createAPINode(apiKey string, baseURL string) flyt.Node {
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Using fluent API with closure
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             // apiKey and baseURL are captured in the closure
             url := fmt.Sprintf("%s/data", baseURL)
             req, _ := http.NewRequest("GET", url, nil)
@@ -5074,8 +5087,7 @@ func createAPINode(apiKey string, baseURL string) flyt.Node {
             var data map[string]any
             json.NewDecoder(resp.Body).Decode(&data)
             return data, nil
-        }),
-    )
+        })
 }
 
 // Usage
@@ -5091,16 +5103,16 @@ func createCounterNode() flyt.Node {
     count := 0
     mu := &sync.Mutex{}
     
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Fluent API with stateful closure
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             mu.Lock()
             count++
             current := count
             mu.Unlock()
             
             return fmt.Sprintf("Execution #%d", current), nil
-        }),
-    )
+        })
 }
 ```
 
@@ -5126,8 +5138,9 @@ func createDatabaseNode(config DatabaseConfig) flyt.Node {
     db, _ := sql.Open("mysql", dsn)
     db.SetMaxOpenConns(config.MaxConns)
     
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Clean fluent API with configuration
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             query := prepResult.(string)
             rows, err := db.QueryContext(ctx, query)
             if err != nil {
@@ -5138,8 +5151,7 @@ func createDatabaseNode(config DatabaseConfig) flyt.Node {
             var results []map[string]any
             // Process rows...
             return results, nil
-        }),
-    )
+        })
 }
 
 // Usage
@@ -5159,13 +5171,14 @@ Create specialized node variants:
 
 ```go
 func createHTTPNode(method string, headers map[string]string) flyt.Node {
-    return flyt.NewNode(
-        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+    // Fluent API for factory function
+    return flyt.NewNode().
+        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
             url := shared.GetString("url")
             body := shared.GetMap("body")
             return map[string]any{"url": url, "body": body}, nil
-        }),
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+        }).
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             data := prepResult.(map[string]any)
             url := data["url"].(string)
             
@@ -5192,8 +5205,7 @@ func createHTTPNode(method string, headers map[string]string) flyt.Node {
             var result map[string]any
             json.NewDecoder(resp.Body).Decode(&result)
             return result, nil
-        }),
-    )
+        })
 }
 
 // Create specialized nodes
@@ -5216,8 +5228,9 @@ func createFileProcessorNode(bufferSize int) flyt.Node {
     // Pre-allocate buffer
     buffer := make([]byte, bufferSize)
     
-    return flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+    // Fluent API with resource management
+    return flyt.NewNode().
+        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
             filePath := prepResult.(string)
             
             file, err := os.Open(filePath)
@@ -5234,8 +5247,7 @@ func createFileProcessorNode(bufferSize int) flyt.Node {
             
             // Process buffer[:n]
             return processData(buffer[:n]), nil
-        }),
-    )
+        })
 }
 ```
 
@@ -5359,19 +5371,19 @@ Build resilient workflows with proper error handling and retry strategies.
 Configure retries at the node level:
 
 ```go
-node := flyt.NewNode(
-    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+// Using fluent API for clean configuration
+node := flyt.NewNode().
+    WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
         // This will be retried up to 3 times
         return callFlakeyAPI()
-    }),
-    flyt.WithMaxRetries(3),
-    flyt.WithWait(time.Second), // Wait 1 second between retries
-    flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+    }).
+    WithMaxRetries(3).
+    WithWait(time.Second). // Wait 1 second between retries
+    WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
         // Called after all retries fail
         log.Printf("API failed after retries: %v", err)
         return nil, nil // Return nil to handle in Post
-    }),
-)
+    })
 ```
 
 ### Exponential Backoff
