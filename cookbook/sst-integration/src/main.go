@@ -386,47 +386,98 @@ func HandleS3Event(ctx context.Context, s3Event events.S3Event) error {
 		total: len(s3Event.Records),
 	}
 
-	// Create batch function that generates inputs for each S3 record
-	batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-		inputs := make([]flyt.FlowInputs, len(s3Event.Records))
+	// Get the flow factory
+	flowFactory := createImageProcessingFlowFactory(tracker)
 
-		for i, record := range s3Event.Records {
-			inputs[i] = flyt.FlowInputs{
-				"bucket": record.S3.Bucket.Name,
-				"key":    record.S3.Object.Key,
-				"index":  i + 1,
+	// Create batch node that processes S3 records through the flow factory
+	batchNode := flyt.NewBatchNode().
+		WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+			// Extract S3 records to process
+			records, _ := shared.Get("s3Records")
+			s3Records := records.([]events.S3EventRecord)
+
+			results := make([]flyt.Result, len(s3Records))
+			for i, record := range s3Records {
+				results[i] = flyt.NewResult(map[string]interface{}{
+					"bucket": record.S3.Bucket.Name,
+					"key":    record.S3.Object.Key,
+					"index":  i + 1,
+				})
+				log.Printf("Queued record %d/%d: s3://%s/%s",
+					i+1, len(s3Records),
+					record.S3.Bucket.Name,
+					record.S3.Object.Key)
 			}
-			log.Printf("Queued record %d/%d: s3://%s/%s",
-				i+1, len(s3Event.Records),
-				record.S3.Bucket.Name,
-				record.S3.Object.Key)
-		}
+			return results, nil
+		}).
+		WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+			// Create a new flow instance for this S3 record
+			flow := flowFactory()
 
-		return inputs, nil
-	}
+			// Create an isolated shared store for this flow
+			flowShared := flyt.NewSharedStore()
+			data := item.Value().(map[string]interface{})
+			flowShared.Set("bucket", data["bucket"])
+			flowShared.Set("key", data["key"])
+			flowShared.Set("index", data["index"])
 
-	// Create batch flow with concurrent processing
-	batchFlow := flyt.NewBatchFlow(
-		createImageProcessingFlowFactory(tracker),
-		batchFunc,
-		true, // Enable concurrent processing
-	)
+			// Run the flow
+			_, err := flyt.Run(ctx, flow, flowShared)
+			if err != nil {
+				log.Printf("Flow failed for s3://%s/%s: %v", data["bucket"], data["key"], err)
+				return flyt.NewErrorResult(err), nil
+			}
 
-	// Run the batch flow
+			// Return success with the key that was processed
+			return flyt.NewResult(data["key"]), nil
+		}).
+		WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prep []flyt.Result, exec []flyt.Result) (flyt.Action, error) {
+			// Count successes and failures
+			var processed []string
+			var errors []error
+
+			for _, r := range exec {
+				if r.IsError() {
+					errors = append(errors, r.Error())
+				} else if r.Value() != nil {
+					processed = append(processed, r.Value().(string))
+				}
+			}
+
+			shared.Set("processed", processed)
+			shared.Set("errors", errors)
+
+			log.Printf("Batch processing complete - Processed: %d, Errors: %d",
+				len(processed), len(errors))
+
+			return flyt.DefaultAction, nil
+		}).
+		WithBatchConcurrency(3) // Process up to 3 images concurrently
+
+	// Run the batch node
 	shared := flyt.NewSharedStore()
-	if err := batchFlow.Run(ctx, shared); err != nil {
-		log.Printf("Batch flow failed: %v", err)
-		return fmt.Errorf("batch flow failed: %w", err)
+	shared.Set("s3Records", s3Event.Records)
+
+	_, err := flyt.Run(ctx, batchNode, shared)
+	if err != nil {
+		log.Printf("Batch processing failed: %v", err)
+		return fmt.Errorf("batch processing failed: %w", err)
 	}
 
-	log.Printf("Successfully processed all %d records - Completed: %d, Failed: %d",
-		tracker.total,
-		atomic.LoadInt32(&tracker.completed),
-		atomic.LoadInt32(&tracker.failed))
+	// Check results
+	processed, _ := shared.Get("processed")
+	errors, _ := shared.Get("errors")
+
+	processedKeys := processed.([]string)
+	processingErrors := errors.([]error)
+
+	log.Printf("Successfully processed %d/%d records",
+		len(processedKeys), len(s3Event.Records))
 
 	// Return error if any records failed
-	if failed := atomic.LoadInt32(&tracker.failed); failed > 0 {
-		return fmt.Errorf("%d out of %d records failed processing", failed, tracker.total)
+	if len(processingErrors) > 0 {
+		return fmt.Errorf("%d out of %d records failed processing",
+			len(processingErrors), len(s3Event.Records))
 	}
 
 	return nil
