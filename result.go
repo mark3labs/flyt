@@ -11,11 +11,17 @@ import (
 // It can hold any value and provides type-safe accessors.
 type Result struct {
 	value any
+	err   error // Store error if this result represents a failure
 }
 
 // NewResult creates a new Result from any value.
 func NewResult(v any) Result {
 	return Result{value: v}
+}
+
+// NewErrorResult creates a new Result representing an error.
+func NewErrorResult(err error) Result {
+	return Result{err: err}
 }
 
 // R is a shorthand for NewResult.
@@ -346,8 +352,22 @@ func (r Result) Type() string {
 
 // Value returns the underlying value as any.
 // This is useful when you need to pass the Result to functions expecting any.
+// Returns nil if the Result represents an error.
 func (r Result) Value() any {
+	if r.err != nil {
+		return nil
+	}
 	return r.value
+}
+
+// IsError checks if the Result represents an error.
+func (r Result) IsError() bool {
+	return r.err != nil
+}
+
+// Error returns the error if this Result represents a failure, nil otherwise.
+func (r Result) Error() error {
+	return r.err
 }
 
 // As attempts to retrieve the Result as the specified type T.

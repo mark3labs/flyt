@@ -488,6 +488,10 @@ type BaseNode struct {
 	mu         sync.RWMutex
 	maxRetries int
 	wait       time.Duration
+
+	// Batch configuration
+	batchConcurrency   int    // 0 = sequential, >0 = concurrent with limit
+	batchErrorHandling string // "stop", "continue"
 }
 
 // NewBaseNode creates a new BaseNode with the provided options.
@@ -545,6 +549,35 @@ func WithWait(wait time.Duration) NodeOption {
 	}
 }
 
+// WithBatchConcurrency sets the concurrency level for batch processing.
+// 0 means sequential processing, >0 means concurrent with the specified limit.
+//
+// Example:
+//
+//	node := flyt.NewBatchNode(flyt.WithBatchConcurrency(10))
+func WithBatchConcurrency(n int) NodeOption {
+	return func(node *BaseNode) {
+		node.batchConcurrency = n
+	}
+}
+
+// WithBatchErrorHandling sets the error handling strategy for batch processing.
+// If continueOnError is true, processing continues even if some items fail.
+// If false, processing stops on the first error.
+//
+// Example:
+//
+//	node := flyt.NewBatchNode(flyt.WithBatchErrorHandling(true))
+func WithBatchErrorHandling(continueOnError bool) NodeOption {
+	return func(node *BaseNode) {
+		if continueOnError {
+			node.batchErrorHandling = "continue"
+		} else {
+			node.batchErrorHandling = "stop"
+		}
+	}
+}
+
 // GetMaxRetries returns the maximum number of retries configured for this node.
 // This method is thread-safe.
 func (n *BaseNode) GetMaxRetries() int {
@@ -559,6 +592,25 @@ func (n *BaseNode) GetWait() time.Duration {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.wait
+}
+
+// GetBatchConcurrency returns the batch concurrency level configured for this node.
+// This method is thread-safe.
+func (n *BaseNode) GetBatchConcurrency() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.batchConcurrency
+}
+
+// GetBatchErrorHandling returns the batch error handling strategy configured for this node.
+// This method is thread-safe.
+func (n *BaseNode) GetBatchErrorHandling() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if n.batchErrorHandling == "" {
+		return "continue" // default
+	}
+	return n.batchErrorHandling
 }
 
 // Prep is the default prep implementation that returns nil.
@@ -639,6 +691,14 @@ type FallbackNode interface {
 //	    log.Fatal(err)
 //	}
 func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
+	// Check if this is a BatchNode
+	if _, ok := node.(*BatchNode); ok {
+		return runBatch(ctx, node, shared)
+	}
+	if batchBuilder, ok := node.(*BatchNodeBuilder); ok {
+		return runBatch(ctx, batchBuilder.BatchNode, shared)
+	}
+
 	// Check context before each phase
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("run: context cancelled: %w", err)
@@ -1098,6 +1158,10 @@ func (n *CustomNode) Prep(ctx context.Context, shared *SharedStore) (any, error)
 // Exec implements Node.Exec by calling the custom execFunc if provided
 func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	if n.execFunc != nil {
+		// Check if prepResult is already a Result (when called from batch processing)
+		if r, ok := prepResult.(Result); ok {
+			return n.execFunc(ctx, r)
+		}
 		return n.execFunc(ctx, NewResult(prepResult))
 	}
 	return n.BaseNode.Exec(ctx, prepResult)

@@ -120,3 +120,21 @@ func (b *NodeBuilder) WithPostFuncAny(fn func(context.Context, *SharedStore, any
 	}
 	return b
 }
+
+// WithBatchConcurrency sets the concurrency level for batch processing.
+// Returns the builder for method chaining.
+func (b *NodeBuilder) WithBatchConcurrency(n int) *NodeBuilder {
+	b.CustomNode.BaseNode.batchConcurrency = n
+	return b
+}
+
+// WithBatchErrorHandling sets the error handling strategy for batch processing.
+// Returns the builder for method chaining.
+func (b *NodeBuilder) WithBatchErrorHandling(continueOnError bool) *NodeBuilder {
+	if continueOnError {
+		b.CustomNode.BaseNode.batchErrorHandling = "continue"
+	} else {
+		b.CustomNode.BaseNode.batchErrorHandling = "stop"
+	}
+	return b
+}
