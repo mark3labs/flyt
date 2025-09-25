@@ -1,112 +1,178 @@
 # Batch Processing
 
-Process collections of items efficiently with concurrent or sequential execution.
+Process collections of items efficiently with concurrent or sequential execution using BatchNode.
 
 ## Basic Batch Processing
 
-Process items with a simple function:
+BatchNode simplifies batch processing by working almost exactly like regular nodes. The framework automatically handles iteration when Prep returns `[]Result`:
 
 ```go
-// Define processing function
-processFunc := func(ctx context.Context, item any) (any, error) {
-    // Process each item
-    return fmt.Sprintf("processed: %v", item), nil
-}
+// Create a batch node
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Return []Result to trigger batch processing
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Process individual item - called automatically for each item
+        data := item.Value().(string)
+        processed := fmt.Sprintf("processed: %v", data)
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        // Called once with all results aggregated
+        var successful []any
+        for _, result := range results {
+            if !result.IsError() {
+                successful = append(successful, result.Value())
+            }
+        }
+        shared.Set("results", successful)
+        return flyt.DefaultAction, nil
+    })
 
-// Create batch node
-batchNode := flyt.NewBatchNode(processFunc, true) // true for concurrent
-
-// Set items in shared store
+// Set items and run
 shared := flyt.NewSharedStore()
 shared.Set("items", []string{"item1", "item2", "item3"})
 
-// Run batch processing
 ctx := context.Background()
 action, err := flyt.Run(ctx, batchNode, shared)
 
-// Get results using type-safe getter
+// Get results
 results := shared.GetSlice("results")
 fmt.Println(results) // ["processed: item1", "processed: item2", "processed: item3"]
 ```
 
 ## Sequential vs Concurrent
 
-Choose the right execution mode:
+Configure concurrency for your needs:
 
 ```go
 // Sequential processing - maintains order
-sequentialNode := flyt.NewBatchNode(processFunc, false)
+sequentialNode := flyt.NewBatchNode().
+    WithPrepFunc(prepFunc).
+    WithExecFunc(execFunc).
+    WithPostFunc(postFunc).
+    WithBatchConcurrency(0)  // 0 = sequential
 
 // Concurrent processing - faster but unordered
-concurrentNode := flyt.NewBatchNode(processFunc, true)
-```
-
-## Custom Keys
-
-Use custom keys for input and output:
-
-```go
-batchNode := flyt.NewBatchNodeWithKeys(
-    processFunc,
-    true,           // concurrent
-    "input_data",   // custom input key
-    "output_data",  // custom output key
-)
-
-shared.Set("input_data", items)
-// Results will be in "output_data"
+concurrentNode := flyt.NewBatchNode().
+    WithPrepFunc(prepFunc).
+    WithExecFunc(execFunc).
+    WithPostFunc(postFunc).
+    WithBatchConcurrency(10)  // Process up to 10 items concurrently
 ```
 
 ## Advanced Configuration
 
-Fine-tune batch processing with BatchConfig:
+Configure batch processing behavior:
 
 ```go
-config := &flyt.BatchConfig{
-    BatchSize:   10,        // Process 10 items at a time
-    Concurrency: 5,         // Use 5 concurrent workers
-    ItemsKey:    "data",    // Key for input items
-    ResultsKey:  "output",  // Key for results
-    CountKey:    "total",   // Key for processed count
-}
-
-processFunc := func(ctx context.Context, item any) (any, error) {
-    // Heavy processing
-    time.Sleep(100 * time.Millisecond)
-    return processItem(item)
-}
-
-batchNode := flyt.NewBatchNodeWithConfig(processFunc, true, config)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        users := shared.GetSlice("users")
+        results := make([]flyt.Result, len(users))
+        for i, user := range users {
+            results[i] = flyt.NewResult(user)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, user flyt.Result) (flyt.Result, error) {
+        // Heavy processing for each user
+        userData := user.AsMapOr(nil)
+        if userData == nil {
+            return flyt.Result{}, fmt.Errorf("invalid user data")
+        }
+        
+        time.Sleep(100 * time.Millisecond)  // Simulate work
+        processed, err := processUser(userData)
+        if err != nil {
+            return flyt.Result{}, err
+        }
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, users, results []flyt.Result) (flyt.Action, error) {
+        successCount := 0
+        errorCount := 0
+        
+        for _, result := range results {
+            if result.IsError() {
+                errorCount++
+            } else {
+                successCount++
+            }
+        }
+        
+        shared.Set("success_count", successCount)
+        shared.Set("error_count", errorCount)
+        
+        log.Printf("Processed %d successfully, %d failed", successCount, errorCount)
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(5).       // Use 5 concurrent workers
+    WithBatchErrorHandling(true).  // Continue processing even if some items fail
+    WithMaxRetries(3).             // Retry each item up to 3 times
+    WithWait(time.Second)          // Wait between retries
 ```
 
 ## Error Handling
 
-Handle errors in batch operations:
+The BatchNode API provides clean per-item error handling:
 
 ```go
-processFunc := func(ctx context.Context, item any) (any, error) {
-    if item.(int) < 0 {
-        return nil, fmt.Errorf("negative value: %v", item)
-    }
-    return item.(int) * 2, nil
-}
-
-batchNode := flyt.NewBatchNode(processFunc, true)
-shared.Set("items", []int{1, -2, 3, -4, 5})
-
-action, err := flyt.Run(ctx, batchNode, shared)
-if err != nil {
-    if batchErr, ok := err.(*flyt.BatchError); ok {
-        fmt.Printf("Batch processing failed: %s\n", batchErr.Message)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Some items might already be invalid
+        return []flyt.Result{
+            flyt.NewResult(1),
+            flyt.NewResult(-2),  // Will cause error
+            flyt.NewResult(3),
+            flyt.NewErrorResult(errors.New("pre-existing error")),
+            flyt.NewResult(5),
+        }, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Check for pre-existing errors
+        if item.IsError() {
+            return item, nil  // Pass through
+        }
         
-        // Access individual errors
-        for i, e := range batchErr.Errors {
-            if e != nil {
-                fmt.Printf("Item %d failed: %v\n", i, e)
+        value := item.AsIntOr(0)
+        if value < 0 {
+            return flyt.Result{}, fmt.Errorf("negative value: %d", value)
+        }
+        return flyt.NewResult(value * 2), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var successful []int
+        var errors []error
+        
+        for i, result := range results {
+            if result.IsError() {
+                errors = append(errors, result.Error())
+                log.Printf("Item %d failed: %v", i, result.Error())
+            } else {
+                successful = append(successful, result.AsIntOr(0))
             }
         }
-    }
-}
+        
+        shared.Set("successful", successful)
+        shared.Set("error_count", len(errors))
+        
+        // Return different actions based on results
+        if len(errors) == len(results) {
+            return "all_failed", nil
+        } else if len(errors) > 0 {
+            return "partial_success", nil
+        }
+        return "all_success", nil
+    }).
+    WithBatchErrorHandling(true)  // Continue processing despite errors
 ```
 
 ## Batch Processing Patterns
@@ -116,16 +182,41 @@ if err != nil {
 Transform each item:
 
 ```go
-mapFunc := func(ctx context.Context, item any) (any, error) {
-    user := item.(User)
-    return UserDTO{
-        ID:   user.ID,
-        Name: user.Name,
-        Age:  user.Age,
-    }, nil
-}
-
-mapNode := flyt.NewBatchNode(mapFunc, true)
+mapNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        users := shared.GetSlice("users")
+        results := make([]flyt.Result, len(users))
+        for i, user := range users {
+            results[i] = flyt.NewResult(user)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        var user User
+        if err := item.Bind(&user); err != nil {
+            return flyt.Result{}, err
+        }
+        
+        // Transform to DTO
+        dto := UserDTO{
+            ID:   user.ID,
+            Name: user.Name,
+            Age:  user.Age,
+        }
+        return flyt.NewResult(dto), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var dtos []UserDTO
+        for _, result := range results {
+            if !result.IsError() {
+                var dto UserDTO
+                result.Bind(&dto)
+                dtos = append(dtos, dto)
+            }
+        }
+        shared.Set("user_dtos", dtos)
+        return flyt.DefaultAction, nil
+    })
 ```
 
 ### Filter Pattern
@@ -133,72 +224,75 @@ mapNode := flyt.NewBatchNode(mapFunc, true)
 Process only matching items:
 
 ```go
-filterFunc := func(ctx context.Context, item any) (any, error) {
-    value := item.(int)
-    if value > 10 {
-        return value, nil
-    }
-    return nil, nil  // Skip this item
-}
-
-filterNode := flyt.NewBatchNode(filterFunc, true)
-```
-
-### Reduce Pattern
-
-Aggregate results:
-
-```go
-type SumNode struct {
-    *flyt.BaseNode
-    total int
-    mu    sync.Mutex
-}
-
-func (n *SumNode) Exec(ctx context.Context, prepResult any) (any, error) {
-    items := prepResult.([]int)
-    
-    for _, item := range items {
-        n.mu.Lock()
-        n.total += item
-        n.mu.Unlock()
-    }
-    
-    return n.total, nil
-}
-```
-
-## Chunked Processing
-
-Process large datasets in chunks:
-
-```go
-func createChunkedProcessor(chunkSize int) flyt.Node {
-    // Using fluent API for chunked processing
-    return flyt.NewNode().
-        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            items := shared.GetSlice("items")
-            return items, nil
-        }).
-        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
-            items := prepResult.([]any)
-            results := make([]any, 0, len(items))
-            
-            // Process in chunks
-            for i := 0; i < len(items); i += chunkSize {
-                end := i + chunkSize
-                if end > len(items) {
-                    end = len(items)
-                }
-                
-                chunk := items[i:end]
-                chunkResults := processChunk(chunk)
-                results = append(results, chunkResults...)
+filterNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        numbers := shared.GetSlice("numbers")
+        results := make([]flyt.Result, len(numbers))
+        for i, num := range numbers {
+            results[i] = flyt.NewResult(num)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        value := item.AsIntOr(0)
+        if value > 10 {
+            return item, nil  // Keep this item
+        }
+        return flyt.NewErrorResult(fmt.Errorf("filtered out: %d", value)), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var filtered []int
+        for _, result := range results {
+            if !result.IsError() {
+                filtered = append(filtered, result.AsIntOr(0))
             }
-            
-            return results, nil
-        })
-}
+        }
+        shared.Set("filtered", filtered)
+        return flyt.DefaultAction, nil
+    })
+```
+
+### Aggregation Pattern
+
+Aggregate results in Post:
+
+```go
+sumNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        numbers := shared.GetSlice("numbers")
+        results := make([]flyt.Result, len(numbers))
+        for i, num := range numbers {
+            results[i] = flyt.NewResult(num)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Just validate and pass through
+        value := item.AsIntOr(0)
+        if value < 0 {
+            return flyt.Result{}, fmt.Errorf("negative number not allowed")
+        }
+        return item, nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        total := 0
+        count := 0
+        
+        for _, result := range results {
+            if !result.IsError() {
+                total += result.AsIntOr(0)
+                count++
+            }
+        }
+        
+        shared.Set("sum", total)
+        shared.Set("count", count)
+        if count > 0 {
+            shared.Set("average", float64(total)/float64(count))
+        }
+        
+        return flyt.DefaultAction, nil
+    })
 ```
 
 ## Progress Tracking
@@ -206,60 +300,98 @@ func createChunkedProcessor(chunkSize int) flyt.Node {
 Monitor batch processing progress:
 
 ```go
-type ProgressBatchNode struct {
-    *flyt.BaseNode
-    processed int32
-    total     int32
-}
-
-func (n *ProgressBatchNode) processWithProgress(ctx context.Context, items []any) ([]any, error) {
-    n.total = int32(len(items))
-    results := make([]any, len(items))
-    
-    var wg sync.WaitGroup
-    for i, item := range items {
-        wg.Add(1)
-        go func(idx int, data any) {
-            defer wg.Done()
-            
-            result, _ := processItem(data)
-            results[idx] = result
-            
-            // Update progress
-            current := atomic.AddInt32(&n.processed, 1)
-            progress := float64(current) / float64(n.total) * 100
-            
-            if current%10 == 0 || current == n.total {
-                log.Printf("Progress: %.1f%% (%d/%d)", progress, current, n.total)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
+        }
+        log.Printf("Starting batch processing of %d items", len(results))
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Process item
+        result, err := processItem(item.Value())
+        if err != nil {
+            return flyt.Result{}, err
+        }
+        return flyt.NewResult(result), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        processed := 0
+        failed := 0
+        
+        for _, result := range results {
+            if result.IsError() {
+                failed++
+            } else {
+                processed++
             }
-        }(i, item)
-    }
-    
-    wg.Wait()
-    return results, nil
-}
+        }
+        
+        log.Printf("Batch complete: %d/%d successful, %d failed", 
+                   processed, len(items), failed)
+        
+        shared.Set("stats", map[string]int{
+            "total":      len(items),
+            "processed":  processed,
+            "failed":     failed,
+        })
+        
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(5)
 ```
 
 ## Rate-Limited Batch Processing
 
-Control processing rate:
+Control processing rate with external limiters:
 
 ```go
-func createRateLimitedBatchNode(rps int) flyt.Node {
-    limiter := rate.NewLimiter(rate.Limit(rps), 1)
-    
-    processFunc := func(ctx context.Context, item any) (any, error) {
-        // Wait for rate limiter
-        if err := limiter.Wait(ctx); err != nil {
-            return nil, err
-        }
-        
-        // Process item
-        return callAPI(item)
-    }
-    
-    return flyt.NewBatchNode(processFunc, true)
+func createRateLimitedBatchNode(limiter *rate.Limiter) *flyt.BatchNodeBuilder {
+    return flyt.NewBatchNode().
+        WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+            items := shared.GetSlice("api_requests")
+            results := make([]flyt.Result, len(items))
+            for i, item := range items {
+                results[i] = flyt.NewResult(item)
+            }
+            return results, nil
+        }).
+        WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+            // Wait for rate limiter
+            if err := limiter.Wait(ctx); err != nil {
+                return flyt.Result{}, fmt.Errorf("rate limit wait failed: %w", err)
+            }
+            
+            // Make API call
+            request := item.Value().(APIRequest)
+            response, err := callAPI(request)
+            if err != nil {
+                return flyt.Result{}, err
+            }
+            
+            return flyt.NewResult(response), nil
+        }).
+        WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+            var responses []APIResponse
+            for _, result := range results {
+                if !result.IsError() {
+                    var resp APIResponse
+                    result.Bind(&resp)
+                    responses = append(responses, resp)
+                }
+            }
+            shared.Set("api_responses", responses)
+            return flyt.DefaultAction, nil
+        }).
+        WithBatchConcurrency(3)  // Limit concurrent API calls
 }
+
+// Usage
+limiter := rate.NewLimiter(rate.Limit(10), 1)  // 10 requests per second
+batchNode := createRateLimitedBatchNode(limiter)
 ```
 
 ## Batch with Timeout
@@ -267,21 +399,29 @@ func createRateLimitedBatchNode(rps int) flyt.Node {
 Set timeouts for batch operations:
 
 ```go
-func createTimeoutBatchNode(timeout time.Duration) flyt.Node {
-    processFunc := func(ctx context.Context, item any) (any, error) {
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        tasks := shared.GetSlice("tasks")
+        results := make([]flyt.Result, len(tasks))
+        for i, task := range tasks {
+            results[i] = flyt.NewResult(task)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
         // Create timeout context for this item
-        itemCtx, cancel := context.WithTimeout(ctx, timeout)
+        itemCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
         defer cancel()
         
-        resultChan := make(chan any)
+        resultChan := make(chan flyt.Result)
         errChan := make(chan error)
         
         go func() {
-            result, err := processItem(item)
+            result, err := processTaskWithContext(itemCtx, item.Value())
             if err != nil {
                 errChan <- err
             } else {
-                resultChan <- result
+                resultChan <- flyt.NewResult(result)
             }
         }()
         
@@ -289,27 +429,53 @@ func createTimeoutBatchNode(timeout time.Duration) flyt.Node {
         case result := <-resultChan:
             return result, nil
         case err := <-errChan:
-            return nil, err
+            return flyt.Result{}, err
         case <-itemCtx.Done():
-            return nil, fmt.Errorf("processing timeout for item: %v", item)
+            return flyt.Result{}, fmt.Errorf("task timeout: %v", item.Value())
         }
-    }
-    
-    return flyt.NewBatchNode(processFunc, true)
-}
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var completed []any
+        var timedOut []any
+        
+        for i, result := range results {
+            if result.IsError() && strings.Contains(result.Error().Error(), "timeout") {
+                timedOut = append(timedOut, items[i].Value())
+            } else if !result.IsError() {
+                completed = append(completed, result.Value())
+            }
+        }
+        
+        shared.Set("completed", completed)
+        shared.Set("timed_out", timedOut)
+        
+        if len(timedOut) > 0 {
+            return "has_timeouts", nil
+        }
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(5)
 ```
 
 ## Best Practices
 
-1. **Choose Concurrency Wisely**: Use concurrent for I/O-bound, sequential for order-dependent
-2. **Handle Errors Gracefully**: Decide whether to fail fast or collect all errors
-3. **Monitor Progress**: Add logging for long-running batches
-4. **Set Reasonable Limits**: Configure batch size and concurrency based on resources
+1. **Choose Concurrency Wisely**: Use concurrent for I/O-bound, sequential for order-dependent operations
+2. **Handle Errors Gracefully**: Use `WithBatchErrorHandling(true)` to continue despite failures
+3. **Monitor Progress**: Log in Post to track batch completion
+4. **Set Reasonable Limits**: Configure concurrency based on resources
 5. **Test with Real Data**: Test with production-like data volumes
-6. **Consider Memory Usage**: Be mindful of memory when processing large batches
+6. **Use Result Error Tracking**: Leverage `Result.IsError()` and `Result.Error()` for clean error handling
+
+## Key Benefits
+
+1. **Simplicity**: BatchNode works almost exactly like regular nodes
+2. **Automatic Handling**: Framework detects `[]Result` and handles iteration
+3. **Clean Error Tracking**: Each Result can carry its own error state
+4. **Flexible Configuration**: Concurrency and error handling are configurable
+5. **Type Safety**: Strong typing with Result type throughout
 
 ## Next Steps
 
-- [Batch Flows](/advanced/batch-flows) - Run flows with multiple inputs
 - [Worker Pool](/advanced/worker-pool) - Custom concurrent processing
-- [Error Handling](/patterns/error-handling) - Handle batch errors
+- [Error Handling](/patterns/error-handling) - Handle errors effectively
+- [Flow Patterns](/patterns/branching) - Complex flow control

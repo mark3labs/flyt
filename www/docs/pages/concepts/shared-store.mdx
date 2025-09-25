@@ -275,15 +275,22 @@ errors := shared.GetSlice("errors")
 Each flow in a batch has its own SharedStore:
 
 ```go
-batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-    // This shared is from the parent
-    baseConfig := shared.GetMap("base_config")
-    
-    return []flyt.FlowInputs{
-        {"id": 1, "config": baseConfig}, // Each gets own SharedStore
-        {"id": 2, "config": baseConfig},
-    }, nil
-}
+// Use BatchNode to process multiple parameter sets
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        baseConfig := shared.GetMap("base_config")
+        
+        // Each Result represents a parameter set
+        return []flyt.Result{
+            flyt.NewResult(map[string]any{"id": 1, "config": baseConfig}),
+            flyt.NewResult(map[string]any{"id": 2, "config": baseConfig}),
+        }, nil
+    }).
+    WithExecFunc(func(ctx context.Context, params flyt.Result) (flyt.Result, error) {
+        data := params.MustMap()
+        // Process with parameters
+        return processWithConfig(data["id"].(int), data["config"])
+    })
 ```
 
 ## Best Practices

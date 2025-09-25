@@ -627,8 +627,6 @@ func (n *TestNode) Post(ctx context.Context, shared *SharedStore, prepResult, ex
 	return n.action, nil
 }
 
-// TestBatchFlowCustomCountKey tests batch flow with custom count key
-
 // TestNestedFlowExecution tests flows within flows
 func TestNestedFlowExecution(t *testing.T) {
 	// Create inner flow

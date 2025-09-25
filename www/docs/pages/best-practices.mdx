@@ -358,9 +358,31 @@ for _, item := range items {
     process(item)
 }
 
-// Process in batches
-batchNode := flyt.NewBatchNode(processFunc, true)
-shared.Set("items", items)
+// Use BatchNode for efficient batch processing
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        return flyt.NewResult(process(item.Value()))
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        // Aggregate results
+        var processed []any
+        for _, r := range results {
+            if !r.IsError() {
+                processed = append(processed, r.Value())
+            }
+        }
+        shared.Set("processed", processed)
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(10)  // Process concurrently
 ```
 
 ### Lazy Loading

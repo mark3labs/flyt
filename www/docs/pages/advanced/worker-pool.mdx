@@ -2,6 +2,8 @@
 
 Manage concurrent task execution with fine-grained control using the WorkerPool utility.
 
+> **Note:** BatchNode internally uses WorkerPool for concurrent batch processing. For most batch processing scenarios, use `BatchNode` with `WithBatchConcurrency(n)` for a simpler API. Use WorkerPool directly when you need custom concurrent task management outside of the batch processing pattern.
+
 ## Basic Worker Pool
 
 Create and use a worker pool:
@@ -305,7 +307,7 @@ func (n *ParallelProcessingNode) Close() {
 
 ## Batch Processing with Worker Pool
 
-Process batches efficiently:
+BatchNode uses WorkerPool internally for concurrent processing. You can also use WorkerPool directly for custom batch operations:
 
 ```go
 func processBatchesWithPool(items []Item, batchSize int, workers int) []Result {
@@ -334,6 +336,8 @@ func processBatchesWithPool(items []Item, batchSize int, workers int) []Result {
     return results
 }
 ```
+
+**Note:** For most batch processing needs, consider using `BatchNode` which provides a simpler API and handles worker pool management automatically with `WithBatchConcurrency(n)`.
 
 ## Monitoring Worker Pool
 

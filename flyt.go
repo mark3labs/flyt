@@ -1088,9 +1088,8 @@ func ToSlice(v any) []any {
 }
 
 // FlowFactory creates new instances of a flow.
-// This is used by batch flow operations to create isolated flow instances
-// for concurrent execution. Each call should return a new flow instance
-// to avoid race conditions.
+// This is used to create reusable flow definitions. Each call should return
+// a new flow instance to avoid race conditions when running flows concurrently.
 //
 // Example:
 //

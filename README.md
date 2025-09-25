@@ -100,9 +100,9 @@ func main() {
 }
 ```
 
-### Builder Pattern (New)
+### Builder Pattern
 
-Flyt now supports a fluent builder pattern for creating nodes:
+Flyt supports a fluent builder pattern for creating nodes:
 
 ```go
 node := flyt.NewNode().
@@ -504,98 +504,213 @@ func (n *CustomRetryNode) Exec(ctx context.Context, prepResult any) (any, error)
 
 ### Batch Processing
 
-Process multiple items concurrently:
+BatchNode simplifies batch processing by working almost exactly like regular nodes. The framework automatically detects batch processing when Prep returns `[]Result` and handles all the complexity of iteration.
 
 ```go
-// Simple batch node for processing items
-processFunc := func(ctx context.Context, item any) (any, error) {
-    // Process each item
-    return fmt.Sprintf("processed: %v", item), nil
-}
+// Create a batch node with the simplified API
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Return []Result to indicate batch processing
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Process individual item - called N times automatically
+        data := item.Value().(string)
+        processed := strings.ToUpper(data)
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        // Called ONCE with all results aggregated
+        var successful []any
+        var failed int
+        
+        for i, result := range results {
+            if result.IsError() {
+                log.Printf("Item %d failed: %v", i, result.Error())
+                failed++
+            } else {
+                successful = append(successful, result.Value())
+            }
+        }
+        
+        shared.Set("processed", successful)
+        shared.Set("failed_count", failed)
+        
+        if failed > 0 {
+            return "partial_success", nil
+        }
+        return flyt.DefaultAction, nil
+    })
 
-batchNode := flyt.NewBatchNode(processFunc, true) // true for concurrent
+// Set items and run
+shared := flyt.NewSharedStore()
 shared.Set("items", []string{"item1", "item2", "item3"})
+action, err := flyt.Run(ctx, batchNode, shared)
 ```
 
 #### Advanced Batch Configuration
 
-For more control over batch processing:
+Configure concurrency and error handling:
 
 ```go
-config := &flyt.BatchConfig{
-    BatchSize:   10,        // Process 10 items at a time
-    Concurrency: 5,         // Use 5 concurrent workers
-    ItemsKey:    "data",    // Custom key for input items
-    ResultsKey:  "output",  // Custom key for results
-    CountKey:    "total",   // Custom key for processed count
-}
-
-processFunc := func(ctx context.Context, item any) (any, error) {
-    data, err := processItem(item)
-    return data, err
-}
-
-batchNode := flyt.NewBatchNodeWithConfig(processFunc, true, config)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Convert items to []Result for processing
+        users := shared.GetSlice("users")
+        results := make([]flyt.Result, len(users))
+        for i, user := range users {
+            results[i] = flyt.NewResult(user)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, user flyt.Result) (flyt.Result, error) {
+        // Process each user - automatically called N times
+        userData := user.AsMapOr(nil)
+        if userData == nil {
+            return flyt.Result{}, fmt.Errorf("invalid user data")
+        }
+        
+        processed, err := processUser(userData)
+        if err != nil {
+            // Return error for this specific item
+            return flyt.Result{}, err
+        }
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, users, results []flyt.Result) (flyt.Action, error) {
+        // Aggregate all results
+        successCount := 0
+        for _, result := range results {
+            if !result.IsError() {
+                successCount++
+            }
+        }
+        
+        log.Printf("Processed %d/%d users successfully", successCount, len(users))
+        shared.Set("success_count", successCount)
+        
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(10).           // Process up to 10 items concurrently
+    WithBatchErrorHandling(true).       // Continue even if some items fail
+    WithMaxRetries(3).                  // Retry each item up to 3 times
+    WithWait(time.Second)                // Wait between retries
 ```
 
 #### Batch Error Handling
 
-Batch operations aggregate errors:
+The API provides clean error handling per item:
 
 ```go
-action, err := flyt.Run(ctx, batchNode, shared)
-if err != nil {
-    if batchErr, ok := err.(*flyt.BatchError); ok {
-        // Access individual errors
-        for i, e := range batchErr.Errors {
-            if e != nil {
-                fmt.Printf("Item %d failed: %v\n", i, e)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Some items may already be errors
+        return []flyt.Result{
+            flyt.NewResult("valid1"),
+            flyt.NewErrorResult(errors.New("invalid input")),
+            flyt.NewResult("valid2"),
+        }, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        if item.IsError() {
+            // Pass through existing errors
+            return item, nil
+        }
+        
+        // Process valid items
+        value := item.Value().(string)
+        if value == "fail" {
+            return flyt.Result{}, errors.New("processing failed")
+        }
+        return flyt.NewResult(strings.ToUpper(value)), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        // Handle mixed success/failure results
+        var errors []error
+        var successes []any
+        
+        for i, result := range results {
+            if result.IsError() {
+                errors = append(errors, result.Error())
+                log.Printf("Item %d: %v", i, result.Error())
+            } else {
+                successes = append(successes, result.Value())
             }
         }
-    }
+        
+        if len(errors) > 0 && len(successes) == 0 {
+            return "all_failed", nil
+        } else if len(errors) > 0 {
+            return "partial_success", nil
+        }
+        return "all_success", nil
+    }).
+    WithBatchErrorHandling(true)  // Continue processing despite errors
+
+// The Result type now supports error tracking
+result := flyt.NewErrorResult(errors.New("something failed"))
+if result.IsError() {
+    fmt.Printf("Error: %v\n", result.Error())
 }
 ```
 
+#### Key Benefits
+
+1. **Simplicity**: BatchNode works almost exactly like regular nodes
+2. **Automatic Handling**: Framework detects `[]Result` and handles iteration
+3. **Clean Error Tracking**: Each Result can carry its own error state
+4. **Flexible Configuration**: Concurrency and error handling are configurable
+5. **Type Safety**: Strong typing with Result type throughout
+
 ### Batch Flows
 
-Run the same flow multiple times with different parameters:
+Use BatchNode to run flows with different parameters:
 
 ```go
-// Create a flow factory - returns a new flow instance for each iteration
-flowFactory := func() *flyt.Flow {
-    validateNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
-            // Each flow has its own SharedStore with merged FlowInputs
-            userID := shared.GetInt("user_id")
-            email := shared.GetString("email")
-            return flyt.R(map[string]any{"user_id": userID, "email": email}), nil
-        }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
-            data := prepResult.MustMap()
-            // Process user data
-            result := processUser(data)
-            return flyt.R(result), nil
-        }),
-    )
-    return flyt.NewFlow(validateNode)
-}
+// Use BatchNode to process multiple flow inputs
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Prepare multiple parameter sets
+        return []flyt.Result{
+            flyt.NewResult(map[string]any{"user_id": 1, "email": "user1@example.com"}),
+            flyt.NewResult(map[string]any{"user_id": 2, "email": "user2@example.com"}),
+            flyt.NewResult(map[string]any{"user_id": 3, "email": "user3@example.com"}),
+        }, nil
+    }).
+    WithExecFunc(func(ctx context.Context, params flyt.Result) (flyt.Result, error) {
+        // Process each parameter set
+        data := params.MustMap()
+        userID := data["user_id"].(int)
+        email := data["email"].(string)
+        
+        // Run your flow logic here
+        result := processUser(userID, email)
+        return flyt.NewResult(result), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, params, results []flyt.Result) (flyt.Action, error) {
+        // Aggregate results from all parameter sets
+        var allResults []any
+        for _, r := range results {
+            if !r.IsError() {
+                allResults = append(allResults, r.Value())
+            }
+        }
+        shared.Set("all_results", allResults)
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(3)  // Process 3 parameter sets concurrently
 
-// Define input parameters for each flow iteration
-// Each FlowInputs map is merged into that flow's isolated SharedStore
-batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-    // Could fetch from database, API, etc.
-    return []flyt.FlowInputs{
-        {"user_id": 1, "email": "user1@example.com"},
-        {"user_id": 2, "email": "user2@example.com"},
-        {"user_id": 3, "email": "user3@example.com"},
-    }, nil
-}
+// Create a flow that starts with the batch node
+flow := flyt.NewFlow(batchNode)
+flow.Connect(batchNode, flyt.DefaultAction, aggregateNode)
 
-// Create and run batch flow
-batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true) // true for concurrent
-err := batchFlow.Run(ctx, shared)
-
-// Each flow runs in isolation with its own SharedStore containing the FlowInputs
+// Run the flow
+err := flow.Run(ctx, shared)
 ```
 
 ### Nested Flows

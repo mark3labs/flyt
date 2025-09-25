@@ -139,27 +139,52 @@ func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
 
 ## Error Aggregation
 
-Collect errors from batch operations:
+Collect errors from batch operations using BatchNode:
 
 ```go
-func processBatch(ctx context.Context, items []Item) error {
-    var errs []error
-    
-    for i, item := range items {
-        if err := processItem(item); err != nil {
-            errs = append(errs, fmt.Errorf("item %d: %w", i, err))
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
         }
-    }
-    
-    if len(errs) > 0 {
-        return &flyt.BatchError{
-            Errors: errs,
-            Message: fmt.Sprintf("%d/%d items failed", len(errs), len(items)),
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Process each item
+        result, err := processItem(item.Value())
+        if err != nil {
+            return flyt.Result{}, err  // Error for this specific item
         }
-    }
-    
-    return nil
-}
+        return flyt.NewResult(result), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var errors []error
+        var successful []any
+        
+        // Aggregate errors and successes
+        for i, result := range results {
+            if result.IsError() {
+                errors = append(errors, fmt.Errorf("item %d: %w", i, result.Error()))
+            } else {
+                successful = append(successful, result.Value())
+            }
+        }
+        
+        // Store results
+        shared.Set("successful", successful)
+        if len(errors) > 0 {
+            shared.Set("batch_error", &flyt.BatchError{
+                Errors: errors,
+            })
+            log.Printf("%d/%d items failed", len(errors), len(items))
+            return "partial_failure", nil
+        }
+        
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchErrorHandling(true)  // Continue processing despite errors
 ```
 
 ## Retry with Jitter
