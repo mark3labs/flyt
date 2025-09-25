@@ -5,8 +5,8 @@
 ## Docs
 
 - [Best Practices](/best-practices): Follow these guidelines to build robust, maintainable Flyt workflows.
-- [Batch Flows](/advanced/batch-flows): Run the same flow multiple times with different parameters, perfect for processing multiple entities or parallel workflows.
-- [Batch Processing](/advanced/batch-processing): Process collections of items efficiently with concurrent or sequential execution.
+- [Batch Flows](/advanced/batch-flows): Process multiple parameter sets through flows using BatchNode, perfect for handling multiple entities or parallel workflows.
+- [Batch Processing](/advanced/batch-processing): Process collections of items efficiently with concurrent or sequential execution using BatchNode.
 - [Custom Node Types](/advanced/custom-nodes): Create sophisticated nodes with custom behavior, state management, and advanced features.
 - [Flow as Node](/advanced/flow-as-node): Flows implement the Node interface, allowing them to be used anywhere a node is expected. This enables powerful composition patterns.
 - [Nested Flows](/advanced/nested-flows): Compose complex workflows by nesting flows within flows, creating modular and reusable workflow components.

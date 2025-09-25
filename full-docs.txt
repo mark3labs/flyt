@@ -157,9 +157,9 @@ func main() {
 }
 ```
 
-### Builder Pattern (New)
+### Builder Pattern
 
-Flyt now supports a fluent builder pattern for creating nodes:
+Flyt supports a fluent builder pattern for creating nodes:
 
 ```go
 node := flyt.NewNode().
@@ -561,98 +561,213 @@ func (n *CustomRetryNode) Exec(ctx context.Context, prepResult any) (any, error)
 
 ### Batch Processing
 
-Process multiple items concurrently:
+BatchNode simplifies batch processing by working almost exactly like regular nodes. The framework automatically detects batch processing when Prep returns `[]Result` and handles all the complexity of iteration.
 
 ```go
-// Simple batch node for processing items
-processFunc := func(ctx context.Context, item any) (any, error) {
-    // Process each item
-    return fmt.Sprintf("processed: %v", item), nil
-}
+// Create a batch node with the simplified API
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Return []Result to indicate batch processing
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Process individual item - called N times automatically
+        data := item.Value().(string)
+        processed := strings.ToUpper(data)
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        // Called ONCE with all results aggregated
+        var successful []any
+        var failed int
+        
+        for i, result := range results {
+            if result.IsError() {
+                log.Printf("Item %d failed: %v", i, result.Error())
+                failed++
+            } else {
+                successful = append(successful, result.Value())
+            }
+        }
+        
+        shared.Set("processed", successful)
+        shared.Set("failed_count", failed)
+        
+        if failed > 0 {
+            return "partial_success", nil
+        }
+        return flyt.DefaultAction, nil
+    })
 
-batchNode := flyt.NewBatchNode(processFunc, true) // true for concurrent
+// Set items and run
+shared := flyt.NewSharedStore()
 shared.Set("items", []string{"item1", "item2", "item3"})
+action, err := flyt.Run(ctx, batchNode, shared)
 ```
 
 #### Advanced Batch Configuration
 
-For more control over batch processing:
+Configure concurrency and error handling:
 
 ```go
-config := &flyt.BatchConfig{
-    BatchSize:   10,        // Process 10 items at a time
-    Concurrency: 5,         // Use 5 concurrent workers
-    ItemsKey:    "data",    // Custom key for input items
-    ResultsKey:  "output",  // Custom key for results
-    CountKey:    "total",   // Custom key for processed count
-}
-
-processFunc := func(ctx context.Context, item any) (any, error) {
-    data, err := processItem(item)
-    return data, err
-}
-
-batchNode := flyt.NewBatchNodeWithConfig(processFunc, true, config)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Convert items to []Result for processing
+        users := shared.GetSlice("users")
+        results := make([]flyt.Result, len(users))
+        for i, user := range users {
+            results[i] = flyt.NewResult(user)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, user flyt.Result) (flyt.Result, error) {
+        // Process each user - automatically called N times
+        userData := user.AsMapOr(nil)
+        if userData == nil {
+            return flyt.Result{}, fmt.Errorf("invalid user data")
+        }
+        
+        processed, err := processUser(userData)
+        if err != nil {
+            // Return error for this specific item
+            return flyt.Result{}, err
+        }
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, users, results []flyt.Result) (flyt.Action, error) {
+        // Aggregate all results
+        successCount := 0
+        for _, result := range results {
+            if !result.IsError() {
+                successCount++
+            }
+        }
+        
+        log.Printf("Processed %d/%d users successfully", successCount, len(users))
+        shared.Set("success_count", successCount)
+        
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(10).           // Process up to 10 items concurrently
+    WithBatchErrorHandling(true).       // Continue even if some items fail
+    WithMaxRetries(3).                  // Retry each item up to 3 times
+    WithWait(time.Second)                // Wait between retries
 ```
 
 #### Batch Error Handling
 
-Batch operations aggregate errors:
+The API provides clean error handling per item:
 
 ```go
-action, err := flyt.Run(ctx, batchNode, shared)
-if err != nil {
-    if batchErr, ok := err.(*flyt.BatchError); ok {
-        // Access individual errors
-        for i, e := range batchErr.Errors {
-            if e != nil {
-                fmt.Printf("Item %d failed: %v\n", i, e)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Some items may already be errors
+        return []flyt.Result{
+            flyt.NewResult("valid1"),
+            flyt.NewErrorResult(errors.New("invalid input")),
+            flyt.NewResult("valid2"),
+        }, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        if item.IsError() {
+            // Pass through existing errors
+            return item, nil
+        }
+        
+        // Process valid items
+        value := item.Value().(string)
+        if value == "fail" {
+            return flyt.Result{}, errors.New("processing failed")
+        }
+        return flyt.NewResult(strings.ToUpper(value)), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        // Handle mixed success/failure results
+        var errors []error
+        var successes []any
+        
+        for i, result := range results {
+            if result.IsError() {
+                errors = append(errors, result.Error())
+                log.Printf("Item %d: %v", i, result.Error())
+            } else {
+                successes = append(successes, result.Value())
             }
         }
-    }
+        
+        if len(errors) > 0 && len(successes) == 0 {
+            return "all_failed", nil
+        } else if len(errors) > 0 {
+            return "partial_success", nil
+        }
+        return "all_success", nil
+    }).
+    WithBatchErrorHandling(true)  // Continue processing despite errors
+
+// The Result type now supports error tracking
+result := flyt.NewErrorResult(errors.New("something failed"))
+if result.IsError() {
+    fmt.Printf("Error: %v\n", result.Error())
 }
 ```
 
+#### Key Benefits
+
+1. **Simplicity**: BatchNode works almost exactly like regular nodes
+2. **Automatic Handling**: Framework detects `[]Result` and handles iteration
+3. **Clean Error Tracking**: Each Result can carry its own error state
+4. **Flexible Configuration**: Concurrency and error handling are configurable
+5. **Type Safety**: Strong typing with Result type throughout
+
 ### Batch Flows
 
-Run the same flow multiple times with different parameters:
+Use BatchNode to run flows with different parameters:
 
 ```go
-// Create a flow factory - returns a new flow instance for each iteration
-flowFactory := func() *flyt.Flow {
-    validateNode := flyt.NewNode(
-        flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
-            // Each flow has its own SharedStore with merged FlowInputs
-            userID := shared.GetInt("user_id")
-            email := shared.GetString("email")
-            return flyt.R(map[string]any{"user_id": userID, "email": email}), nil
-        }),
-        flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
-            data := prepResult.MustMap()
-            // Process user data
-            result := processUser(data)
-            return flyt.R(result), nil
-        }),
-    )
-    return flyt.NewFlow(validateNode)
-}
+// Use BatchNode to process multiple flow inputs
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Prepare multiple parameter sets
+        return []flyt.Result{
+            flyt.NewResult(map[string]any{"user_id": 1, "email": "user1@example.com"}),
+            flyt.NewResult(map[string]any{"user_id": 2, "email": "user2@example.com"}),
+            flyt.NewResult(map[string]any{"user_id": 3, "email": "user3@example.com"}),
+        }, nil
+    }).
+    WithExecFunc(func(ctx context.Context, params flyt.Result) (flyt.Result, error) {
+        // Process each parameter set
+        data := params.MustMap()
+        userID := data["user_id"].(int)
+        email := data["email"].(string)
+        
+        // Run your flow logic here
+        result := processUser(userID, email)
+        return flyt.NewResult(result), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, params, results []flyt.Result) (flyt.Action, error) {
+        // Aggregate results from all parameter sets
+        var allResults []any
+        for _, r := range results {
+            if !r.IsError() {
+                allResults = append(allResults, r.Value())
+            }
+        }
+        shared.Set("all_results", allResults)
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(3)  // Process 3 parameter sets concurrently
 
-// Define input parameters for each flow iteration
-// Each FlowInputs map is merged into that flow's isolated SharedStore
-batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-    // Could fetch from database, API, etc.
-    return []flyt.FlowInputs{
-        {"user_id": 1, "email": "user1@example.com"},
-        {"user_id": 2, "email": "user2@example.com"},
-        {"user_id": 3, "email": "user3@example.com"},
-    }, nil
-}
+// Create a flow that starts with the batch node
+flow := flyt.NewFlow(batchNode)
+flow.Connect(batchNode, flyt.DefaultAction, aggregateNode)
 
-// Create and run batch flow
-batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true) // true for concurrent
-err := batchFlow.Run(ctx, shared)
-
-// Each flow runs in isolation with its own SharedStore containing the FlowInputs
+// Run the flow
+err := flow.Run(ctx, shared)
 ```
 
 ### Nested Flows
@@ -793,66 +908,16 @@ FILE: AGENTS.md
 ================================================
 FILE: batch.go
 ================================================
-// Package flyt provides batch processing capabilities for the flyt workflow framework.
-//
-// The batch package includes utilities for processing collections of items either
-// sequentially or concurrently, with configurable batch sizes and concurrency limits.
-//
-// Key Features:
-//   - Batch processing nodes for item collections
-//   - Batch flow execution with parameter variations
-//   - Concurrent and sequential processing modes
-//   - Configurable batch sizes and concurrency limits
-//   - Error aggregation for batch operations
-//
-// Example (Batch Processing):
-//
-//	// Process items concurrently
-//	processFunc := func(ctx context.Context, item any) (any, error) {
-//	    // Process each item
-//	    return fmt.Sprintf("processed: %v", item), nil
-//	}
-//
-//	node := flyt.NewBatchNode(processFunc, true) // true for concurrent
-//	shared := flyt.NewSharedStore()
-//	shared.Set(flyt.KeyItems, []string{"item1", "item2", "item3"})
-//
-//	action, err := flyt.Run(ctx, node, shared)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//
-//	results, _ := shared.Get(flyt.KeyResults)
-//	fmt.Println(results) // ["processed: item1", "processed: item2", "processed: item3"]
-//
-// Example (Batch Flow):
-//
-//	// Run a flow multiple times with different parameters
-//	flowFactory := func() *flyt.Flow {
-//	    // Create your flow here
-//	    return flyt.NewFlow(startNode)
-//	}
-//
-//	batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-//	    return []flyt.FlowInputs{
-//	        {"user_id": 1, "action": "process"},
-//	        {"user_id": 2, "action": "process"},
-//	    }, nil
-//	}
-//
-//	batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true)
-//	err := batchFlow.Run(ctx, shared)
 package flyt
 
 import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // BatchError aggregates multiple errors from batch operations.
-// It implements the error interface and provides detailed information
-// about all errors that occurred during batch processing.
 type BatchError struct {
 	Errors []error
 }
@@ -867,510 +932,325 @@ func (e *BatchError) Error() string {
 	return fmt.Sprintf("batch: %d errors occurred, first: %v", len(e.Errors), e.Errors[0])
 }
 
-// BatchConfig holds configuration for batch operations.
-// It allows customization of batch processing behavior including
-// size limits, concurrency settings, and storage keys.
-type BatchConfig struct {
-	// MaxBatchSize is the maximum number of items to process in a single batch.
-	// If a batch exceeds this size, an error will be returned.
-	// Default: 1000
-	MaxBatchSize int
-
-	// MaxConcurrency is the maximum number of concurrent workers for parallel processing.
-	// This is only used when concurrent processing is enabled.
-	// Default: 10
-	MaxConcurrency int
-
-	// ItemsKey is the SharedStore key to read items from.
-	// Default: "items"
-	ItemsKey string
-
-	// ResultsKey is the SharedStore key to write results to.
-	// Default: "results"
-	ResultsKey string
-
-	// BatchCountKey is the SharedStore key to write the batch count for BatchFlow.
-	// Default: "batch_count"
-	BatchCountKey string
+// BatchNode is a marker type that indicates batch processing.
+// It embeds CustomNode and works exactly like a regular node,
+// but the framework handles it specially.
+type BatchNode struct {
+	*CustomNode
+	batchPrepFunc func(context.Context, *SharedStore) ([]Result, error)
+	batchPostFunc func(context.Context, *SharedStore, []Result, []Result) (Action, error)
 }
 
-// DefaultBatchConfig returns a BatchConfig with sensible defaults.
-// The defaults are:
-//   - MaxBatchSize: 1000
-//   - MaxConcurrency: 10
-//   - ItemsKey: "items"
-//   - ResultsKey: "results"
-//   - BatchCountKey: "batch_count"
-func DefaultBatchConfig() *BatchConfig {
-	return &BatchConfig{
-		MaxBatchSize:   1000,
-		MaxConcurrency: 10,
-		ItemsKey:       KeyItems,
-		ResultsKey:     KeyResults,
-		BatchCountKey:  KeyBatchCount,
+// Prep delegates to batchPrepFunc if set
+func (n *BatchNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	if n.batchPrepFunc != nil {
+		return n.batchPrepFunc(ctx, shared)
 	}
+	// Fallback to CustomNode's Prep
+	return n.CustomNode.Prep(ctx, shared)
 }
 
-// BatchProcessFunc is a function that processes a single item in a batch.
-// It receives a context and an item, and returns the processed result or an error.
-// The function should be thread-safe if concurrent processing is enabled.
-type BatchProcessFunc func(ctx context.Context, item any) (any, error)
-
-// NewBatchNode creates a node that processes items in batch.
-// The node reads items from the SharedStore (using the key "items" by default),
-// processes each item using the provided function, and stores results back
-// to the SharedStore (using the key "results" by default).
-//
-// Parameters:
-//   - processFunc: Function to process each item
-//   - concurrent: If true, items are processed concurrently using a worker pool
-//   - opts: Additional node options (e.g., WithMaxRetries, WithWait)
-//
-// Example:
-//
-//	processFunc := func(ctx context.Context, item any) (any, error) {
-//	    // Process the item
-//	    return processedItem, nil
-//	}
-//	node := flyt.NewBatchNode(processFunc, true)
-func NewBatchNode(processFunc BatchProcessFunc, concurrent bool, opts ...NodeOption) Node {
-	baseOpts := append([]NodeOption{}, opts...)
-	return &batchNode{
-		BaseNode:    NewBaseNode(baseOpts...),
-		processFunc: processFunc,
-		concurrent:  concurrent,
-		config:      DefaultBatchConfig(),
+// Post handles batch results
+func (n *BatchNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	if n.batchPostFunc != nil {
+		prep := prepResult.([]Result)
+		exec := execResult.([]Result)
+		return n.batchPostFunc(ctx, shared, prep, exec)
 	}
+	return DefaultAction, nil
 }
 
-// NewBatchNodeWithKeys creates a batch node with custom keys for items and results.
-// This allows you to specify which keys in the SharedStore to read items from
-// and write results to, instead of using the default keys.
-//
-// Parameters:
-//   - processFunc: Function to process each item
-//   - concurrent: If true, items are processed concurrently
-//   - itemsKey: SharedStore key to read items from
-//   - resultsKey: SharedStore key to write results to
-//   - opts: Additional node options
-//
-// Example:
-//
-//	node := flyt.NewBatchNodeWithKeys(processFunc, true, "input_data", "output_data")
-func NewBatchNodeWithKeys(processFunc BatchProcessFunc, concurrent bool, itemsKey, resultsKey string, opts ...NodeOption) Node {
-	config := DefaultBatchConfig()
-	config.ItemsKey = itemsKey
-	config.ResultsKey = resultsKey
-
-	baseOpts := append([]NodeOption{}, opts...)
-	return &batchNode{
-		BaseNode:    NewBaseNode(baseOpts...),
-		processFunc: processFunc,
-		concurrent:  concurrent,
-		config:      config,
-	}
+// BatchNodeBuilder provides fluent interface for BatchNode
+type BatchNodeBuilder struct {
+	*BatchNode
 }
 
-// NewBatchNodeWithConfig creates a batch node with custom configuration.
-// This provides full control over all batch processing settings.
-//
-// Parameters:
-//   - processFunc: Function to process each item
-//   - concurrent: If true, items are processed concurrently
-//   - config: Custom batch configuration
-//   - opts: Additional node options
-//
-// Example:
-//
-//	config := &flyt.BatchConfig{
-//	    MaxBatchSize:   500,
-//	    MaxConcurrency: 20,
-//	    ItemsKey:       "tasks",
-//	    ResultsKey:     "completed_tasks",
-//	}
-//	node := flyt.NewBatchNodeWithConfig(processFunc, true, config)
-func NewBatchNodeWithConfig(processFunc BatchProcessFunc, concurrent bool, config *BatchConfig, opts ...NodeOption) Node {
-	baseOpts := append([]NodeOption{}, opts...)
-	return &batchNode{
-		BaseNode:    NewBaseNode(baseOpts...),
-		processFunc: processFunc,
-		concurrent:  concurrent,
-		config:      config,
-	}
-}
-
-type batchNode struct {
-	*BaseNode
-	processFunc BatchProcessFunc
-	concurrent  bool
-	config      *BatchConfig
-}
-
-func (n *batchNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
-	// Use configured key or fall back to common keys
-	keysToCheck := []string{}
-	if n.config != nil && n.config.ItemsKey != "" {
-		keysToCheck = []string{n.config.ItemsKey}
-	} else {
-		keysToCheck = []string{KeyItems, "data", "batch"}
+// NewBatchNode creates a new batch node with fluent interface
+// Usage: flyt.NewBatchNode() from outside the package
+func NewBatchNode(opts ...any) *BatchNodeBuilder {
+	customNode := &CustomNode{
+		BaseNode: NewBaseNode(),
 	}
 
-	for _, key := range keysToCheck {
-		if val, ok := shared.Get(key); ok {
-			return val, nil
+	// Process options (similar to NewNode)
+	var baseOpts []NodeOption
+	for _, opt := range opts {
+		switch o := opt.(type) {
+		case NodeOption:
+			baseOpts = append(baseOpts, o)
+		case func(*BaseNode):
+			baseOpts = append(baseOpts, NodeOption(o))
 		}
 	}
 
-	return nil, fmt.Errorf("batchNode: prep failed: no batch data found in shared store (looked for: %v)",
-		keysToCheck)
+	for _, opt := range baseOpts {
+		opt(customNode.BaseNode)
+	}
+
+	return &BatchNodeBuilder{
+		BatchNode: &BatchNode{CustomNode: customNode},
+	}
 }
 
-func (n *batchNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	// Convert to slice
-	items := ToSlice(prepResult)
+// Implement Node interface
+func (b *BatchNodeBuilder) Prep(ctx context.Context, shared *SharedStore) (any, error) {
+	return b.BatchNode.Prep(ctx, shared)
+}
 
-	// Validate batch size
-	if n.config != nil && n.config.MaxBatchSize > 0 && len(items) > n.config.MaxBatchSize {
-		return nil, fmt.Errorf("batchNode: exec failed: batch size %d exceeds maximum %d", len(items), n.config.MaxBatchSize)
+func (b *BatchNodeBuilder) Exec(ctx context.Context, prepResult any) (any, error) {
+	return b.BatchNode.Exec(ctx, prepResult)
+}
+
+func (b *BatchNodeBuilder) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
+	return b.BatchNode.Post(ctx, shared, prepResult, execResult)
+}
+
+// Fluent configuration methods
+func (b *BatchNodeBuilder) WithMaxRetries(retries int) *BatchNodeBuilder {
+	WithMaxRetries(retries)(b.BatchNode.CustomNode.BaseNode)
+	return b
+}
+
+func (b *BatchNodeBuilder) WithWait(wait time.Duration) *BatchNodeBuilder {
+	WithWait(wait)(b.BatchNode.CustomNode.BaseNode)
+	return b
+}
+
+func (b *BatchNodeBuilder) WithBatchConcurrency(n int) *BatchNodeBuilder {
+	b.BatchNode.CustomNode.BaseNode.batchConcurrency = n
+	return b
+}
+
+func (b *BatchNodeBuilder) WithBatchErrorHandling(continueOnError bool) *BatchNodeBuilder {
+	if continueOnError {
+		b.BatchNode.CustomNode.BaseNode.batchErrorHandling = "continue"
+	} else {
+		b.BatchNode.CustomNode.BaseNode.batchErrorHandling = "stop"
+	}
+	return b
+}
+
+// Note: When used from outside the package, these will be:
+// - func(context.Context, *flyt.SharedStore) ([]flyt.Result, error)
+// - func(context.Context, flyt.Result) (flyt.Result, error)
+// - func(context.Context, *flyt.SharedStore, []flyt.Result, []flyt.Result) (flyt.Action, error)
+
+func (b *BatchNodeBuilder) WithPrepFunc(fn func(context.Context, *SharedStore) ([]Result, error)) *BatchNodeBuilder {
+	b.BatchNode.batchPrepFunc = fn
+	return b
+}
+
+func (b *BatchNodeBuilder) WithExecFunc(fn func(context.Context, Result) (Result, error)) *BatchNodeBuilder {
+	b.BatchNode.CustomNode.execFunc = fn
+	return b
+}
+
+func (b *BatchNodeBuilder) WithPostFunc(fn func(context.Context, *SharedStore, []Result, []Result) (Action, error)) *BatchNodeBuilder {
+	b.BatchNode.batchPostFunc = fn
+	return b
+}
+
+// Alternative: WithExecFuncAny for compatibility
+func (b *BatchNodeBuilder) WithExecFuncAny(fn func(context.Context, any) (any, error)) *BatchNodeBuilder {
+	b.BatchNode.CustomNode.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
+		val, err := fn(ctx, prepResult.Value())
+		if err != nil {
+			return Result{}, err
+		}
+		return NewResult(val), nil
+	}
+	return b
+}
+
+// runBatch handles the execution of batch nodes
+func runBatch(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
+	// Prep phase - returns []Result
+	prepResult, err := node.Prep(ctx, shared)
+	if err != nil {
+		return "", fmt.Errorf("run: prep failed: %w", err)
+	}
+
+	// Convert to []Result
+	var items []Result
+	switch v := prepResult.(type) {
+	case []Result:
+		items = v
+	case []any:
+		items = make([]Result, len(v))
+		for i, item := range v {
+			items[i] = NewResult(item)
+		}
+	default:
+		// Try to convert using ToSlice
+		slice := ToSlice(prepResult)
+		items = make([]Result, len(slice))
+		for i, item := range slice {
+			items[i] = NewResult(item)
+		}
 	}
 
 	if len(items) == 0 {
-		return []any{}, nil
+		// No items to process
+		action, err := node.Post(ctx, shared, []Result{}, []Result{})
+		if err != nil {
+			return "", fmt.Errorf("run: post failed: %w", err)
+		}
+		return action, nil
 	}
 
-	results := make([]any, len(items))
+	// Get batch configuration
+	var concurrency int
+	var errorHandling string = "continue"
 
-	if n.concurrent {
-		// Process concurrently with worker pool
-		maxWorkers := 10
-		if n.config != nil && n.config.MaxConcurrency > 0 {
-			maxWorkers = n.config.MaxConcurrency
-		}
+	if baseNode, ok := node.(*BaseNode); ok {
+		concurrency = baseNode.GetBatchConcurrency()
+		errorHandling = baseNode.GetBatchErrorHandling()
+	} else if customNode, ok := node.(*CustomNode); ok {
+		concurrency = customNode.BaseNode.GetBatchConcurrency()
+		errorHandling = customNode.BaseNode.GetBatchErrorHandling()
+	} else if batchNode, ok := node.(*BatchNode); ok {
+		concurrency = batchNode.CustomNode.BaseNode.GetBatchConcurrency()
+		errorHandling = batchNode.CustomNode.BaseNode.GetBatchErrorHandling()
+	} else if batchBuilder, ok := node.(*BatchNodeBuilder); ok {
+		concurrency = batchBuilder.BatchNode.CustomNode.BaseNode.GetBatchConcurrency()
+		errorHandling = batchBuilder.BatchNode.CustomNode.BaseNode.GetBatchErrorHandling()
+	}
 
-		pool := NewWorkerPool(maxWorkers)
-		defer pool.Close()
+	// Execute items
+	results := make([]Result, len(items))
 
-		errors := make([]error, len(items))
-		var mu sync.Mutex
-
-		for i, item := range items {
-			idx, itm := i, item // Capture loop variables
-			pool.Submit(func() {
-				// Check context
-				if ctx.Err() != nil {
-					mu.Lock()
-					errors[idx] = fmt.Errorf("batch item %d: context cancelled: %w", idx, ctx.Err())
-					mu.Unlock()
-					return
-				}
-
-				result, err := n.processFunc(ctx, itm)
-				mu.Lock()
-				results[idx] = result
-				errors[idx] = err
-				mu.Unlock()
-			})
-		}
-
-		pool.Wait()
-
-		// Collect all errors
-		var batchErrors []error
-		for _, err := range errors {
-			if err != nil {
-				batchErrors = append(batchErrors, err)
-			}
-		}
-
-		if len(batchErrors) > 0 {
-			return nil, &BatchError{Errors: batchErrors}
-		}
+	if concurrency > 0 {
+		runBatchConcurrent(ctx, node, items, results, concurrency, errorHandling)
 	} else {
-		// Process sequentially
-		for i, item := range items {
-			// Check context
-			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("batchNode: exec cancelled at item %d: %w", i, err)
-			}
-
-			result, err := n.processFunc(ctx, item)
-			if err != nil {
-				return nil, fmt.Errorf("batch item %d: process failed: %w", i, err)
-			}
-			results[i] = result
-		}
+		runBatchSequential(ctx, node, items, results, errorHandling)
 	}
 
-	return results, nil
-}
-
-func (n *batchNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
-	resultsKey := KeyResults
-	if n.config != nil && n.config.ResultsKey != "" {
-		resultsKey = n.config.ResultsKey
-	}
-	shared.Set(resultsKey, execResult)
-	return DefaultAction, nil
-}
-
-// FlowInputs holds input parameters for a flow iteration in batch processing.
-// These parameters are merged into each flow's isolated SharedStore,
-// allowing each flow instance to have its own set of input data.
-//
-// Example:
-//
-//	inputs := flyt.FlowInputs{
-//	    "user_id": 123,
-//	    "action": "process",
-//	    "priority": "high",
-//	}
-type FlowInputs map[string]any
-
-// BatchFlowFunc returns input parameters for each flow iteration in batch processing.
-// This function is called during the Prep phase to determine how many flow instances
-// to run and what parameters each should receive.
-//
-// The function receives the parent flow's SharedStore and should return a slice
-// of FlowInputs, where each element represents parameters for one flow iteration.
-type BatchFlowFunc func(ctx context.Context, shared *SharedStore) ([]FlowInputs, error)
-
-// NewBatchFlow creates a flow that runs multiple times with different parameters.
-// Each iteration gets its own isolated SharedStore with merged parameters.
-//
-// Important: The flowFactory must create new flow instances for concurrent
-// execution to avoid race conditions. Do not reuse flow instances.
-//
-// Parameters:
-//   - flowFactory: Function that creates new flow instances
-//   - batchFunc: Function that returns parameters for each iteration
-//   - concurrent: If true, flows run concurrently
-//
-// Example:
-//
-//	flowFactory := func() *flyt.Flow {
-//	    // Create and return a new flow instance
-//	    return flyt.NewFlow(startNode)
-//	}
-//
-//	batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-//	    users, _ := shared.Get("users")
-//	    var inputs []flyt.FlowInputs
-//	    for _, user := range users.([]User) {
-//	        inputs = append(inputs, flyt.FlowInputs{"user": user})
-//	    }
-//	    return inputs, nil
-//	}
-//
-//	batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true)
-func NewBatchFlow(flowFactory FlowFactory, batchFunc BatchFlowFunc, concurrent bool) *Flow {
-	batchNode := &batchFlowNode{
-		BaseNode:    NewBaseNode(),
-		flowFactory: flowFactory,
-		batchFunc:   batchFunc,
-		concurrent:  concurrent,
-		config:      DefaultBatchConfig(),
-	}
-	return NewFlow(batchNode)
-}
-
-// NewBatchFlowWithCountKey creates a batch flow with a custom key for storing the batch count.
-// After execution, the number of flows that were run is stored in the SharedStore
-// using the specified key instead of the default "batch_count" key.
-//
-// Parameters:
-//   - flowFactory: Function that creates new flow instances
-//   - batchFunc: Function that returns parameters for each iteration
-//   - concurrent: If true, flows run concurrently
-//   - countKey: SharedStore key to store the batch count
-//
-// Example:
-//
-//	batchFlow := flyt.NewBatchFlowWithCountKey(flowFactory, batchFunc, true, "processed_count")
-//	// After execution, retrieve count with: count, _ := shared.Get("processed_count")
-func NewBatchFlowWithCountKey(flowFactory FlowFactory, batchFunc BatchFlowFunc, concurrent bool, countKey string) *Flow {
-	config := DefaultBatchConfig()
-	config.BatchCountKey = countKey
-
-	batchNode := &batchFlowNode{
-		BaseNode:    NewBaseNode(),
-		flowFactory: flowFactory,
-		batchFunc:   batchFunc,
-		concurrent:  concurrent,
-		config:      config,
-	}
-	return NewFlow(batchNode)
-}
-
-// NewBatchFlowWithConfig creates a batch flow with custom configuration.
-// This provides full control over batch flow execution settings.
-//
-// Parameters:
-//   - flowFactory: Function that creates new flow instances
-//   - batchFunc: Function that returns parameters for each iteration
-//   - concurrent: If true, flows run concurrently
-//   - config: Custom batch configuration
-//
-// Example:
-//
-//	config := &flyt.BatchConfig{
-//	    MaxBatchSize:   100,      // Limit to 100 flows
-//	    MaxConcurrency: 5,        // Run max 5 flows concurrently
-//	    BatchCountKey:  "total",  // Store count in "total" key
-//	}
-//	batchFlow := flyt.NewBatchFlowWithConfig(flowFactory, batchFunc, true, config)
-func NewBatchFlowWithConfig(flowFactory FlowFactory, batchFunc BatchFlowFunc, concurrent bool, config *BatchConfig) *Flow {
-	batchNode := &batchFlowNode{
-		BaseNode:    NewBaseNode(),
-		flowFactory: flowFactory,
-		batchFunc:   batchFunc,
-		concurrent:  concurrent,
-		config:      config,
-	}
-	return NewFlow(batchNode)
-}
-
-type batchFlowNode struct {
-	*BaseNode
-	flowFactory FlowFactory
-	batchFunc   BatchFlowFunc
-	concurrent  bool
-	config      *BatchConfig
-}
-
-func (n *batchFlowNode) Prep(ctx context.Context, shared *SharedStore) (any, error) {
-	// Get batch parameters during prep phase
-	batchParams, err := n.batchFunc(ctx, shared)
+	// Post phase - called once with all results
+	action, err := node.Post(ctx, shared, items, results)
 	if err != nil {
-		return nil, fmt.Errorf("batch func failed: %w", err)
+		return "", fmt.Errorf("run: post failed: %w", err)
 	}
 
-	// Return both params and shared data as prepResult
-	return map[string]any{
-		"batchParams": batchParams,
-		"sharedData":  shared.GetAll(),
-	}, nil
+	if action == "" {
+		action = DefaultAction
+	}
+
+	return action, nil
 }
 
-func (n *batchFlowNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	// Extract data from prepResult
-	data, ok := prepResult.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid prepResult type %T, expected map[string]any", prepResult)
-	}
-
-	batchParams, ok := data["batchParams"].([]FlowInputs)
-	if !ok {
-		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid batchParams type in prepResult")
-	}
-
-	sharedData, ok := data["sharedData"].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("batchFlowNode: exec failed: invalid sharedData type in prepResult")
-	}
-
-	// Validate batch size
-	if n.config != nil && n.config.MaxBatchSize > 0 && len(batchParams) > n.config.MaxBatchSize {
-		return nil, fmt.Errorf("batchFlowNode: exec failed: batch size %d exceeds maximum %d", len(batchParams), n.config.MaxBatchSize)
-	}
-
-	if len(batchParams) == 0 {
-		return 0, nil
-	}
-
-	if n.concurrent {
-		// Run flows concurrently with worker pool
-		maxWorkers := 10
-		if n.config != nil && n.config.MaxConcurrency > 0 {
-			maxWorkers = n.config.MaxConcurrency
-		}
-
-		pool := NewWorkerPool(maxWorkers)
-		defer pool.Close()
-
-		errors := make([]error, len(batchParams))
-		var errMu sync.Mutex
-		hasError := false
-
-		for i, params := range batchParams {
-			idx, p := i, params // Capture loop variables
-			sd := sharedData    // Capture shared data
-			pool.Submit(func() {
-				// Check context
-				if ctx.Err() != nil {
-					errMu.Lock()
-					errors[idx] = fmt.Errorf("batchFlowNode: flow %d cancelled: %w", idx, ctx.Err())
-					hasError = true
-					errMu.Unlock()
-					return
-				}
-
-				// Create a new flow instance for concurrent execution
-				flow := n.flowFactory()
-
-				// Create isolated shared store
-				localShared := NewSharedStore()
-
-				// Copy shared data
-				localShared.Merge(sd)
-
-				// Merge params
-				localShared.Merge(p)
-
-				if err := flow.Run(ctx, localShared); err != nil {
-					errMu.Lock()
-					errors[idx] = fmt.Errorf("batchFlowNode: flow %d failed: %w", idx, err)
-					hasError = true
-					errMu.Unlock()
-				}
-			})
-		}
-
-		pool.Wait()
-
-		if hasError {
-			// Collect non-nil errors
-			var batchErrors []error
-			for _, err := range errors {
-				if err != nil {
-					batchErrors = append(batchErrors, err)
-				}
+func runBatchSequential(ctx context.Context, node Node, items []Result, results []Result, errorHandling string) {
+	for i, item := range items {
+		if ctx.Err() != nil {
+			results[i] = NewErrorResult(fmt.Errorf("context cancelled"))
+			if errorHandling == "stop" {
+				break
 			}
-			return nil, &BatchError{Errors: batchErrors}
+			continue
 		}
-	} else {
-		// Run flows sequentially
-		for i, params := range batchParams {
-			// Check context
-			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("batchFlowNode: exec cancelled at flow %d: %w", i, err)
+
+		execResult, err := runExecWithRetries(ctx, node, item)
+		if err != nil {
+			results[i] = NewErrorResult(err)
+			if errorHandling == "stop" {
+				break
 			}
-
-			// Create a new flow instance for each iteration
-			flow := n.flowFactory()
-
-			// Create isolated shared store for each iteration
-			iterShared := NewSharedStore()
-			iterShared.Merge(sharedData)
-			iterShared.Merge(params)
-
-			if err := flow.Run(ctx, iterShared); err != nil {
-				return nil, fmt.Errorf("batchFlowNode: flow %d failed: %w", i, err)
+		} else {
+			if r, ok := execResult.(Result); ok {
+				results[i] = r
+			} else {
+				results[i] = NewResult(execResult)
 			}
 		}
 	}
-
-	return len(batchParams), nil
 }
 
-func (n *batchFlowNode) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
-	if count, ok := execResult.(int); ok {
-		countKey := KeyBatchCount
-		if n.config != nil && n.config.BatchCountKey != "" {
-			countKey = n.config.BatchCountKey
-		}
-		shared.Set(countKey, count)
+func runBatchConcurrent(ctx context.Context, node Node, items []Result, results []Result, concurrency int, errorHandling string) {
+	pool := NewWorkerPool(concurrency)
+	defer pool.Close()
+
+	var mu sync.Mutex
+	shouldStop := false
+
+	for i, item := range items {
+		idx := i
+		itm := item
+
+		pool.Submit(func() {
+			mu.Lock()
+			if shouldStop && errorHandling == "stop" {
+				results[idx] = NewErrorResult(fmt.Errorf("batch stopped due to error"))
+				mu.Unlock()
+				return
+			}
+			mu.Unlock()
+
+			if ctx.Err() != nil {
+				results[idx] = NewErrorResult(fmt.Errorf("context cancelled"))
+				return
+			}
+
+			execResult, err := runExecWithRetries(ctx, node, itm)
+
+			mu.Lock()
+			if err != nil {
+				results[idx] = NewErrorResult(err)
+				if errorHandling == "stop" {
+					shouldStop = true
+				}
+			} else {
+				if r, ok := execResult.(Result); ok {
+					results[idx] = r
+				} else {
+					results[idx] = NewResult(execResult)
+				}
+			}
+			mu.Unlock()
+		})
 	}
-	return DefaultAction, nil
+
+	pool.Wait()
+}
+
+func runExecWithRetries(ctx context.Context, node Node, item Result) (any, error) {
+	// Get retry settings
+	var maxRetries int = 1
+	var wait time.Duration = 0
+
+	if retryable, ok := node.(RetryableNode); ok {
+		maxRetries = retryable.GetMaxRetries()
+		wait = retryable.GetWait()
+	}
+
+	var execResult any
+	var execErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("context cancelled during retry: %w", ctx.Err())
+		}
+
+		if attempt > 0 && wait > 0 {
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled during wait: %w", ctx.Err())
+			}
+		}
+
+		execResult, execErr = node.Exec(ctx, item)
+		if execErr == nil {
+			break
+		}
+	}
+
+	if execErr != nil {
+		if fallback, ok := node.(FallbackNode); ok {
+			return fallback.ExecFallback(item, execErr)
+		}
+		return nil, execErr
+	}
+
+	return execResult, nil
 }
 
 
@@ -1384,14 +1264,369 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// TestBatchErrorAggregation tests the BatchError type
-func TestBatchErrorAggregation(t *testing.T) {
+func TestSimpleBatchNode(t *testing.T) {
+	// Test the new simplified batch node
+	var processedCount int32
+
+	node := NewBatchNode().
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) ([]Result, error) {
+			// Return items to process
+			return []Result{
+				NewResult("item1"),
+				NewResult("item2"),
+				NewResult("item3"),
+			}, nil
+		}).
+		WithExecFunc(func(ctx context.Context, item Result) (Result, error) {
+			atomic.AddInt32(&processedCount, 1)
+			// Process individual item
+			value := item.Value().(string)
+			return NewResult("processed_" + value), nil
+		}).
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prep, exec []Result) (Action, error) {
+			// Handle aggregated results
+			var results []any
+			for _, r := range exec {
+				if !r.IsError() {
+					results = append(results, r.Value())
+				}
+			}
+			shared.Set("results", results)
+			return DefaultAction, nil
+		})
+
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	action, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if action != DefaultAction {
+		t.Errorf("expected DefaultAction, got %v", action)
+	}
+
+	if atomic.LoadInt32(&processedCount) != 3 {
+		t.Errorf("expected 3 items processed, got %d", processedCount)
+	}
+
+	results, _ := shared.Get("results")
+	if len(results.([]any)) != 3 {
+		t.Errorf("expected 3 results, got %d", len(results.([]any)))
+	}
+}
+
+func TestBatchNodeWithErrors(t *testing.T) {
+	node := NewBatchNode().
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) ([]Result, error) {
+			return []Result{
+				NewResult(1),
+				NewResult(2),
+				NewResult(3),
+			}, nil
+		}).
+		WithExecFunc(func(ctx context.Context, item Result) (Result, error) {
+			val := item.Value().(int)
+			if val == 2 {
+				return Result{}, errors.New("error processing 2")
+			}
+			return NewResult(val * 10), nil
+		}).
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prep, exec []Result) (Action, error) {
+			successCount := 0
+			errorCount := 0
+
+			for _, r := range exec {
+				if r.IsError() {
+					errorCount++
+				} else {
+					successCount++
+				}
+			}
+
+			shared.Set("success_count", successCount)
+			shared.Set("error_count", errorCount)
+
+			if errorCount > 0 {
+				return "partial_failure", nil
+			}
+			return DefaultAction, nil
+		}).
+		WithBatchErrorHandling(true) // Continue on errors
+
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	action, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if action != "partial_failure" {
+		t.Errorf("expected partial_failure action, got %v", action)
+	}
+
+	successCount, _ := shared.Get("success_count")
+	if successCount != 2 {
+		t.Errorf("expected 2 successes, got %v", successCount)
+	}
+
+	errorCount, _ := shared.Get("error_count")
+	if errorCount != 1 {
+		t.Errorf("expected 1 error, got %v", errorCount)
+	}
+}
+
+func TestBatchNodeConcurrent(t *testing.T) {
+	var maxConcurrent int32
+	var currentConcurrent int32
+
+	node := NewBatchNode().
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) ([]Result, error) {
+			items := make([]Result, 10)
+			for i := range items {
+				items[i] = NewResult(i)
+			}
+			return items, nil
+		}).
+		WithExecFunc(func(ctx context.Context, item Result) (Result, error) {
+			current := atomic.AddInt32(&currentConcurrent, 1)
+			defer atomic.AddInt32(&currentConcurrent, -1)
+
+			// Track max concurrent
+			for {
+				max := atomic.LoadInt32(&maxConcurrent)
+				if current <= max || atomic.CompareAndSwapInt32(&maxConcurrent, max, current) {
+					break
+				}
+			}
+
+			time.Sleep(10 * time.Millisecond)
+			return item, nil
+		}).
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prep, exec []Result) (Action, error) {
+			shared.Set("processed", len(exec))
+			return DefaultAction, nil
+		}).
+		WithBatchConcurrency(3)
+
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	_, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if maxConcurrent > 3 {
+		t.Errorf("max concurrency exceeded limit: %d > 3", maxConcurrent)
+	}
+
+	processed, _ := shared.Get("processed")
+	if processed != 10 {
+		t.Errorf("expected 10 items processed, got %v", processed)
+	}
+}
+
+func TestBatchNodeStopOnError(t *testing.T) {
+	var processedCount int32
+
+	node := NewBatchNode().
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) ([]Result, error) {
+			items := make([]Result, 5)
+			for i := range items {
+				items[i] = NewResult(i + 1)
+			}
+			return items, nil
+		}).
+		WithExecFunc(func(ctx context.Context, item Result) (Result, error) {
+			val := item.Value().(int)
+			atomic.AddInt32(&processedCount, 1)
+
+			// Fail on item 3
+			if val == 3 {
+				return Result{}, errors.New("error on item 3")
+			}
+			return NewResult(val * 10), nil
+		}).
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prep, exec []Result) (Action, error) {
+			var errorCount int
+			for _, r := range exec {
+				if r.IsError() {
+					errorCount++
+				}
+			}
+			shared.Set("error_count", errorCount)
+			return DefaultAction, nil
+		}).
+		WithBatchErrorHandling(false) // Stop on error
+
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	_, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have processed items 1, 2, and 3 (stopped after 3 failed)
+	if processedCount := atomic.LoadInt32(&processedCount); processedCount != 3 {
+		t.Errorf("expected 3 items processed before stopping, got %d", processedCount)
+	}
+}
+
+func TestBatchNodeEmptyBatch(t *testing.T) {
+	node := NewBatchNode().
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) ([]Result, error) {
+			// Return empty batch
+			return []Result{}, nil
+		}).
+		WithExecFunc(func(ctx context.Context, item Result) (Result, error) {
+			t.Error("Exec should not be called for empty batch")
+			return Result{}, nil
+		}).
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prep, exec []Result) (Action, error) {
+			if len(prep) != 0 || len(exec) != 0 {
+				t.Errorf("expected empty results, got prep=%d, exec=%d", len(prep), len(exec))
+			}
+			shared.Set("empty_handled", true)
+			return "empty", nil
+		})
+
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	action, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if action != "empty" {
+		t.Errorf("expected 'empty' action, got %v", action)
+	}
+
+	handled, _ := shared.Get("empty_handled")
+	if handled != true {
+		t.Error("expected empty batch to be handled")
+	}
+}
+
+func TestBatchNodeWithRetries(t *testing.T) {
+	var attemptCounts = make(map[int]int)
+
+	node := NewBatchNode().
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) ([]Result, error) {
+			return []Result{
+				NewResult(1),
+				NewResult(2),
+			}, nil
+		}).
+		WithExecFunc(func(ctx context.Context, item Result) (Result, error) {
+			val := item.Value().(int)
+			attemptCounts[val]++
+
+			// Fail first attempt for item 1
+			if val == 1 && attemptCounts[val] < 2 {
+				return Result{}, errors.New("transient error")
+			}
+			return NewResult(val * 10), nil
+		}).
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prep, exec []Result) (Action, error) {
+			var results []any
+			for _, r := range exec {
+				if !r.IsError() {
+					results = append(results, r.Value())
+				}
+			}
+			shared.Set("results", results)
+			return DefaultAction, nil
+		}).
+		WithMaxRetries(3).
+		WithBatchErrorHandling(true)
+
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	_, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Item 1 should have been retried
+	if attemptCounts[1] != 2 {
+		t.Errorf("expected 2 attempts for item 1, got %d", attemptCounts[1])
+	}
+
+	// Item 2 should have succeeded on first try
+	if attemptCounts[2] != 1 {
+		t.Errorf("expected 1 attempt for item 2, got %d", attemptCounts[2])
+	}
+
+	results, _ := shared.Get("results")
+	if len(results.([]any)) != 2 {
+		t.Errorf("expected 2 successful results, got %d", len(results.([]any)))
+	}
+}
+
+func TestBatchNodeResultErrors(t *testing.T) {
+	node := NewBatchNode().
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) ([]Result, error) {
+			return []Result{
+				NewResult("ok1"),
+				NewErrorResult(errors.New("prep error")),
+				NewResult("ok2"),
+			}, nil
+		}).
+		WithExecFunc(func(ctx context.Context, item Result) (Result, error) {
+			if item.IsError() {
+				// Pass through error Results
+				return item, nil
+			}
+			return NewResult(fmt.Sprintf("processed_%v", item.Value())), nil
+		}).
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prep, exec []Result) (Action, error) {
+			var prepErrors, execErrors int
+			for _, r := range prep {
+				if r.IsError() {
+					prepErrors++
+				}
+			}
+			for _, r := range exec {
+				if r.IsError() {
+					execErrors++
+				}
+			}
+			shared.Set("prep_errors", prepErrors)
+			shared.Set("exec_errors", execErrors)
+			return DefaultAction, nil
+		})
+
+	shared := NewSharedStore()
+	ctx := context.Background()
+
+	_, err := Run(ctx, node, shared)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prepErrors, _ := shared.Get("prep_errors")
+	if prepErrors != 1 {
+		t.Errorf("expected 1 prep error, got %v", prepErrors)
+	}
+
+	execErrors, _ := shared.Get("exec_errors")
+	if execErrors != 1 {
+		t.Errorf("expected 1 exec error, got %v", execErrors)
+	}
+}
+
+func TestBatchError(t *testing.T) {
 	// Test empty errors
 	be := &BatchError{Errors: []error{}}
 	if be.Error() != "batch: no errors recorded" {
@@ -1419,285 +1654,74 @@ func TestBatchErrorAggregation(t *testing.T) {
 	}
 }
 
-// TestBatchNodeValidation tests batch node validation
-func TestBatchNodeValidation(t *testing.T) {
-	processFunc := func(ctx context.Context, item any) (any, error) {
-		return item, nil
-	}
-
-	config := &BatchConfig{
-		MaxBatchSize: 5,
-	}
-
-	node := NewBatchNodeWithConfig(processFunc, false, config)
-	shared := NewSharedStore()
-
-	// Test exceeding max batch size
-	items := make([]int, 10)
-	for i := range items {
-		items[i] = i
-	}
-	shared.Set("items", items)
-
-	ctx := context.Background()
-	_, err := Run(ctx, node, shared)
-	if err == nil {
-		t.Error("expected batch size validation error")
-	}
-
-	expectedErr := "batchNode: exec failed: batch size 10 exceeds maximum 5"
-	if err.Error() != fmt.Sprintf("run: exec failed after 1 retries: %s", expectedErr) {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// TestBatchNodeConcurrency tests concurrent batch processing
-func TestBatchNodeConcurrency(t *testing.T) {
-	var counter int32
-	var maxConcurrent int32
-
-	processFunc := func(ctx context.Context, item any) (any, error) {
-		current := atomic.AddInt32(&counter, 1)
-		defer atomic.AddInt32(&counter, -1)
-
-		// Track max concurrent executions
-		for {
-			max := atomic.LoadInt32(&maxConcurrent)
-			if current <= max || atomic.CompareAndSwapInt32(&maxConcurrent, max, current) {
-				break
+func TestBatchNodeInFlow(t *testing.T) {
+	// Test using a BatchNode within a Flow
+	batchNode := NewBatchNode().
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) ([]Result, error) {
+			items, _ := shared.Get("items")
+			slice := ToSlice(items)
+			results := make([]Result, len(slice))
+			for i, item := range slice {
+				results[i] = NewResult(item)
 			}
-		}
+			return results, nil
+		}).
+		WithExecFunc(func(ctx context.Context, item Result) (Result, error) {
+			val := item.Value().(int)
+			return NewResult(val * 2), nil
+		}).
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prep, exec []Result) (Action, error) {
+			var results []any
+			for _, r := range exec {
+				if !r.IsError() {
+					results = append(results, r.Value())
+				}
+			}
+			shared.Set("doubled", results)
+			return DefaultAction, nil
+		})
 
-		// Simulate work
-		time.Sleep(10 * time.Millisecond)
-		return item, nil
-	}
+	sumNode := NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *SharedStore) (any, error) {
+			doubled, _ := shared.Get("doubled")
+			return doubled, nil
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+			doubled := prepResult.([]any)
+			var sum int
+			for _, v := range doubled {
+				sum += v.(int)
+			}
+			return sum, nil
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *SharedStore, prep, exec any) (Action, error) {
+			shared.Set("sum", exec)
+			return DefaultAction, nil
+		})
 
-	config := &BatchConfig{
-		MaxConcurrency: 3,
-	}
+	flow := NewFlow(batchNode)
+	flow.Connect(batchNode, DefaultAction, sumNode)
 
-	node := NewBatchNodeWithConfig(processFunc, true, config)
-	shared := NewSharedStore()
-	shared.Set("items", []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
-
-	ctx := context.Background()
-	_, err := Run(ctx, node, shared)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	// Check max concurrency was respected
-	if maxConcurrent > 3 {
-		t.Errorf("max concurrency exceeded: %d > 3", maxConcurrent)
-	}
-
-	// Check results
-	results, _ := shared.Get("results")
-	if results == nil {
-		t.Error("results not found")
-	}
-}
-
-// TestBatchNodeSequential tests sequential batch processing
-func TestBatchNodeSequential(t *testing.T) {
-	var order []int
-	var mu sync.Mutex
-
-	processFunc := func(ctx context.Context, item any) (any, error) {
-		mu.Lock()
-		order = append(order, item.(int))
-		mu.Unlock()
-		return item, nil
-	}
-
-	node := NewBatchNode(processFunc, false) // sequential
 	shared := NewSharedStore()
 	shared.Set("items", []int{1, 2, 3, 4, 5})
 
 	ctx := context.Background()
-	_, err := Run(ctx, node, shared)
+	err := flow.Run(ctx, shared)
 	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Check order is preserved
-	for i, v := range order {
-		if v != i+1 {
-			t.Errorf("order[%d]: expected %d, got %d", i, i+1, v)
-		}
-	}
-}
-
-// TestBatchNodeCustomKeys tests batch node with custom keys
-func TestBatchNodeCustomKeys(t *testing.T) {
-	processFunc := func(ctx context.Context, item any) (any, error) {
-		return fmt.Sprintf("processed_%v", item), nil
+	sumResult, _ := shared.Get("sum")
+	// The sum is wrapped in a Result from CustomNode.Exec
+	var sum int
+	if r, ok := sumResult.(Result); ok {
+		sum = r.Value().(int)
+	} else {
+		sum = sumResult.(int)
 	}
 
-	// Create batch node with custom keys
-	node := NewBatchNodeWithKeys(processFunc, false, "my_items", "my_results")
-
-	shared := NewSharedStore()
-	shared.Set("my_items", []string{"a", "b", "c"})
-
-	ctx := context.Background()
-	_, err := Run(ctx, node, shared)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	// Check results are stored with custom key
-	results, ok := shared.Get("my_results")
-	if !ok {
-		t.Error("results not found with custom key")
-	}
-
-	resultSlice, ok := results.([]any)
-	if !ok || len(resultSlice) != 3 {
-		t.Error("unexpected results format")
-	}
-
-	// Verify default keys were not used
-	if _, ok := shared.Get(KeyResults); ok {
-		t.Error("results should not be stored with default key")
-	}
-}
-
-// TestBatchFlowConcurrency tests concurrent batch flow execution
-func TestBatchFlowConcurrency(t *testing.T) {
-	var executionCount int32
-
-	// Factory creates new flow instances
-	flowFactory := func() *Flow {
-		node := &CounterNode{
-			BaseNode: NewBaseNode(),
-			counter:  &executionCount,
-		}
-		return NewFlow(node)
-	}
-
-	// Batch function returns parameters for each iteration
-	batchFunc := func(ctx context.Context, shared *SharedStore) ([]FlowInputs, error) {
-		params := make([]FlowInputs, 5)
-		for i := range params {
-			params[i] = FlowInputs{"index": i}
-		}
-		return params, nil
-	}
-
-	config := &BatchConfig{
-		MaxConcurrency: 3,
-	}
-
-	batchFlow := NewBatchFlowWithConfig(flowFactory, batchFunc, true, config)
-	shared := NewSharedStore()
-	ctx := context.Background()
-
-	err := batchFlow.Run(ctx, shared)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	// Check all flows executed
-	if atomic.LoadInt32(&executionCount) != 5 {
-		t.Errorf("expected 5 executions, got %d", executionCount)
-	}
-
-	// Check batch count was stored
-	count, ok := shared.Get(KeyBatchCount)
-	if !ok {
-		t.Error("batch_count not found in shared store")
-	}
-	if count != 5 {
-		t.Errorf("expected batch_count 5, got %v", count)
-	}
-}
-
-// TestBatchFlowCustomCountKey tests batch flow with custom count key
-func TestBatchFlowCustomCountKey(t *testing.T) {
-	// Factory creates new flow instances
-	flowFactory := func() *Flow {
-		node := &TestNode{
-			BaseNode: NewBaseNode(),
-			name:     "test",
-			action:   DefaultAction,
-		}
-		return NewFlow(node)
-	}
-
-	// Batch function returns parameters
-	batchFunc := func(ctx context.Context, shared *SharedStore) ([]FlowInputs, error) {
-		return []FlowInputs{
-			{"id": 1},
-			{"id": 2},
-			{"id": 3},
-		}, nil
-	}
-
-	// Create batch flow with custom count key
-	batchFlow := NewBatchFlowWithCountKey(flowFactory, batchFunc, false, "my_batch_count")
-
-	shared := NewSharedStore()
-	ctx := context.Background()
-
-	err := batchFlow.Run(ctx, shared)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	// Check custom count key was used
-	count, ok := shared.Get("my_batch_count")
-	if !ok {
-		t.Error("custom count key not found in shared store")
-	}
-	if count != 3 {
-		t.Errorf("expected count 3, got %v", count)
-	}
-
-	// Verify default key was not used
-	if _, ok := shared.Get(KeyBatchCount); ok {
-		t.Error("count should not be stored with default key")
-	}
-}
-
-// CounterNode counts executions
-type CounterNode struct {
-	*BaseNode
-	counter *int32
-}
-
-func (n *CounterNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	atomic.AddInt32(n.counter, 1)
-	return nil, nil
-}
-
-// BenchmarkBatchNodeProcessing benchmarks batch processing
-func BenchmarkBatchNodeProcessing(b *testing.B) {
-	processFunc := func(ctx context.Context, item any) (any, error) {
-		// Simulate some work
-		time.Sleep(time.Microsecond)
-		return item, nil
-	}
-
-	node := NewBatchNode(processFunc, true)
-	shared := NewSharedStore()
-
-	// Create test data
-	items := make([]int, 100)
-	for i := range items {
-		items[i] = i
-	}
-	shared.Set("items", items)
-
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := Run(ctx, node, shared)
-		if err != nil {
-			b.Fatal(err)
-		}
+	if sum != 30 { // (1+2+3+4+5) * 2 = 30
+		t.Errorf("expected sum of 30, got %v", sum)
 	}
 }
 
@@ -1825,6 +1849,24 @@ func (b *NodeBuilder) WithExecFuncAny(fn func(context.Context, any) (any, error)
 func (b *NodeBuilder) WithPostFuncAny(fn func(context.Context, *SharedStore, any, any) (Action, error)) *NodeBuilder {
 	b.CustomNode.postFunc = func(ctx context.Context, shared *SharedStore, prepResult, execResult Result) (Action, error) {
 		return fn(ctx, shared, prepResult.Value(), execResult.Value())
+	}
+	return b
+}
+
+// WithBatchConcurrency sets the concurrency level for batch processing.
+// Returns the builder for method chaining.
+func (b *NodeBuilder) WithBatchConcurrency(n int) *NodeBuilder {
+	b.CustomNode.BaseNode.batchConcurrency = n
+	return b
+}
+
+// WithBatchErrorHandling sets the error handling strategy for batch processing.
+// Returns the builder for method chaining.
+func (b *NodeBuilder) WithBatchErrorHandling(continueOnError bool) *NodeBuilder {
+	if continueOnError {
+		b.CustomNode.BaseNode.batchErrorHandling = "continue"
+	} else {
+		b.CustomNode.BaseNode.batchErrorHandling = "stop"
 	}
 	return b
 }
@@ -2668,6 +2710,10 @@ type BaseNode struct {
 	mu         sync.RWMutex
 	maxRetries int
 	wait       time.Duration
+
+	// Batch configuration
+	batchConcurrency   int    // 0 = sequential, >0 = concurrent with limit
+	batchErrorHandling string // "stop", "continue"
 }
 
 // NewBaseNode creates a new BaseNode with the provided options.
@@ -2725,6 +2771,35 @@ func WithWait(wait time.Duration) NodeOption {
 	}
 }
 
+// WithBatchConcurrency sets the concurrency level for batch processing.
+// 0 means sequential processing, >0 means concurrent with the specified limit.
+//
+// Example:
+//
+//	node := flyt.NewBatchNode(flyt.WithBatchConcurrency(10))
+func WithBatchConcurrency(n int) NodeOption {
+	return func(node *BaseNode) {
+		node.batchConcurrency = n
+	}
+}
+
+// WithBatchErrorHandling sets the error handling strategy for batch processing.
+// If continueOnError is true, processing continues even if some items fail.
+// If false, processing stops on the first error.
+//
+// Example:
+//
+//	node := flyt.NewBatchNode(flyt.WithBatchErrorHandling(true))
+func WithBatchErrorHandling(continueOnError bool) NodeOption {
+	return func(node *BaseNode) {
+		if continueOnError {
+			node.batchErrorHandling = "continue"
+		} else {
+			node.batchErrorHandling = "stop"
+		}
+	}
+}
+
 // GetMaxRetries returns the maximum number of retries configured for this node.
 // This method is thread-safe.
 func (n *BaseNode) GetMaxRetries() int {
@@ -2739,6 +2814,25 @@ func (n *BaseNode) GetWait() time.Duration {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.wait
+}
+
+// GetBatchConcurrency returns the batch concurrency level configured for this node.
+// This method is thread-safe.
+func (n *BaseNode) GetBatchConcurrency() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.batchConcurrency
+}
+
+// GetBatchErrorHandling returns the batch error handling strategy configured for this node.
+// This method is thread-safe.
+func (n *BaseNode) GetBatchErrorHandling() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if n.batchErrorHandling == "" {
+		return "continue" // default
+	}
+	return n.batchErrorHandling
 }
 
 // Prep is the default prep implementation that returns nil.
@@ -2819,6 +2913,14 @@ type FallbackNode interface {
 //	    log.Fatal(err)
 //	}
 func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
+	// Check if this is a BatchNode
+	if _, ok := node.(*BatchNode); ok {
+		return runBatch(ctx, node, shared)
+	}
+	if batchBuilder, ok := node.(*BatchNodeBuilder); ok {
+		return runBatch(ctx, batchBuilder.BatchNode, shared)
+	}
+
 	// Check context before each phase
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("run: context cancelled: %w", err)
@@ -3208,9 +3310,8 @@ func ToSlice(v any) []any {
 }
 
 // FlowFactory creates new instances of a flow.
-// This is used by batch flow operations to create isolated flow instances
-// for concurrent execution. Each call should return a new flow instance
-// to avoid race conditions.
+// This is used to create reusable flow definitions. Each call should return
+// a new flow instance to avoid race conditions when running flows concurrently.
 //
 // Example:
 //
@@ -3278,6 +3379,10 @@ func (n *CustomNode) Prep(ctx context.Context, shared *SharedStore) (any, error)
 // Exec implements Node.Exec by calling the custom execFunc if provided
 func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	if n.execFunc != nil {
+		// Check if prepResult is already a Result (when called from batch processing)
+		if r, ok := prepResult.(Result); ok {
+			return n.execFunc(ctx, r)
+		}
 		return n.execFunc(ctx, NewResult(prepResult))
 	}
 	return n.BaseNode.Exec(ctx, prepResult)
@@ -4153,8 +4258,6 @@ func (n *TestNode) Post(ctx context.Context, shared *SharedStore, prepResult, ex
 	return n.action, nil
 }
 
-// TestBatchFlowCustomCountKey tests batch flow with custom count key
-
 // TestNestedFlowExecution tests flows within flows
 func TestNestedFlowExecution(t *testing.T) {
 	// Create inner flow
@@ -4505,11 +4608,17 @@ import (
 // It can hold any value and provides type-safe accessors.
 type Result struct {
 	value any
+	err   error // Store error if this result represents a failure
 }
 
 // NewResult creates a new Result from any value.
 func NewResult(v any) Result {
 	return Result{value: v}
+}
+
+// NewErrorResult creates a new Result representing an error.
+func NewErrorResult(err error) Result {
+	return Result{err: err}
 }
 
 // R is a shorthand for NewResult.
@@ -4840,8 +4949,22 @@ func (r Result) Type() string {
 
 // Value returns the underlying value as any.
 // This is useful when you need to pass the Result to functions expecting any.
+// Returns nil if the Result represents an error.
 func (r Result) Value() any {
+	if r.err != nil {
+		return nil
+	}
 	return r.value
+}
+
+// IsError checks if the Result represents an error.
+func (r Result) IsError() bool {
+	return r.err != nil
+}
+
+// Error returns the error if this Result represents a failure, nil otherwise.
+func (r Result) Error() error {
+	return r.err
 }
 
 // As attempts to retrieve the Result as the specified type T.
@@ -5997,9 +6120,31 @@ for _, item := range items {
     process(item)
 }
 
-// Process in batches
-batchNode := flyt.NewBatchNode(processFunc, true)
-shared.Set("items", items)
+// Use BatchNode for efficient batch processing
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        return flyt.NewResult(process(item.Value()))
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        // Aggregate results
+        var processed []any
+        for _, r := range results {
+            if !r.IsError() {
+                processed = append(processed, r.Value())
+            }
+        }
+        shared.Set("processed", processed)
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(10)  // Process concurrently
 ```
 
 ### Lazy Loading
@@ -6271,57 +6416,84 @@ FILE: www/docs/pages/advanced/batch-flows.mdx
 ================================================
 # Batch Flows
 
-Run the same flow multiple times with different parameters, perfect for processing multiple entities or parallel workflows.
+Process multiple parameter sets through flows using BatchNode, perfect for handling multiple entities or parallel workflows.
 
 ## Basic Batch Flow
 
-Run a flow for each set of inputs:
+Use BatchNode to process multiple parameter sets:
 
 ```go
-// Create a flow factory - returns a new flow instance for each iteration
-flowFactory := func() *flyt.Flow {
-    validateNode := flyt.NewNode(
-        flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            // Each flow has its own SharedStore with merged FlowInputs
-            userID := shared.GetInt("user_id")
-            email := shared.GetString("email")
-            return map[string]any{"user_id": userID, "email": email}, nil
-        }),
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
-            data := prepResult.(map[string]any)
-            // Process user data
-            return processUser(data), nil
-        }),
-    )
-    return flyt.NewFlow(validateNode)
-}
+// Create a batch node that processes multiple user parameters
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Prepare multiple parameter sets
+        return []flyt.Result{
+            flyt.NewResult(map[string]any{"user_id": 1, "email": "user1@example.com"}),
+            flyt.NewResult(map[string]any{"user_id": 2, "email": "user2@example.com"}),
+            flyt.NewResult(map[string]any{"user_id": 3, "email": "user3@example.com"}),
+        }, nil
+    }).
+    WithExecFunc(func(ctx context.Context, params flyt.Result) (flyt.Result, error) {
+        // Process each parameter set
+        data := params.MustMap()
+        userID := data["user_id"].(int)
+        email := data["email"].(string)
+        
+        // Run your processing logic
+        result := processUser(userID, email)
+        return flyt.NewResult(result), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, params, results []flyt.Result) (flyt.Action, error) {
+        // Aggregate results from all parameter sets
+        var allResults []any
+        var errors []error
+        
+        for i, r := range results {
+            if r.IsError() {
+                log.Printf("Failed to process user %v: %v", params[i].Value(), r.Error())
+                errors = append(errors, r.Error())
+            } else {
+                allResults = append(allResults, r.Value())
+            }
+        }
+        
+        shared.Set("all_results", allResults)
+        shared.Set("error_count", len(errors))
+        
+        if len(errors) > 0 {
+            return "partial_success", nil
+        }
+        return flyt.DefaultAction, nil
+    })
 
-// Define input parameters for each flow iteration
-batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-    // Could fetch from database, API, etc.
-    return []flyt.FlowInputs{
-        {"user_id": 1, "email": "user1@example.com"},
-        {"user_id": 2, "email": "user2@example.com"},
-        {"user_id": 3, "email": "user3@example.com"},
-    }, nil
-}
+// Create a flow starting with the batch node
+flow := flyt.NewFlow(batchNode)
+flow.Connect(batchNode, flyt.DefaultAction, aggregateNode)
+flow.Connect(batchNode, "partial_success", errorHandlerNode)
 
-// Create and run batch flow
-batchFlow := flyt.NewBatchFlow(flowFactory, batchFunc, true) // true for concurrent
+// Run the flow
 shared := flyt.NewSharedStore()
-err := batchFlow.Run(ctx, shared)
+err := flow.Run(ctx, shared)
 ```
 
 ## Sequential vs Concurrent Execution
 
-Control how flows are executed:
+Control how parameter sets are processed:
 
 ```go
-// Sequential - one flow at a time
-sequentialBatch := flyt.NewBatchFlow(flowFactory, batchFunc, false)
+// Sequential - process one at a time, maintains order
+sequentialBatch := flyt.NewBatchNode().
+    WithPrepFunc(prepFunc).
+    WithExecFunc(execFunc).
+    WithPostFunc(postFunc).
+    WithBatchConcurrency(0)  // 0 = sequential
 
-// Concurrent - multiple flows in parallel
-concurrentBatch := flyt.NewBatchFlow(flowFactory, batchFunc, true)
+// Concurrent - process multiple in parallel
+concurrentBatch := flyt.NewBatchNode().
+    WithPrepFunc(prepFunc).
+    WithExecFunc(execFunc).
+    WithPostFunc(postFunc).
+    WithBatchConcurrency(10)  // Process up to 10 concurrently
 ```
 
 ## Dynamic Input Generation
@@ -6329,166 +6501,342 @@ concurrentBatch := flyt.NewBatchFlow(flowFactory, batchFunc, true)
 Generate inputs based on runtime data:
 
 ```go
-batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-    // Get configuration from parent shared store
-    config := shared.GetMap("batch_config")
-    batchSize := int(config["size"].(float64))  // JSON numbers are float64
-    
-    // Fetch data from database
-    users, err := fetchUsers(batchSize)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Convert to FlowInputs
-    inputs := make([]flyt.FlowInputs, len(users))
-    for i, user := range users {
-        inputs[i] = flyt.FlowInputs{
-            "user_id":   user.ID,
-            "user_name": user.Name,
-            "user_data": user,
-        }
-    }
-    
-    return inputs, nil
-}
-```
-
-## Complex Flow Factory
-
-Create sophisticated flows for each batch:
-
-```go
-flowFactory := func() *flyt.Flow {
-    // Create nodes
-    fetchNode := createFetchNode()
-    validateNode := createValidateNode()
-    processNode := createProcessNode()
-    saveNode := createSaveNode()
-    errorNode := createErrorNode()
-    
-    // Build flow with error handling
-    flow := flyt.NewFlow(fetchNode)
-    flow.Connect(fetchNode, flyt.DefaultAction, validateNode)
-    flow.Connect(validateNode, "valid", processNode)
-    flow.Connect(validateNode, "invalid", errorNode)
-    flow.Connect(processNode, flyt.DefaultAction, saveNode)
-    flow.Connect(processNode, "error", errorNode)
-    
-    return flow
-}
-```
-
-## Batch Flow with Configuration
-
-Pass configuration to batch flows:
-
-```go
-func createConfiguredBatchFlow(config Config) *flyt.Flow {
-    flowFactory := func() *flyt.Flow {
-        // Each flow gets the same configuration
-        node := flyt.NewNode(
-            flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
-                // Use config in processing
-                return processWithConfig(prepResult, config), nil
-            }),
-        )
-        return flyt.NewFlow(node)
-    }
-    
-    batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-        items := shared.GetSlice("items")
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Get configuration from shared store
+        config := shared.GetMap("batch_config")
+        batchSize := config["size"].(int)
         
-        inputs := make([]flyt.FlowInputs, 0)
-        for _, item := range items {
-            inputs = append(inputs, flyt.FlowInputs{
-                "item": item,
-                "config": config,
+        // Fetch data from database
+        users, err := fetchUsers(batchSize)
+        if err != nil {
+            return nil, fmt.Errorf("failed to fetch users: %w", err)
+        }
+        
+        // Convert to Results
+        results := make([]flyt.Result, len(users))
+        for i, user := range users {
+            results[i] = flyt.NewResult(map[string]any{
+                "user_id":   user.ID,
+                "user_name": user.Name,
+                "user_data": user,
             })
         }
         
-        return inputs, nil
-    }
-    
-    return flyt.NewBatchFlow(flowFactory, batchFunc, true)
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, userResult flyt.Result) (flyt.Result, error) {
+        userData := userResult.MustMap()
+        user := userData["user_data"].(User)
+        
+        // Process individual user
+        processed, err := processUserData(user)
+        if err != nil {
+            return flyt.Result{}, fmt.Errorf("failed to process user %d: %w", user.ID, err)
+        }
+        
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, users, results []flyt.Result) (flyt.Action, error) {
+        successCount := 0
+        for _, result := range results {
+            if !result.IsError() {
+                successCount++
+            }
+        }
+        
+        log.Printf("Processed %d/%d users successfully", successCount, len(users))
+        shared.Set("success_rate", float64(successCount)/float64(len(users)))
+        
+        return flyt.DefaultAction, nil
+    })
+```
+
+## Complex Processing Pipeline
+
+Create sophisticated processing for each batch item:
+
+```go
+// Create a batch node that runs a multi-step pipeline for each item
+pipelineBatchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        orders := shared.GetSlice("orders")
+        results := make([]flyt.Result, len(orders))
+        for i, order := range orders {
+            results[i] = flyt.NewResult(order)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, orderResult flyt.Result) (flyt.Result, error) {
+        var order Order
+        if err := orderResult.Bind(&order); err != nil {
+            return flyt.Result{}, err
+        }
+        
+        // Multi-step processing pipeline
+        // Step 1: Validate
+        if err := validateOrder(order); err != nil {
+            return flyt.Result{}, fmt.Errorf("validation failed: %w", err)
+        }
+        
+        // Step 2: Enrich
+        enrichedOrder, err := enrichOrderData(order)
+        if err != nil {
+            return flyt.Result{}, fmt.Errorf("enrichment failed: %w", err)
+        }
+        
+        // Step 3: Process
+        processedOrder, err := processOrder(enrichedOrder)
+        if err != nil {
+            return flyt.Result{}, fmt.Errorf("processing failed: %w", err)
+        }
+        
+        // Step 4: Save
+        if err := saveOrder(processedOrder); err != nil {
+            return flyt.Result{}, fmt.Errorf("save failed: %w", err)
+        }
+        
+        return flyt.NewResult(processedOrder), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, orders, results []flyt.Result) (flyt.Action, error) {
+        var processed []Order
+        var failed []map[string]any
+        
+        for i, result := range results {
+            if result.IsError() {
+                original := orders[i].Value()
+                failed = append(failed, map[string]any{
+                    "order": original,
+                    "error": result.Error().Error(),
+                })
+            } else {
+                var order Order
+                result.Bind(&order)
+                processed = append(processed, order)
+            }
+        }
+        
+        shared.Set("processed_orders", processed)
+        shared.Set("failed_orders", failed)
+        
+        if len(failed) > 0 {
+            return "has_failures", nil
+        }
+        return "all_success", nil
+    }).
+    WithBatchConcurrency(5).
+    WithBatchErrorHandling(true)  // Continue processing despite failures
+```
+
+## Batch with Configuration
+
+Pass configuration to batch processing:
+
+```go
+func createConfiguredBatchNode(config ProcessConfig) *flyt.BatchNodeBuilder {
+    return flyt.NewBatchNode().
+        WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+            // Use config to determine what to process
+            var items []flyt.Result
+            
+            switch config.Source {
+            case "database":
+                data, err := fetchFromDB(config.DBConfig)
+                if err != nil {
+                    return nil, err
+                }
+                for _, item := range data {
+                    items = append(items, flyt.NewResult(item))
+                }
+            case "api":
+                data, err := fetchFromAPI(config.APIConfig)
+                if err != nil {
+                    return nil, err
+                }
+                for _, item := range data {
+                    items = append(items, flyt.NewResult(item))
+                }
+            default:
+                return nil, fmt.Errorf("unknown source: %s", config.Source)
+            }
+            
+            return items, nil
+        }).
+        WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+            // Apply configuration to processing
+            if config.ValidateEnabled {
+                if err := validate(item.Value()); err != nil {
+                    return flyt.Result{}, err
+                }
+            }
+            
+            result := process(item.Value(), config.ProcessOptions)
+            
+            if config.TransformEnabled {
+                result = transform(result, config.TransformOptions)
+            }
+            
+            return flyt.NewResult(result), nil
+        }).
+        WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+            // Save based on configuration
+            var successful []any
+            for _, result := range results {
+                if !result.IsError() {
+                    successful = append(successful, result.Value())
+                }
+            }
+            
+            if config.SaveEnabled {
+                if err := saveResults(successful, config.SaveOptions); err != nil {
+                    return "", fmt.Errorf("save failed: %w", err)
+                }
+            }
+            
+            shared.Set("results", successful)
+            return flyt.DefaultAction, nil
+        }).
+        WithBatchConcurrency(config.Concurrency).
+        WithMaxRetries(config.MaxRetries)
 }
 ```
 
 ## Result Aggregation
 
-Collect results from all flows:
+Collect and aggregate results from batch processing:
 
 ```go
-type ResultCollector struct {
-    mu      sync.Mutex
-    results []any
-    errors  []error
-}
-
-func createAggregatingBatchFlow(collector *ResultCollector) *flyt.Flow {
-    flowFactory := func() *flyt.Flow {
-        node := flyt.NewNode(
-            flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
-                result, err := process(prepResult)
+aggregatingBatchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        metrics := shared.GetSlice("metrics")
+        results := make([]flyt.Result, len(metrics))
+        for i, metric := range metrics {
+            results[i] = flyt.NewResult(metric)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, metric flyt.Result) (flyt.Result, error) {
+        var m Metric
+        if err := metric.Bind(&m); err != nil {
+            return flyt.Result{}, err
+        }
+        
+        // Calculate metric value
+        value, err := calculateMetric(m)
+        if err != nil {
+            return flyt.Result{}, err
+        }
+        
+        return flyt.NewResult(map[string]any{
+            "name":  m.Name,
+            "value": value,
+            "timestamp": time.Now(),
+        }), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, metrics, results []flyt.Result) (flyt.Action, error) {
+        // Aggregate all metric results
+        aggregated := map[string]any{
+            "timestamp": time.Now(),
+            "metrics":   []map[string]any{},
+            "summary":   map[string]any{},
+        }
+        
+        var total float64
+        var count int
+        var min, max float64
+        
+        for _, result := range results {
+            if !result.IsError() {
+                metricData := result.MustMap()
+                aggregated["metrics"] = append(
+                    aggregated["metrics"].([]map[string]any),
+                    metricData,
+                )
                 
-                collector.mu.Lock()
-                if err != nil {
-                    collector.errors = append(collector.errors, err)
-                } else {
-                    collector.results = append(collector.results, result)
+                value := metricData["value"].(float64)
+                total += value
+                count++
+                
+                if count == 1 || value < min {
+                    min = value
                 }
-                collector.mu.Unlock()
-                
-                return result, err
-            }),
-        )
-        return flyt.NewFlow(node)
-    }
-    
-    // ... rest of batch flow setup
-}
+                if value > max {
+                    max = value
+                }
+            }
+        }
+        
+        if count > 0 {
+            aggregated["summary"] = map[string]any{
+                "count":   count,
+                "total":   total,
+                "average": total / float64(count),
+                "min":     min,
+                "max":     max,
+            }
+        }
+        
+        shared.Set("aggregated_metrics", aggregated)
+        return flyt.DefaultAction, nil
+    })
 ```
 
-## Batch Flow with Progress
+## Progress Tracking
 
 Track progress across batch execution:
 
 ```go
-type ProgressTracker struct {
-    total     int
-    completed int32
-    failed    int32
-}
-
-func createProgressBatchFlow(tracker *ProgressTracker) *flyt.Flow {
-    flowFactory := func() *flyt.Flow {
-        node := flyt.NewNode(
-            flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-                if execResult != nil {
-                    atomic.AddInt32(&tracker.completed, 1)
-                } else {
-                    atomic.AddInt32(&tracker.failed, 1)
-                }
-                
-                progress := atomic.LoadInt32(&tracker.completed) + atomic.LoadInt32(&tracker.failed)
-                percentage := float64(progress) / float64(tracker.total) * 100
-                
-                log.Printf("Batch progress: %.1f%% (%d/%d)", percentage, progress, tracker.total)
-                
-                return flyt.DefaultAction, nil
-            }),
-        )
-        return flyt.NewFlow(node)
-    }
-    
-    batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-        inputs := generateInputs()
-        tracker.total = len(inputs)
-        return inputs, nil
-    }
-    
-    return flyt.NewBatchFlow(flowFactory, batchFunc, true)
-}
+progressBatchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        tasks := shared.GetSlice("tasks")
+        results := make([]flyt.Result, len(tasks))
+        
+        log.Printf("Starting batch processing of %d tasks", len(tasks))
+        shared.Set("total_tasks", len(tasks))
+        shared.Set("start_time", time.Now())
+        
+        for i, task := range tasks {
+            results[i] = flyt.NewResult(task)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, task flyt.Result) (flyt.Result, error) {
+        // Process task
+        result, err := processTask(task.Value())
+        if err != nil {
+            return flyt.Result{}, err
+        }
+        return flyt.NewResult(result), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, tasks, results []flyt.Result) (flyt.Action, error) {
+        startTime := shared.Get("start_time").(time.Time)
+        duration := time.Since(startTime)
+        
+        successful := 0
+        failed := 0
+        
+        for _, result := range results {
+            if result.IsError() {
+                failed++
+            } else {
+                successful++
+            }
+        }
+        
+        log.Printf("Batch completed in %v: %d successful, %d failed out of %d total",
+                   duration, successful, failed, len(tasks))
+        
+        shared.Set("batch_stats", map[string]any{
+            "total":      len(tasks),
+            "successful": successful,
+            "failed":     failed,
+            "duration":   duration.Seconds(),
+            "rate":       float64(len(tasks)) / duration.Seconds(),
+        })
+        
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(10)
 ```
 
 ## Conditional Batch Processing
@@ -6496,106 +6844,147 @@ func createProgressBatchFlow(tracker *ProgressTracker) *flyt.Flow {
 Process batches based on conditions:
 
 ```go
-batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-    mode := shared.GetString("processing_mode")
-    
-    var inputs []flyt.FlowInputs
-    
-    switch mode {
-    case "all":
-        inputs = getAllInputs()
-    case "pending":
-        inputs = getPendingInputs()
-    case "failed":
-        inputs = getFailedInputs()
-    default:
-        return nil, fmt.Errorf("unknown mode: %s", mode)
-    }
-    
-    // Filter based on additional criteria
-    filtered := make([]flyt.FlowInputs, 0)
-    for _, input := range inputs {
-        if shouldProcess(input) {
-            filtered = append(filtered, input)
+conditionalBatchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        allItems := shared.GetSlice("items")
+        processingMode := shared.GetString("mode")
+        
+        var itemsToProcess []flyt.Result
+        
+        for _, item := range allItems {
+            itemMap := item.(map[string]any)
+            
+            // Apply conditional logic
+            shouldProcess := false
+            switch processingMode {
+            case "priority":
+                shouldProcess = itemMap["priority"].(string) == "high"
+            case "recent":
+                timestamp := itemMap["timestamp"].(time.Time)
+                shouldProcess = time.Since(timestamp) < 24*time.Hour
+            case "pending":
+                shouldProcess = itemMap["status"].(string) == "pending"
+            default:
+                shouldProcess = true
+            }
+            
+            if shouldProcess {
+                itemsToProcess = append(itemsToProcess, flyt.NewResult(item))
+            }
         }
-    }
-    
-    return filtered, nil
-}
-```
-
-## Nested Batch Flows
-
-Batch flows within batch flows:
-
-```go
-outerFlowFactory := func() *flyt.Flow {
-    // Inner batch flow for processing items
-    innerBatchFlow := flyt.NewBatchFlow(
-        innerFlowFactory,
-        innerBatchFunc,
-        true,
-    )
-    
-    // Outer flow that includes the batch
-    fetchNode := createFetchNode()
-    
-    flow := flyt.NewFlow(fetchNode)
-    flow.Connect(fetchNode, flyt.DefaultAction, innerBatchFlow)
-    flow.Connect(innerBatchFlow, flyt.DefaultAction, aggregateNode)
-    
-    return flow
-}
-
-// Create outer batch flow
-outerBatchFlow := flyt.NewBatchFlow(outerFlowFactory, outerBatchFunc, false)
+        
+        log.Printf("Processing %d out of %d items based on %s mode",
+                   len(itemsToProcess), len(allItems), processingMode)
+        
+        return itemsToProcess, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Process selected item
+        processed, err := processItem(item.Value())
+        if err != nil {
+            return flyt.Result{}, err
+        }
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var processed []any
+        for _, result := range results {
+            if !result.IsError() {
+                processed = append(processed, result.Value())
+            }
+        }
+        
+        shared.Set("processed_items", processed)
+        return flyt.DefaultAction, nil
+    })
 ```
 
 ## Error Recovery
 
-Handle failures in batch flows:
+Handle and recover from batch failures:
 
 ```go
-flowFactory := func() *flyt.Flow {
-    node := flyt.NewNode(
-        flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
-            result, err := riskyOperation(prepResult)
-            if err != nil {
-                // Store error for later analysis
-                errorData := map[string]any{
-                    "input": prepResult,
-                    "error": err.Error(),
-                    "time":  time.Now(),
+recoverableBatchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Try processing
+        result, err := riskyOperation(item.Value())
+        if err != nil {
+            // Try recovery
+            if recoverable, ok := err.(RecoverableError); ok {
+                log.Printf("Attempting recovery for: %v", recoverable)
+                result, err = recoverOperation(item.Value(), recoverable)
+                if err != nil {
+                    return flyt.Result{}, fmt.Errorf("recovery failed: %w", err)
                 }
-                storeError(errorData)
-                
-                // Return partial result
-                return map[string]any{
-                    "status": "failed",
-                    "error":  err.Error(),
-                }, nil  // Don't fail the entire batch
+                return flyt.NewResult(map[string]any{
+                    "result":    result,
+                    "recovered": true,
+                })
             }
-            return result, nil
-        }),
-    )
-    return flyt.NewFlow(node)
-}
+            return flyt.Result{}, err
+        }
+        
+        return flyt.NewResult(map[string]any{
+            "result":    result,
+            "recovered": false,
+        })
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var successful []any
+        var recovered []any
+        var failed []any
+        
+        for i, result := range results {
+            if result.IsError() {
+                failed = append(failed, items[i].Value())
+            } else {
+                data := result.MustMap()
+                if data["recovered"].(bool) {
+                    recovered = append(recovered, data["result"])
+                } else {
+                    successful = append(successful, data["result"])
+                }
+            }
+        }
+        
+        shared.Set("successful", successful)
+        shared.Set("recovered", recovered)
+        shared.Set("failed", failed)
+        
+        log.Printf("Results: %d successful, %d recovered, %d failed",
+                   len(successful), len(recovered), len(failed))
+        
+        if len(failed) > 0 {
+            return "has_failures", nil
+        }
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchErrorHandling(true).  // Continue despite failures
+    WithMaxRetries(3)              // Retry failed items
 ```
 
 ## Best Practices
 
-1. **Isolate Flows**: Each flow instance should be independent
-2. **Manage Resources**: Be mindful of resource usage with concurrent flows
-3. **Handle Failures**: Decide whether one failure should stop the batch
+1. **Use Results Properly**: Always check `Result.IsError()` before accessing values
+2. **Log Progress**: Add logging in Post to track batch completion
+3. **Handle Failures**: Decide whether one failure should affect others
 4. **Track Progress**: Implement progress tracking for long-running batches
-5. **Limit Concurrency**: Set reasonable concurrency limits
-6. **Test Thoroughly**: Test with various batch sizes and failure scenarios
+5. **Configure Concurrency**: Set appropriate concurrency based on resource constraints
+6. **Clean Error Handling**: Use Result error tracking for clean error propagation
 
 ## Next Steps
 
-- [Batch Processing](/advanced/batch-processing) - Process items within a single node
-- [Nested Flows](/advanced/nested-flows) - Compose complex workflows
-- [Worker Pool](/advanced/worker-pool) - Fine-grained concurrency control
+- [Batch Processing](/advanced/batch-processing) - Core batch processing concepts
+- [Error Handling](/patterns/error-handling) - Handle errors effectively
+- [Worker Pool](/advanced/worker-pool) - Custom concurrent processing
 
 
 ================================================
@@ -6603,113 +6992,179 @@ FILE: www/docs/pages/advanced/batch-processing.mdx
 ================================================
 # Batch Processing
 
-Process collections of items efficiently with concurrent or sequential execution.
+Process collections of items efficiently with concurrent or sequential execution using BatchNode.
 
 ## Basic Batch Processing
 
-Process items with a simple function:
+BatchNode simplifies batch processing by working almost exactly like regular nodes. The framework automatically handles iteration when Prep returns `[]Result`:
 
 ```go
-// Define processing function
-processFunc := func(ctx context.Context, item any) (any, error) {
-    // Process each item
-    return fmt.Sprintf("processed: %v", item), nil
-}
+// Create a batch node
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Return []Result to trigger batch processing
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Process individual item - called automatically for each item
+        data := item.Value().(string)
+        processed := fmt.Sprintf("processed: %v", data)
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        // Called once with all results aggregated
+        var successful []any
+        for _, result := range results {
+            if !result.IsError() {
+                successful = append(successful, result.Value())
+            }
+        }
+        shared.Set("results", successful)
+        return flyt.DefaultAction, nil
+    })
 
-// Create batch node
-batchNode := flyt.NewBatchNode(processFunc, true) // true for concurrent
-
-// Set items in shared store
+// Set items and run
 shared := flyt.NewSharedStore()
 shared.Set("items", []string{"item1", "item2", "item3"})
 
-// Run batch processing
 ctx := context.Background()
 action, err := flyt.Run(ctx, batchNode, shared)
 
-// Get results using type-safe getter
+// Get results
 results := shared.GetSlice("results")
 fmt.Println(results) // ["processed: item1", "processed: item2", "processed: item3"]
 ```
 
 ## Sequential vs Concurrent
 
-Choose the right execution mode:
+Configure concurrency for your needs:
 
 ```go
 // Sequential processing - maintains order
-sequentialNode := flyt.NewBatchNode(processFunc, false)
+sequentialNode := flyt.NewBatchNode().
+    WithPrepFunc(prepFunc).
+    WithExecFunc(execFunc).
+    WithPostFunc(postFunc).
+    WithBatchConcurrency(0)  // 0 = sequential
 
 // Concurrent processing - faster but unordered
-concurrentNode := flyt.NewBatchNode(processFunc, true)
-```
-
-## Custom Keys
-
-Use custom keys for input and output:
-
-```go
-batchNode := flyt.NewBatchNodeWithKeys(
-    processFunc,
-    true,           // concurrent
-    "input_data",   // custom input key
-    "output_data",  // custom output key
-)
-
-shared.Set("input_data", items)
-// Results will be in "output_data"
+concurrentNode := flyt.NewBatchNode().
+    WithPrepFunc(prepFunc).
+    WithExecFunc(execFunc).
+    WithPostFunc(postFunc).
+    WithBatchConcurrency(10)  // Process up to 10 items concurrently
 ```
 
 ## Advanced Configuration
 
-Fine-tune batch processing with BatchConfig:
+Configure batch processing behavior:
 
 ```go
-config := &flyt.BatchConfig{
-    BatchSize:   10,        // Process 10 items at a time
-    Concurrency: 5,         // Use 5 concurrent workers
-    ItemsKey:    "data",    // Key for input items
-    ResultsKey:  "output",  // Key for results
-    CountKey:    "total",   // Key for processed count
-}
-
-processFunc := func(ctx context.Context, item any) (any, error) {
-    // Heavy processing
-    time.Sleep(100 * time.Millisecond)
-    return processItem(item)
-}
-
-batchNode := flyt.NewBatchNodeWithConfig(processFunc, true, config)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        users := shared.GetSlice("users")
+        results := make([]flyt.Result, len(users))
+        for i, user := range users {
+            results[i] = flyt.NewResult(user)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, user flyt.Result) (flyt.Result, error) {
+        // Heavy processing for each user
+        userData := user.AsMapOr(nil)
+        if userData == nil {
+            return flyt.Result{}, fmt.Errorf("invalid user data")
+        }
+        
+        time.Sleep(100 * time.Millisecond)  // Simulate work
+        processed, err := processUser(userData)
+        if err != nil {
+            return flyt.Result{}, err
+        }
+        return flyt.NewResult(processed), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, users, results []flyt.Result) (flyt.Action, error) {
+        successCount := 0
+        errorCount := 0
+        
+        for _, result := range results {
+            if result.IsError() {
+                errorCount++
+            } else {
+                successCount++
+            }
+        }
+        
+        shared.Set("success_count", successCount)
+        shared.Set("error_count", errorCount)
+        
+        log.Printf("Processed %d successfully, %d failed", successCount, errorCount)
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(5).       // Use 5 concurrent workers
+    WithBatchErrorHandling(true).  // Continue processing even if some items fail
+    WithMaxRetries(3).             // Retry each item up to 3 times
+    WithWait(time.Second)          // Wait between retries
 ```
 
 ## Error Handling
 
-Handle errors in batch operations:
+The BatchNode API provides clean per-item error handling:
 
 ```go
-processFunc := func(ctx context.Context, item any) (any, error) {
-    if item.(int) < 0 {
-        return nil, fmt.Errorf("negative value: %v", item)
-    }
-    return item.(int) * 2, nil
-}
-
-batchNode := flyt.NewBatchNode(processFunc, true)
-shared.Set("items", []int{1, -2, 3, -4, 5})
-
-action, err := flyt.Run(ctx, batchNode, shared)
-if err != nil {
-    if batchErr, ok := err.(*flyt.BatchError); ok {
-        fmt.Printf("Batch processing failed: %s\n", batchErr.Message)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        // Some items might already be invalid
+        return []flyt.Result{
+            flyt.NewResult(1),
+            flyt.NewResult(-2),  // Will cause error
+            flyt.NewResult(3),
+            flyt.NewErrorResult(errors.New("pre-existing error")),
+            flyt.NewResult(5),
+        }, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Check for pre-existing errors
+        if item.IsError() {
+            return item, nil  // Pass through
+        }
         
-        // Access individual errors
-        for i, e := range batchErr.Errors {
-            if e != nil {
-                fmt.Printf("Item %d failed: %v\n", i, e)
+        value := item.AsIntOr(0)
+        if value < 0 {
+            return flyt.Result{}, fmt.Errorf("negative value: %d", value)
+        }
+        return flyt.NewResult(value * 2), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var successful []int
+        var errors []error
+        
+        for i, result := range results {
+            if result.IsError() {
+                errors = append(errors, result.Error())
+                log.Printf("Item %d failed: %v", i, result.Error())
+            } else {
+                successful = append(successful, result.AsIntOr(0))
             }
         }
-    }
-}
+        
+        shared.Set("successful", successful)
+        shared.Set("error_count", len(errors))
+        
+        // Return different actions based on results
+        if len(errors) == len(results) {
+            return "all_failed", nil
+        } else if len(errors) > 0 {
+            return "partial_success", nil
+        }
+        return "all_success", nil
+    }).
+    WithBatchErrorHandling(true)  // Continue processing despite errors
 ```
 
 ## Batch Processing Patterns
@@ -6719,16 +7174,41 @@ if err != nil {
 Transform each item:
 
 ```go
-mapFunc := func(ctx context.Context, item any) (any, error) {
-    user := item.(User)
-    return UserDTO{
-        ID:   user.ID,
-        Name: user.Name,
-        Age:  user.Age,
-    }, nil
-}
-
-mapNode := flyt.NewBatchNode(mapFunc, true)
+mapNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        users := shared.GetSlice("users")
+        results := make([]flyt.Result, len(users))
+        for i, user := range users {
+            results[i] = flyt.NewResult(user)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        var user User
+        if err := item.Bind(&user); err != nil {
+            return flyt.Result{}, err
+        }
+        
+        // Transform to DTO
+        dto := UserDTO{
+            ID:   user.ID,
+            Name: user.Name,
+            Age:  user.Age,
+        }
+        return flyt.NewResult(dto), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var dtos []UserDTO
+        for _, result := range results {
+            if !result.IsError() {
+                var dto UserDTO
+                result.Bind(&dto)
+                dtos = append(dtos, dto)
+            }
+        }
+        shared.Set("user_dtos", dtos)
+        return flyt.DefaultAction, nil
+    })
 ```
 
 ### Filter Pattern
@@ -6736,72 +7216,75 @@ mapNode := flyt.NewBatchNode(mapFunc, true)
 Process only matching items:
 
 ```go
-filterFunc := func(ctx context.Context, item any) (any, error) {
-    value := item.(int)
-    if value > 10 {
-        return value, nil
-    }
-    return nil, nil  // Skip this item
-}
-
-filterNode := flyt.NewBatchNode(filterFunc, true)
-```
-
-### Reduce Pattern
-
-Aggregate results:
-
-```go
-type SumNode struct {
-    *flyt.BaseNode
-    total int
-    mu    sync.Mutex
-}
-
-func (n *SumNode) Exec(ctx context.Context, prepResult any) (any, error) {
-    items := prepResult.([]int)
-    
-    for _, item := range items {
-        n.mu.Lock()
-        n.total += item
-        n.mu.Unlock()
-    }
-    
-    return n.total, nil
-}
-```
-
-## Chunked Processing
-
-Process large datasets in chunks:
-
-```go
-func createChunkedProcessor(chunkSize int) flyt.Node {
-    // Using fluent API for chunked processing
-    return flyt.NewNode().
-        WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-            items := shared.GetSlice("items")
-            return items, nil
-        }).
-        WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
-            items := prepResult.([]any)
-            results := make([]any, 0, len(items))
-            
-            // Process in chunks
-            for i := 0; i < len(items); i += chunkSize {
-                end := i + chunkSize
-                if end > len(items) {
-                    end = len(items)
-                }
-                
-                chunk := items[i:end]
-                chunkResults := processChunk(chunk)
-                results = append(results, chunkResults...)
+filterNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        numbers := shared.GetSlice("numbers")
+        results := make([]flyt.Result, len(numbers))
+        for i, num := range numbers {
+            results[i] = flyt.NewResult(num)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        value := item.AsIntOr(0)
+        if value > 10 {
+            return item, nil  // Keep this item
+        }
+        return flyt.NewErrorResult(fmt.Errorf("filtered out: %d", value)), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var filtered []int
+        for _, result := range results {
+            if !result.IsError() {
+                filtered = append(filtered, result.AsIntOr(0))
             }
-            
-            return results, nil
-        })
-}
+        }
+        shared.Set("filtered", filtered)
+        return flyt.DefaultAction, nil
+    })
+```
+
+### Aggregation Pattern
+
+Aggregate results in Post:
+
+```go
+sumNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        numbers := shared.GetSlice("numbers")
+        results := make([]flyt.Result, len(numbers))
+        for i, num := range numbers {
+            results[i] = flyt.NewResult(num)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Just validate and pass through
+        value := item.AsIntOr(0)
+        if value < 0 {
+            return flyt.Result{}, fmt.Errorf("negative number not allowed")
+        }
+        return item, nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        total := 0
+        count := 0
+        
+        for _, result := range results {
+            if !result.IsError() {
+                total += result.AsIntOr(0)
+                count++
+            }
+        }
+        
+        shared.Set("sum", total)
+        shared.Set("count", count)
+        if count > 0 {
+            shared.Set("average", float64(total)/float64(count))
+        }
+        
+        return flyt.DefaultAction, nil
+    })
 ```
 
 ## Progress Tracking
@@ -6809,60 +7292,98 @@ func createChunkedProcessor(chunkSize int) flyt.Node {
 Monitor batch processing progress:
 
 ```go
-type ProgressBatchNode struct {
-    *flyt.BaseNode
-    processed int32
-    total     int32
-}
-
-func (n *ProgressBatchNode) processWithProgress(ctx context.Context, items []any) ([]any, error) {
-    n.total = int32(len(items))
-    results := make([]any, len(items))
-    
-    var wg sync.WaitGroup
-    for i, item := range items {
-        wg.Add(1)
-        go func(idx int, data any) {
-            defer wg.Done()
-            
-            result, _ := processItem(data)
-            results[idx] = result
-            
-            // Update progress
-            current := atomic.AddInt32(&n.processed, 1)
-            progress := float64(current) / float64(n.total) * 100
-            
-            if current%10 == 0 || current == n.total {
-                log.Printf("Progress: %.1f%% (%d/%d)", progress, current, n.total)
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
+        }
+        log.Printf("Starting batch processing of %d items", len(results))
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Process item
+        result, err := processItem(item.Value())
+        if err != nil {
+            return flyt.Result{}, err
+        }
+        return flyt.NewResult(result), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        processed := 0
+        failed := 0
+        
+        for _, result := range results {
+            if result.IsError() {
+                failed++
+            } else {
+                processed++
             }
-        }(i, item)
-    }
-    
-    wg.Wait()
-    return results, nil
-}
+        }
+        
+        log.Printf("Batch complete: %d/%d successful, %d failed", 
+                   processed, len(items), failed)
+        
+        shared.Set("stats", map[string]int{
+            "total":      len(items),
+            "processed":  processed,
+            "failed":     failed,
+        })
+        
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(5)
 ```
 
 ## Rate-Limited Batch Processing
 
-Control processing rate:
+Control processing rate with external limiters:
 
 ```go
-func createRateLimitedBatchNode(rps int) flyt.Node {
-    limiter := rate.NewLimiter(rate.Limit(rps), 1)
-    
-    processFunc := func(ctx context.Context, item any) (any, error) {
-        // Wait for rate limiter
-        if err := limiter.Wait(ctx); err != nil {
-            return nil, err
-        }
-        
-        // Process item
-        return callAPI(item)
-    }
-    
-    return flyt.NewBatchNode(processFunc, true)
+func createRateLimitedBatchNode(limiter *rate.Limiter) *flyt.BatchNodeBuilder {
+    return flyt.NewBatchNode().
+        WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+            items := shared.GetSlice("api_requests")
+            results := make([]flyt.Result, len(items))
+            for i, item := range items {
+                results[i] = flyt.NewResult(item)
+            }
+            return results, nil
+        }).
+        WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+            // Wait for rate limiter
+            if err := limiter.Wait(ctx); err != nil {
+                return flyt.Result{}, fmt.Errorf("rate limit wait failed: %w", err)
+            }
+            
+            // Make API call
+            request := item.Value().(APIRequest)
+            response, err := callAPI(request)
+            if err != nil {
+                return flyt.Result{}, err
+            }
+            
+            return flyt.NewResult(response), nil
+        }).
+        WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+            var responses []APIResponse
+            for _, result := range results {
+                if !result.IsError() {
+                    var resp APIResponse
+                    result.Bind(&resp)
+                    responses = append(responses, resp)
+                }
+            }
+            shared.Set("api_responses", responses)
+            return flyt.DefaultAction, nil
+        }).
+        WithBatchConcurrency(3)  // Limit concurrent API calls
 }
+
+// Usage
+limiter := rate.NewLimiter(rate.Limit(10), 1)  // 10 requests per second
+batchNode := createRateLimitedBatchNode(limiter)
 ```
 
 ## Batch with Timeout
@@ -6870,21 +7391,29 @@ func createRateLimitedBatchNode(rps int) flyt.Node {
 Set timeouts for batch operations:
 
 ```go
-func createTimeoutBatchNode(timeout time.Duration) flyt.Node {
-    processFunc := func(ctx context.Context, item any) (any, error) {
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        tasks := shared.GetSlice("tasks")
+        results := make([]flyt.Result, len(tasks))
+        for i, task := range tasks {
+            results[i] = flyt.NewResult(task)
+        }
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
         // Create timeout context for this item
-        itemCtx, cancel := context.WithTimeout(ctx, timeout)
+        itemCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
         defer cancel()
         
-        resultChan := make(chan any)
+        resultChan := make(chan flyt.Result)
         errChan := make(chan error)
         
         go func() {
-            result, err := processItem(item)
+            result, err := processTaskWithContext(itemCtx, item.Value())
             if err != nil {
                 errChan <- err
             } else {
-                resultChan <- result
+                resultChan <- flyt.NewResult(result)
             }
         }()
         
@@ -6892,30 +7421,56 @@ func createTimeoutBatchNode(timeout time.Duration) flyt.Node {
         case result := <-resultChan:
             return result, nil
         case err := <-errChan:
-            return nil, err
+            return flyt.Result{}, err
         case <-itemCtx.Done():
-            return nil, fmt.Errorf("processing timeout for item: %v", item)
+            return flyt.Result{}, fmt.Errorf("task timeout: %v", item.Value())
         }
-    }
-    
-    return flyt.NewBatchNode(processFunc, true)
-}
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var completed []any
+        var timedOut []any
+        
+        for i, result := range results {
+            if result.IsError() && strings.Contains(result.Error().Error(), "timeout") {
+                timedOut = append(timedOut, items[i].Value())
+            } else if !result.IsError() {
+                completed = append(completed, result.Value())
+            }
+        }
+        
+        shared.Set("completed", completed)
+        shared.Set("timed_out", timedOut)
+        
+        if len(timedOut) > 0 {
+            return "has_timeouts", nil
+        }
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchConcurrency(5)
 ```
 
 ## Best Practices
 
-1. **Choose Concurrency Wisely**: Use concurrent for I/O-bound, sequential for order-dependent
-2. **Handle Errors Gracefully**: Decide whether to fail fast or collect all errors
-3. **Monitor Progress**: Add logging for long-running batches
-4. **Set Reasonable Limits**: Configure batch size and concurrency based on resources
+1. **Choose Concurrency Wisely**: Use concurrent for I/O-bound, sequential for order-dependent operations
+2. **Handle Errors Gracefully**: Use `WithBatchErrorHandling(true)` to continue despite failures
+3. **Monitor Progress**: Log in Post to track batch completion
+4. **Set Reasonable Limits**: Configure concurrency based on resources
 5. **Test with Real Data**: Test with production-like data volumes
-6. **Consider Memory Usage**: Be mindful of memory when processing large batches
+6. **Use Result Error Tracking**: Leverage `Result.IsError()` and `Result.Error()` for clean error handling
+
+## Key Benefits
+
+1. **Simplicity**: BatchNode works almost exactly like regular nodes
+2. **Automatic Handling**: Framework detects `[]Result` and handles iteration
+3. **Clean Error Tracking**: Each Result can carry its own error state
+4. **Flexible Configuration**: Concurrency and error handling are configurable
+5. **Type Safety**: Strong typing with Result type throughout
 
 ## Next Steps
 
-- [Batch Flows](/advanced/batch-flows) - Run flows with multiple inputs
 - [Worker Pool](/advanced/worker-pool) - Custom concurrent processing
-- [Error Handling](/patterns/error-handling) - Handle batch errors
+- [Error Handling](/patterns/error-handling) - Handle errors effectively
+- [Flow Patterns](/patterns/branching) - Complex flow control
 
 
 ================================================
@@ -8592,6 +9147,8 @@ FILE: www/docs/pages/advanced/worker-pool.mdx
 
 Manage concurrent task execution with fine-grained control using the WorkerPool utility.
 
+> **Note:** BatchNode internally uses WorkerPool for concurrent batch processing. For most batch processing scenarios, use `BatchNode` with `WithBatchConcurrency(n)` for a simpler API. Use WorkerPool directly when you need custom concurrent task management outside of the batch processing pattern.
+
 ## Basic Worker Pool
 
 Create and use a worker pool:
@@ -8895,7 +9452,7 @@ func (n *ParallelProcessingNode) Close() {
 
 ## Batch Processing with Worker Pool
 
-Process batches efficiently:
+BatchNode uses WorkerPool internally for concurrent processing. You can also use WorkerPool directly for custom batch operations:
 
 ```go
 func processBatchesWithPool(items []Item, batchSize int, workers int) []Result {
@@ -8924,6 +9481,8 @@ func processBatchesWithPool(items []Item, batchSize int, workers int) []Result {
     return results
 }
 ```
+
+**Note:** For most batch processing needs, consider using `BatchNode` which provides a simpler API and handles worker pool management automatically with `WithBatchConcurrency(n)`.
 
 ## Monitoring Worker Pool
 
@@ -10010,15 +10569,22 @@ errors := shared.GetSlice("errors")
 Each flow in a batch has its own SharedStore:
 
 ```go
-batchFunc := func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.FlowInputs, error) {
-    // This shared is from the parent
-    baseConfig := shared.GetMap("base_config")
-    
-    return []flyt.FlowInputs{
-        {"id": 1, "config": baseConfig}, // Each gets own SharedStore
-        {"id": 2, "config": baseConfig},
-    }, nil
-}
+// Use BatchNode to process multiple parameter sets
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        baseConfig := shared.GetMap("base_config")
+        
+        // Each Result represents a parameter set
+        return []flyt.Result{
+            flyt.NewResult(map[string]any{"id": 1, "config": baseConfig}),
+            flyt.NewResult(map[string]any{"id": 2, "config": baseConfig}),
+        }, nil
+    }).
+    WithExecFunc(func(ctx context.Context, params flyt.Result) (flyt.Result, error) {
+        data := params.MustMap()
+        // Process with parameters
+        return processWithConfig(data["id"].(int), data["config"])
+    })
 ```
 
 ## Best Practices
@@ -11401,27 +11967,52 @@ func (n *CachedAPINode) ExecFallback(prepResult any, err error) (any, error) {
 
 ## Error Aggregation
 
-Collect errors from batch operations:
+Collect errors from batch operations using BatchNode:
 
 ```go
-func processBatch(ctx context.Context, items []Item) error {
-    var errs []error
-    
-    for i, item := range items {
-        if err := processItem(item); err != nil {
-            errs = append(errs, fmt.Errorf("item %d: %w", i, err))
+batchNode := flyt.NewBatchNode().
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) ([]flyt.Result, error) {
+        items := shared.GetSlice("items")
+        results := make([]flyt.Result, len(items))
+        for i, item := range items {
+            results[i] = flyt.NewResult(item)
         }
-    }
-    
-    if len(errs) > 0 {
-        return &flyt.BatchError{
-            Errors: errs,
-            Message: fmt.Sprintf("%d/%d items failed", len(errs), len(items)),
+        return results, nil
+    }).
+    WithExecFunc(func(ctx context.Context, item flyt.Result) (flyt.Result, error) {
+        // Process each item
+        result, err := processItem(item.Value())
+        if err != nil {
+            return flyt.Result{}, err  // Error for this specific item
         }
-    }
-    
-    return nil
-}
+        return flyt.NewResult(result), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, items, results []flyt.Result) (flyt.Action, error) {
+        var errors []error
+        var successful []any
+        
+        // Aggregate errors and successes
+        for i, result := range results {
+            if result.IsError() {
+                errors = append(errors, fmt.Errorf("item %d: %w", i, result.Error()))
+            } else {
+                successful = append(successful, result.Value())
+            }
+        }
+        
+        // Store results
+        shared.Set("successful", successful)
+        if len(errors) > 0 {
+            shared.Set("batch_error", &flyt.BatchError{
+                Errors: errors,
+            })
+            log.Printf("%d/%d items failed", len(errors), len(items))
+            return "partial_failure", nil
+        }
+        
+        return flyt.DefaultAction, nil
+    }).
+    WithBatchErrorHandling(true)  // Continue processing despite errors
 ```
 
 ## Retry with Jitter
