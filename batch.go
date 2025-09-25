@@ -97,25 +97,25 @@ func (b *BatchNodeBuilder) Post(ctx context.Context, shared *SharedStore, prepRe
 
 // Fluent configuration methods
 func (b *BatchNodeBuilder) WithMaxRetries(retries int) *BatchNodeBuilder {
-	WithMaxRetries(retries)(b.BatchNode.CustomNode.BaseNode)
+	WithMaxRetries(retries)(b.BaseNode)
 	return b
 }
 
 func (b *BatchNodeBuilder) WithWait(wait time.Duration) *BatchNodeBuilder {
-	WithWait(wait)(b.BatchNode.CustomNode.BaseNode)
+	WithWait(wait)(b.BaseNode)
 	return b
 }
 
 func (b *BatchNodeBuilder) WithBatchConcurrency(n int) *BatchNodeBuilder {
-	b.BatchNode.CustomNode.BaseNode.batchConcurrency = n
+	b.batchConcurrency = n
 	return b
 }
 
 func (b *BatchNodeBuilder) WithBatchErrorHandling(continueOnError bool) *BatchNodeBuilder {
 	if continueOnError {
-		b.BatchNode.CustomNode.BaseNode.batchErrorHandling = "continue"
+		b.batchErrorHandling = "continue"
 	} else {
-		b.BatchNode.CustomNode.BaseNode.batchErrorHandling = "stop"
+		b.batchErrorHandling = "stop"
 	}
 	return b
 }
@@ -126,23 +126,23 @@ func (b *BatchNodeBuilder) WithBatchErrorHandling(continueOnError bool) *BatchNo
 // - func(context.Context, *flyt.SharedStore, []flyt.Result, []flyt.Result) (flyt.Action, error)
 
 func (b *BatchNodeBuilder) WithPrepFunc(fn func(context.Context, *SharedStore) ([]Result, error)) *BatchNodeBuilder {
-	b.BatchNode.batchPrepFunc = fn
+	b.batchPrepFunc = fn
 	return b
 }
 
 func (b *BatchNodeBuilder) WithExecFunc(fn func(context.Context, Result) (Result, error)) *BatchNodeBuilder {
-	b.BatchNode.CustomNode.execFunc = fn
+	b.execFunc = fn
 	return b
 }
 
 func (b *BatchNodeBuilder) WithPostFunc(fn func(context.Context, *SharedStore, []Result, []Result) (Action, error)) *BatchNodeBuilder {
-	b.BatchNode.batchPostFunc = fn
+	b.batchPostFunc = fn
 	return b
 }
 
 // Alternative: WithExecFuncAny for compatibility
 func (b *BatchNodeBuilder) WithExecFuncAny(fn func(context.Context, any) (any, error)) *BatchNodeBuilder {
-	b.BatchNode.CustomNode.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
+	b.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
 		val, err := fn(ctx, prepResult.Value())
 		if err != nil {
 			return Result{}, err
@@ -190,20 +190,20 @@ func runBatch(ctx context.Context, node Node, shared *SharedStore) (Action, erro
 
 	// Get batch configuration
 	var concurrency int
-	var errorHandling string = "continue"
+	var errorHandling = "continue"
 
 	if baseNode, ok := node.(*BaseNode); ok {
 		concurrency = baseNode.GetBatchConcurrency()
 		errorHandling = baseNode.GetBatchErrorHandling()
 	} else if customNode, ok := node.(*CustomNode); ok {
-		concurrency = customNode.BaseNode.GetBatchConcurrency()
-		errorHandling = customNode.BaseNode.GetBatchErrorHandling()
+		concurrency = customNode.GetBatchConcurrency()
+		errorHandling = customNode.GetBatchErrorHandling()
 	} else if batchNode, ok := node.(*BatchNode); ok {
-		concurrency = batchNode.CustomNode.BaseNode.GetBatchConcurrency()
-		errorHandling = batchNode.CustomNode.BaseNode.GetBatchErrorHandling()
+		concurrency = batchNode.GetBatchConcurrency()
+		errorHandling = batchNode.GetBatchErrorHandling()
 	} else if batchBuilder, ok := node.(*BatchNodeBuilder); ok {
-		concurrency = batchBuilder.BatchNode.CustomNode.BaseNode.GetBatchConcurrency()
-		errorHandling = batchBuilder.BatchNode.CustomNode.BaseNode.GetBatchErrorHandling()
+		concurrency = batchBuilder.GetBatchConcurrency()
+		errorHandling = batchBuilder.GetBatchErrorHandling()
 	}
 
 	// Execute items
@@ -303,7 +303,7 @@ func runBatchConcurrent(ctx context.Context, node Node, items []Result, results 
 
 func runExecWithRetries(ctx context.Context, node Node, item Result) (any, error) {
 	// Get retry settings
-	var maxRetries int = 1
+	var maxRetries = 1
 	var wait time.Duration = 0
 
 	if retryable, ok := node.(RetryableNode); ok {

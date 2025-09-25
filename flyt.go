@@ -441,18 +441,6 @@ const (
 	// DefaultAction is the default action if none is specified.
 	// Flows use this when a node doesn't explicitly return an action.
 	DefaultAction Action = "default"
-
-	// KeyItems is the shared store key for items to be processed.
-	// Batch nodes look for items under this key by default.
-	KeyItems = "items"
-
-	// KeyResults is the shared store key for processing results.
-	// Batch nodes store their results under this key by default.
-	KeyResults = "results"
-
-	// KeyBatchCount is the shared store key for batch count.
-	// Batch flows store the number of iterations under this key.
-	KeyBatchCount = "batch_count"
 )
 
 // Node is the interface that all nodes must implement.
@@ -716,7 +704,7 @@ func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
 	}
 
 	// Get retry settings if available
-	var maxRetries int = 1
+	var maxRetries = 1
 	var wait time.Duration = 0
 
 	if retryable, ok := node.(RetryableNode); ok {
@@ -1086,22 +1074,6 @@ func ToSlice(v any) []any {
 		return []any{v} // Single item
 	}
 }
-
-// FlowFactory creates new instances of a flow.
-// This is used to create reusable flow definitions. Each call should return
-// a new flow instance to avoid race conditions when running flows concurrently.
-//
-// Example:
-//
-//	factory := func() *flyt.Flow {
-//	    node1 := &ProcessNode{BaseNode: flyt.NewBaseNode()}
-//	    node2 := &SaveNode{BaseNode: flyt.NewBaseNode()}
-//
-//	    flow := flyt.NewFlow(node1)
-//	    flow.Connect(node1, flyt.DefaultAction, node2)
-//	    return flow
-//	}
-type FlowFactory func() *Flow
 
 // CustomNode is a node implementation that uses custom functions
 // for Prep, Exec, and Post phases. This allows creating nodes

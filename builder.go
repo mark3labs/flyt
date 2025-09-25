@@ -36,60 +36,60 @@ func (b *NodeBuilder) ExecFallback(prepResult any, err error) (any, error) {
 
 // GetMaxRetries implements RetryableNode.GetMaxRetries by delegating to the embedded BaseNode
 func (b *NodeBuilder) GetMaxRetries() int {
-	return b.CustomNode.BaseNode.GetMaxRetries()
+	return b.CustomNode.GetMaxRetries()
 }
 
 // GetWait implements RetryableNode.GetWait by delegating to the embedded BaseNode
 func (b *NodeBuilder) GetWait() time.Duration {
-	return b.CustomNode.BaseNode.GetWait()
+	return b.CustomNode.GetWait()
 }
 
 // WithMaxRetries sets the maximum number of retries for the node's Exec phase.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithMaxRetries(retries int) *NodeBuilder {
-	WithMaxRetries(retries)(b.CustomNode.BaseNode)
+	WithMaxRetries(retries)(b.BaseNode)
 	return b
 }
 
 // WithWait sets the wait duration between retries.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithWait(wait time.Duration) *NodeBuilder {
-	WithWait(wait)(b.CustomNode.BaseNode)
+	WithWait(wait)(b.BaseNode)
 	return b
 }
 
 // WithPrepFunc sets a custom Prep implementation using Result types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithPrepFunc(fn func(context.Context, *SharedStore) (Result, error)) *NodeBuilder {
-	b.CustomNode.prepFunc = fn
+	b.prepFunc = fn
 	return b
 }
 
 // WithExecFunc sets a custom Exec implementation using Result types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithExecFunc(fn func(context.Context, Result) (Result, error)) *NodeBuilder {
-	b.CustomNode.execFunc = fn
+	b.execFunc = fn
 	return b
 }
 
 // WithPostFunc sets a custom Post implementation using Result types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithPostFunc(fn func(context.Context, *SharedStore, Result, Result) (Action, error)) *NodeBuilder {
-	b.CustomNode.postFunc = fn
+	b.postFunc = fn
 	return b
 }
 
 // WithExecFallbackFunc sets a custom ExecFallback implementation.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithExecFallbackFunc(fn func(any, error) (any, error)) *NodeBuilder {
-	b.CustomNode.execFallbackFunc = fn
+	b.execFallbackFunc = fn
 	return b
 }
 
 // WithPrepFuncAny sets a custom Prep implementation using any types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithPrepFuncAny(fn func(context.Context, *SharedStore) (any, error)) *NodeBuilder {
-	b.CustomNode.prepFunc = func(ctx context.Context, shared *SharedStore) (Result, error) {
+	b.prepFunc = func(ctx context.Context, shared *SharedStore) (Result, error) {
 		val, err := fn(ctx, shared)
 		if err != nil {
 			return Result{}, err
@@ -102,7 +102,7 @@ func (b *NodeBuilder) WithPrepFuncAny(fn func(context.Context, *SharedStore) (an
 // WithExecFuncAny sets a custom Exec implementation using any types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithExecFuncAny(fn func(context.Context, any) (any, error)) *NodeBuilder {
-	b.CustomNode.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
+	b.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
 		val, err := fn(ctx, prepResult.Value())
 		if err != nil {
 			return Result{}, err
@@ -115,7 +115,7 @@ func (b *NodeBuilder) WithExecFuncAny(fn func(context.Context, any) (any, error)
 // WithPostFuncAny sets a custom Post implementation using any types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithPostFuncAny(fn func(context.Context, *SharedStore, any, any) (Action, error)) *NodeBuilder {
-	b.CustomNode.postFunc = func(ctx context.Context, shared *SharedStore, prepResult, execResult Result) (Action, error) {
+	b.postFunc = func(ctx context.Context, shared *SharedStore, prepResult, execResult Result) (Action, error) {
 		return fn(ctx, shared, prepResult.Value(), execResult.Value())
 	}
 	return b
@@ -124,7 +124,7 @@ func (b *NodeBuilder) WithPostFuncAny(fn func(context.Context, *SharedStore, any
 // WithBatchConcurrency sets the concurrency level for batch processing.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithBatchConcurrency(n int) *NodeBuilder {
-	b.CustomNode.BaseNode.batchConcurrency = n
+	b.batchConcurrency = n
 	return b
 }
 
@@ -132,9 +132,9 @@ func (b *NodeBuilder) WithBatchConcurrency(n int) *NodeBuilder {
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithBatchErrorHandling(continueOnError bool) *NodeBuilder {
 	if continueOnError {
-		b.CustomNode.BaseNode.batchErrorHandling = "continue"
+		b.batchErrorHandling = "continue"
 	} else {
-		b.CustomNode.BaseNode.batchErrorHandling = "stop"
+		b.batchErrorHandling = "stop"
 	}
 	return b
 }
