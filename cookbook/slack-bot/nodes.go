@@ -9,240 +9,233 @@ import (
 	"github.com/mark3labs/flyt"
 )
 
-// ParseMessageNode prepares the message for processing
-type ParseMessageNode struct {
-	*flyt.BaseNode
-	slack *SlackService // Used for precise bot mention removal
-}
-
-func (n *ParseMessageNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-	messageStr := shared.GetString("message")
-	if messageStr == "" {
-		return flyt.R(nil), fmt.Errorf("no message found in shared store")
-	}
-
-	// Clean up the message (remove bot mentions, extra spaces, etc.)
-	cleanedMessage := strings.TrimSpace(messageStr)
-	cleanedMessage = strings.ReplaceAll(cleanedMessage, "  ", " ")
-
-	// Remove bot mention if present (format: <@BOTID>)
-	if strings.Contains(cleanedMessage, "<@") {
-		// If we have SlackService, we can be more precise about bot ID
-		if n.slack != nil {
-			botID := n.slack.GetBotUserID()
-			mentionPattern := fmt.Sprintf("<@%s>", botID)
-			cleanedMessage = strings.ReplaceAll(cleanedMessage, mentionPattern, "")
-		} else {
-			// Fallback to generic mention removal
-			parts := strings.Split(cleanedMessage, ">")
-			if len(parts) > 1 {
-				cleanedMessage = strings.TrimSpace(strings.Join(parts[1:], ">"))
+// NewParseMessageNode creates a node that prepares the message for processing
+func NewParseMessageNode(slackService *SlackService) flyt.Node {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+			messageStr := shared.GetString("message")
+			if messageStr == "" {
+				return flyt.R(nil), fmt.Errorf("no message found in shared store")
 			}
-		}
-	}
 
-	return flyt.R(strings.TrimSpace(cleanedMessage)), nil
-}
-func (n *ParseMessageNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	// Message is already cleaned in Prep
-	return prepResult, nil
-}
+			// Clean up the message (remove bot mentions, extra spaces, etc.)
+			cleanedMessage := strings.TrimSpace(messageStr)
+			cleanedMessage = strings.ReplaceAll(cleanedMessage, "  ", " ")
 
-func (n *ParseMessageNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-	shared.Set("cleaned_message", execResult)
-	log.Printf("Parsed message: %v", execResult)
-	return flyt.DefaultAction, nil
-}
+			// Remove bot mention if present (format: <@BOTID>)
+			if strings.Contains(cleanedMessage, "<@") {
+				// If we have SlackService, we can be more precise about bot ID
+				if slackService != nil {
+					botID := slackService.GetBotUserID()
+					mentionPattern := fmt.Sprintf("<@%s>", botID)
+					cleanedMessage = strings.ReplaceAll(cleanedMessage, mentionPattern, "")
+				} else {
+					// Fallback to generic mention removal
+					parts := strings.Split(cleanedMessage, ">")
+					if len(parts) > 1 {
+						cleanedMessage = strings.TrimSpace(strings.Join(parts[1:], ">"))
+					}
+				}
+			}
 
-// LLMNode processes the message through OpenAI with function calling
-type LLMNode struct {
-	*flyt.BaseNode
-	llm *LLMService
-}
-
-func (n *LLMNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-	// Check if we're processing tool responses
-	if shared.Has("tool_responses") {
-		toolResponses, _ := shared.Get("tool_responses")
-		return flyt.R(map[string]interface{}{
-			"type":           "tool_response",
-			"tool_responses": toolResponses,
-		}), nil
-	}
-
-	// Otherwise, process user message
-	message := shared.GetString("cleaned_message")
-	if message == "" {
-		return flyt.R(nil), fmt.Errorf("no cleaned message found")
-	}
-
-	// Get conversation history if available
-	var history []map[string]string
-	if h, ok := shared.Get("history"); ok {
-		if hist, ok := h.([]map[string]string); ok {
-			history = hist
-		}
-	}
-
-	return flyt.R(map[string]interface{}{
-		"type":    "user_message",
-		"message": message,
-		"history": history,
-	}), nil
+			return flyt.R(strings.TrimSpace(cleanedMessage)), nil
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+			// Message is already cleaned in Prep
+			return prepResult, nil
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+			shared.Set("cleaned_message", execResult)
+			log.Printf("Parsed message: %v", execResult)
+			return flyt.DefaultAction, nil
+		}).
+		Build()
 }
 
-func (n *LLMNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	prepRes, ok := prepResult.(flyt.Result)
-	if !ok {
-		prepRes = flyt.R(prepResult)
-	}
-	data := prepRes.MustMap()
+// NewLLMNode creates a node that processes the message through OpenAI with function calling
+func NewLLMNode(llmService *LLMService) flyt.Node {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+			// Check if we're processing tool responses
+			if shared.Has("tool_responses") {
+				toolResponses, _ := shared.Get("tool_responses")
+				return flyt.R(map[string]interface{}{
+					"type":           "tool_response",
+					"tool_responses": toolResponses,
+				}), nil
+			}
 
-	if data["type"] == "tool_response" {
-		// Process tool responses
-		toolResponses := data["tool_responses"].(map[string]string)
-		response, err := n.llm.ProcessToolResponses(ctx, toolResponses)
-		if err != nil {
-			return flyt.R(nil), fmt.Errorf("failed to process tool responses: %w", err)
-		}
-		return flyt.R(map[string]interface{}{
-			"type":     "final_response",
-			"response": response,
-		}), nil
-	}
+			// Otherwise, process user message
+			message := shared.GetString("cleaned_message")
+			if message == "" {
+				return flyt.R(nil), fmt.Errorf("no cleaned message found")
+			}
 
-	// Process user message with optional history
-	message := data["message"].(string)
+			// Get conversation history if available
+			var history []map[string]string
+			if h, ok := shared.Get("history"); ok {
+				if hist, ok := h.([]map[string]string); ok {
+					history = hist
+				}
+			}
 
-	var response string
-	var toolCalls []ToolCall
-	var err error
+			return flyt.R(map[string]interface{}{
+				"type":    "user_message",
+				"message": message,
+				"history": history,
+			}), nil
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+			prepRes, ok := prepResult.(flyt.Result)
+			if !ok {
+				prepRes = flyt.R(prepResult)
+			}
+			data := prepRes.MustMap()
 
-	// Check if we have history
-	if history, ok := data["history"].([]map[string]string); ok && len(history) > 0 {
-		response, toolCalls, err = n.llm.ProcessMessageWithHistory(ctx, message, history)
-	} else {
-		response, toolCalls, err = n.llm.ProcessMessage(ctx, message)
-	}
+			if data["type"] == "tool_response" {
+				// Process tool responses
+				toolResponses := data["tool_responses"].(map[string]string)
+				response, err := llmService.ProcessToolResponses(ctx, toolResponses)
+				if err != nil {
+					return flyt.R(nil), fmt.Errorf("failed to process tool responses: %w", err)
+				}
+				return flyt.R(map[string]interface{}{
+					"type":     "final_response",
+					"response": response,
+				}), nil
+			}
 
-	if err != nil {
-		return flyt.R(nil), fmt.Errorf("failed to process with LLM: %w", err)
-	}
+			// Process user message with optional history
+			message := data["message"].(string)
 
-	if len(toolCalls) > 0 {
-		return flyt.R(map[string]interface{}{
-			"type":       "tool_calls",
-			"tool_calls": toolCalls,
-		}), nil
-	}
+			var response string
+			var toolCalls []ToolCall
+			var err error
 
-	return flyt.R(map[string]interface{}{
-		"type":     "response",
-		"response": response,
-	}), nil
-}
-func (n *LLMNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-	execRes, ok := execResult.(flyt.Result)
-	if !ok {
-		execRes = flyt.R(execResult)
-	}
-	result := execRes.MustMap()
+			// Check if we have history
+			if history, ok := data["history"].([]map[string]string); ok && len(history) > 0 {
+				response, toolCalls, err = llmService.ProcessMessageWithHistory(ctx, message, history)
+			} else {
+				response, toolCalls, err = llmService.ProcessMessage(ctx, message)
+			}
 
-	switch result["type"] {
-	case "tool_calls":
-		// Need to execute tools
-		shared.Set("tool_calls", result["tool_calls"])
-		log.Println("LLM requested tool calls")
-		return "tool_call", nil
-	case "response", "final_response":
-		// Got a text response
-		shared.Set("response", result["response"])
-		log.Printf("LLM response: %v", result["response"])
-		return "response", nil
-	default:
-		return flyt.DefaultAction, nil
-	}
-}
+			if err != nil {
+				return flyt.R(nil), fmt.Errorf("failed to process with LLM: %w", err)
+			}
 
-// ToolExecutorNode executes tool calls requested by the LLM
-type ToolExecutorNode struct {
-	*flyt.BaseNode
-}
+			if len(toolCalls) > 0 {
+				return flyt.R(map[string]interface{}{
+					"type":       "tool_calls",
+					"tool_calls": toolCalls,
+				}), nil
+			}
 
-func (n *ToolExecutorNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-	toolCalls, ok := shared.Get("tool_calls")
-	if !ok {
-		return flyt.R(nil), fmt.Errorf("no tool calls found")
-	}
-	return flyt.R(toolCalls), nil
-}
+			return flyt.R(map[string]interface{}{
+				"type":     "response",
+				"response": response,
+			}), nil
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+			execRes, ok := execResult.(flyt.Result)
+			if !ok {
+				execRes = flyt.R(execResult)
+			}
+			result := execRes.MustMap()
 
-func (n *ToolExecutorNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	prepRes, ok := prepResult.(flyt.Result)
-	if !ok {
-		prepRes = flyt.R(prepResult)
-	}
-
-	toolCalls, ok := flyt.As[[]ToolCall](prepRes)
-	if !ok {
-		return flyt.R(nil), fmt.Errorf("invalid tool calls format")
-	}
-
-	log.Printf("Executing %d tool calls", len(toolCalls))
-
-	// Execute all tool calls
-	results, err := ExecuteToolCalls(toolCalls)
-	if err != nil {
-		return flyt.R(nil), fmt.Errorf("failed to execute tools: %w", err)
-	}
-
-	return flyt.R(results), nil
-}
-
-func (n *ToolExecutorNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-	// Store tool responses and go back to LLM
-	shared.Set("tool_responses", execResult)
-	log.Printf("Tool execution completed with %d results", len(execResult.(map[string]string)))
-	return flyt.DefaultAction, nil // Goes back to LLM node
+			switch result["type"] {
+			case "tool_calls":
+				// Need to execute tools
+				shared.Set("tool_calls", result["tool_calls"])
+				log.Println("LLM requested tool calls")
+				return "tool_call", nil
+			case "response", "final_response":
+				// Got a text response
+				shared.Set("response", result["response"])
+				log.Printf("LLM response: %v", result["response"])
+				return "response", nil
+			default:
+				return flyt.DefaultAction, nil
+			}
+		}).
+		Build()
 }
 
-// FormatResponseNode formats the final response for Slack
-type FormatResponseNode struct {
-	*flyt.BaseNode
+// NewToolExecutorNode creates a node that executes tool calls requested by the LLM
+func NewToolExecutorNode() flyt.Node {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+			toolCalls, ok := shared.Get("tool_calls")
+			if !ok {
+				return flyt.R(nil), fmt.Errorf("no tool calls found")
+			}
+			return flyt.R(toolCalls), nil
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+			prepRes, ok := prepResult.(flyt.Result)
+			if !ok {
+				prepRes = flyt.R(prepResult)
+			}
+
+			toolCalls, ok := flyt.As[[]ToolCall](prepRes)
+			if !ok {
+				return flyt.R(nil), fmt.Errorf("invalid tool calls format")
+			}
+
+			log.Printf("Executing %d tool calls", len(toolCalls))
+
+			// Execute all tool calls
+			results, err := ExecuteToolCalls(toolCalls)
+			if err != nil {
+				return flyt.R(nil), fmt.Errorf("failed to execute tools: %w", err)
+			}
+
+			return flyt.R(results), nil
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+			// Store tool responses and go back to LLM
+			shared.Set("tool_responses", execResult)
+			log.Printf("Tool execution completed with %d results", len(execResult.(map[string]string)))
+			return flyt.DefaultAction, nil // Goes back to LLM node
+		}).
+		Build()
 }
 
-func (n *FormatResponseNode) Prep(ctx context.Context, shared *flyt.SharedStore) (any, error) {
-	response := shared.GetString("response")
-	if response == "" {
-		return flyt.R(nil), fmt.Errorf("no response found")
-	}
-	return flyt.R(response), nil
-}
-func (n *FormatResponseNode) Exec(ctx context.Context, prepResult any) (any, error) {
-	prepRes, ok := prepResult.(flyt.Result)
-	if !ok {
-		prepRes = flyt.R(prepResult)
-	}
-	response := prepRes.MustString()
+// NewFormatResponseNode creates a node that formats the final response for Slack
+func NewFormatResponseNode() flyt.Node {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+			response := shared.GetString("response")
+			if response == "" {
+				return flyt.R(nil), fmt.Errorf("no response found")
+			}
+			return flyt.R(response), nil
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+			prepRes, ok := prepResult.(flyt.Result)
+			if !ok {
+				prepRes = flyt.R(prepResult)
+			}
+			response := prepRes.MustString()
 
-	// Format the response for Slack (could add formatting, emojis, etc.)
-	formattedResponse := response
+			// Format the response for Slack (could add formatting, emojis, etc.)
+			formattedResponse := response
 
-	// Add some Slack-specific formatting if needed
-	// For example, convert markdown bold to Slack bold
-	formattedResponse = strings.ReplaceAll(formattedResponse, "**", "*")
+			// Add some Slack-specific formatting if needed
+			// For example, convert markdown bold to Slack bold
+			formattedResponse = strings.ReplaceAll(formattedResponse, "**", "*")
 
-	// Ensure response isn't too long for Slack
-	maxLength := 3000
-	if len(formattedResponse) > maxLength {
-		formattedResponse = formattedResponse[:maxLength-3] + "..."
-	}
+			// Ensure response isn't too long for Slack
+			maxLength := 3000
+			if len(formattedResponse) > maxLength {
+				formattedResponse = formattedResponse[:maxLength-3] + "..."
+			}
 
-	return flyt.R(formattedResponse), nil
-}
-
-func (n *FormatResponseNode) Post(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-	shared.Set("response", execResult)
-	log.Println("Response formatted for Slack")
-	return flyt.DefaultAction, nil
+			return flyt.R(formattedResponse), nil
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+			shared.Set("response", execResult)
+			log.Println("Response formatted for Slack")
+			return flyt.DefaultAction, nil
+		}).
+		Build()
 }

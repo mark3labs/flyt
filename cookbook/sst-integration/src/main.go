@@ -35,16 +35,16 @@ type ProgressTracker struct {
 
 // Simple node that downloads image from S3
 func createDownloadNode() flyt.Node {
-	return flyt.NewNode(
-		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			bucket, _ := shared.Get("bucket")
 			key, _ := shared.Get("key")
 			return map[string]any{
 				"bucket": bucket,
 				"key":    key,
 			}, nil
-		}),
-		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			data := prepResult.(map[string]any)
 			bucket := data["bucket"].(string)
 			key := data["key"].(string)
@@ -89,23 +89,23 @@ func createDownloadNode() flyt.Node {
 				"imageData": imageData,
 				"mimeType":  mimeType,
 			}, nil
-		}),
-		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			// Store the image data and mime type for the next node
 			result := execResult.(map[string]any)
 			shared.Set("imageData", result["imageData"])
 			shared.Set("mimeType", result["mimeType"])
 			log.Printf("Download node completed, MIME type: %s", result["mimeType"])
 			return flyt.DefaultAction, nil
-		}),
-	)
+		}).
+		Build()
 }
 
 // Simple node that calls Claude to extract text
 func createExtractTextNode() flyt.Node {
-	return flyt.NewNode(
-		flyt.WithMaxRetries(3), // Add retry capability
-		flyt.WithPrepFuncAny(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
+	return flyt.NewNode().
+		WithMaxRetries(3). // Add retry capability
+		WithPrepFuncAny(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
 			// Get the image data and mime type from the previous node
 			imageData, _ := store.Get("imageData")
 			mimeType, _ := store.Get("mimeType")
@@ -113,28 +113,8 @@ func createExtractTextNode() flyt.Node {
 				"imageData": imageData,
 				"mimeType":  mimeType,
 			}, nil
-		}),
-		flyt.WithPostFuncAny(func(ctx context.Context, store *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
-			// Check if extraction failed
-			if execResult == nil {
-				log.Println("Extract text failed after retries, moving to cleanup")
-				return "skip", nil
-			}
-
-			// Check for unsupported type
-			if str, ok := execResult.(string); ok && strings.HasPrefix(str, "Unsupported image type:") {
-				log.Printf("Skipping save for unsupported type: %s", str)
-				return "skip", nil
-			}
-
-			// Store the extracted response for the next node
-			response := execResult.(*ExtractedResponse)
-			store.Set("extractedResponse", response)
-			log.Printf("Extract text node completed, title: %s, content length: %d", response.Title, len(response.Content))
-
-			return flyt.DefaultAction, nil
-		}),
-		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			log.Println("Extract text node executing...")
 			data := prepResult.(map[string]any)
 			imageData := data["imageData"].([]byte)
@@ -210,24 +190,44 @@ func createExtractTextNode() flyt.Node {
 			}
 			log.Printf("Successfully parsed response - Title: %s, Content length: %d", extracted.Title, len(extracted.Content))
 			return &extracted, nil
-		}),
-		flyt.WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
+		}).
+		WithPostFuncAny(func(ctx context.Context, store *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+			// Check if extraction failed
+			if execResult == nil {
+				log.Println("Extract text failed after retries, moving to cleanup")
+				return "skip", nil
+			}
+
+			// Check for unsupported type
+			if str, ok := execResult.(string); ok && strings.HasPrefix(str, "Unsupported image type:") {
+				log.Printf("Skipping save for unsupported type: %s", str)
+				return "skip", nil
+			}
+
+			// Store the extracted response for the next node
+			response := execResult.(*ExtractedResponse)
+			store.Set("extractedResponse", response)
+			log.Printf("Extract text node completed, title: %s, content length: %d", response.Title, len(response.Content))
+
+			return flyt.DefaultAction, nil
+		}).
+		WithExecFallbackFunc(func(prepResult any, err error) (any, error) {
 			log.Printf("Extract text failed after all retries: %v", err)
 			// Return nil to indicate failure, which will trigger skip action in Post
 			return nil, nil
-		}),
-	)
+		}).
+		Build()
 }
 
 // Simple node that saves text to S3
 func createSaveTextNode() flyt.Node {
-	return flyt.NewNode(
-		flyt.WithPrepFuncAny(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
 			// Get the extracted response
 			response, _ := store.Get("extractedResponse")
 			return response, nil
-		}),
-		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			response := prepResult.(*ExtractedResponse)
 
 			// Create filename from title (replace spaces with underscores)
@@ -264,22 +264,22 @@ func createSaveTextNode() flyt.Node {
 
 			log.Printf("Successfully saved extracted text to: s3://%s/%s", bucketName, filename)
 			return filename, nil
-		}),
-	)
+		}).
+		Build()
 }
 
 // Simple node that cleans up the original file from S3
 func createCleanupNode() flyt.Node {
-	return flyt.NewNode(
-		flyt.WithPrepFuncAny(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
 			bucket, _ := store.Get("bucket")
 			key, _ := store.Get("key")
 			return map[string]any{
 				"bucket": bucket,
 				"key":    key,
 			}, nil
-		}),
-		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			data := prepResult.(map[string]any)
 			bucket := data["bucket"].(string)
 			key := data["key"].(string)
@@ -304,8 +304,8 @@ func createCleanupNode() flyt.Node {
 
 			log.Printf("Successfully deleted original file: s3://%s/%s", bucket, key)
 			return fmt.Sprintf("Deleted s3://%s/%s", bucket, key), nil
-		}),
-	)
+		}).
+		Build()
 }
 
 // Create a flow factory that returns a new flow instance for each S3 record
@@ -317,16 +317,16 @@ func createImageProcessingFlowFactory(tracker *ProgressTracker) func() *flyt.Flo
 		saveNode := createSaveTextNode()
 
 		// Wrap cleanup node with progress tracking
-		cleanupNode := flyt.NewNode(
-			flyt.WithPrepFuncAny(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
+		cleanupNode := flyt.NewNode().
+			WithPrepFuncAny(func(ctx context.Context, store *flyt.SharedStore) (any, error) {
 				bucket, _ := store.Get("bucket")
 				key, _ := store.Get("key")
 				return map[string]any{
 					"bucket": bucket,
 					"key":    key,
 				}, nil
-			}),
-			flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+			}).
+			WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 				data := prepResult.(map[string]any)
 				bucket := data["bucket"].(string)
 				key := data["key"].(string)
@@ -351,8 +351,8 @@ func createImageProcessingFlowFactory(tracker *ProgressTracker) func() *flyt.Flo
 
 				log.Printf("Successfully deleted original file: s3://%s/%s", bucket, key)
 				return fmt.Sprintf("Deleted s3://%s/%s", bucket, key), nil
-			}),
-			flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+			}).
+			WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 				// Update progress tracking
 				if execResult != nil {
 					atomic.AddInt32(&tracker.completed, 1)
@@ -369,8 +369,8 @@ func createImageProcessingFlowFactory(tracker *ProgressTracker) func() *flyt.Flo
 					atomic.LoadInt32(&tracker.failed))
 
 				return flyt.DefaultAction, nil
-			}),
-		)
+			}).
+			Build()
 
 		// Create flow
 		flow := flyt.NewFlow(downloadNode)

@@ -11,8 +11,8 @@ import (
 
 // NewGetToolsNode creates a node that discovers available tools from the MCP server
 func NewGetToolsNode(mcpClient *MCPClient) flyt.Node {
-	return flyt.NewNode(
-		flyt.WithExecFuncAny(func(ctx context.Context, input any) (any, error) {
+	return flyt.NewNode().
+		WithExecFuncAny(func(ctx context.Context, input any) (any, error) {
 			fmt.Println("🔍 Getting available tools...")
 
 			tools, err := mcpClient.GetTools(ctx)
@@ -28,22 +28,22 @@ func NewGetToolsNode(mcpClient *MCPClient) flyt.Node {
 			fmt.Println(strings.Join(toolNames, ", "))
 
 			return flyt.R(tools), nil
-		}),
-		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			if result, ok := execResult.(flyt.Result); ok {
 				shared.Set("tools", result.Value())
 			} else {
 				shared.Set("tools", execResult)
 			}
 			return flyt.Action("decide"), nil
-		}),
-	)
+		}).
+		Build()
 }
 
 // NewDecideToolNode creates a node that uses LLM with function calling to select appropriate tool
 func NewDecideToolNode(llm *LLM) flyt.Node {
-	return flyt.NewNode(
-		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			tools, _ := shared.Get("tools")
 			messages, ok := shared.Get("messages")
 			if !ok {
@@ -54,8 +54,8 @@ func NewDecideToolNode(llm *LLM) flyt.Node {
 				"tools":    tools.([]mcp.Tool),
 				"messages": messages.([]map[string]interface{}),
 			}), nil
-		}),
-		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			prepRes, ok := prepResult.(flyt.Result)
 			if !ok {
 				// Handle legacy case
@@ -118,8 +118,8 @@ func NewDecideToolNode(llm *LLM) flyt.Node {
 				"messages": messages,
 				"done":     true,
 			}), nil
-		}),
-		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			var data map[string]interface{}
 			if result, ok := execResult.(flyt.Result); ok {
 				data = result.MustMap()
@@ -137,22 +137,22 @@ func NewDecideToolNode(llm *LLM) flyt.Node {
 			fc := data["function_call"].(map[string]interface{})
 			shared.Set("function_call", fc)
 			return flyt.Action("execute"), nil
-		}),
-	)
+		}).
+		Build()
 }
 
 // NewExecuteToolNode creates a node that executes the selected tool with parameters
 func NewExecuteToolNode(mcpClient *MCPClient) flyt.Node {
-	return flyt.NewNode(
-		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			functionCall, _ := shared.Get("function_call")
 			messages, _ := shared.Get("messages")
 			return flyt.R(map[string]interface{}{
 				"function_call": functionCall.(map[string]interface{}),
 				"messages":      messages.([]map[string]interface{}),
 			}), nil
-		}),
-		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			prepRes, ok := prepResult.(flyt.Result)
 			if !ok {
 				prepRes = flyt.R(prepResult)
@@ -186,8 +186,8 @@ func NewExecuteToolNode(mcpClient *MCPClient) flyt.Node {
 			return flyt.R(map[string]interface{}{
 				"messages": messages,
 			}), nil
-		}),
-		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			var data map[string]interface{}
 			if result, ok := execResult.(flyt.Result); ok {
 				data = result.MustMap()
@@ -197,6 +197,6 @@ func NewExecuteToolNode(mcpClient *MCPClient) flyt.Node {
 			shared.Set("messages", data["messages"])
 			// Go back to decide node to continue the conversation
 			return flyt.Action("decide"), nil
-		}),
-	)
+		}).
+		Build()
 }

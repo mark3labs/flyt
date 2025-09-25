@@ -10,13 +10,10 @@ func CreateAgentFlow(llm *LLM, searcher Searcher) *flyt.Flow {
 	search := NewSearchWebNode(searcher)
 	answer := NewAnswerQuestionNode(llm)
 
-	flow := flyt.NewFlow(decide)
-
-	flow.Connect(decide, "search", search)
-	flow.Connect(decide, "answer", answer)
-	flow.Connect(search, "decide", decide)
-
-	return flow
+	return flyt.NewFlow(decide).
+		Connect(decide, "search", search).
+		Connect(decide, "answer", answer).
+		Connect(search, "decide", decide)
 }
 func NewSharedState() *flyt.SharedStore {
 	return flyt.NewSharedStore()

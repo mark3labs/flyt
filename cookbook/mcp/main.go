@@ -45,12 +45,10 @@ func main() {
 	executeNode := NewExecuteToolNode(mcpClient)
 
 	// Create flow
-	flow := flyt.NewFlow(getToolsNode)
-
-	// Connect nodes
-	flow.Connect(getToolsNode, "decide", decideNode)
-	flow.Connect(decideNode, "execute", executeNode)
-	flow.Connect(executeNode, "decide", decideNode) // Loop back for continued conversation
+	flow := flyt.NewFlow(getToolsNode).
+		Connect(getToolsNode, "decide", decideNode).
+		Connect(decideNode, "execute", executeNode).
+		Connect(executeNode, "decide", decideNode) // Loop back for continued conversation
 
 	// Create shared store and initialize with the user's question
 	shared := flyt.NewSharedStore()

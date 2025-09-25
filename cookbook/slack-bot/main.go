@@ -282,24 +282,18 @@ func (b *SlackBot) fetchConversationHistory(channel, threadTS string) []map[stri
 
 func (b *SlackBot) createWorkflow(llmService *LLMService) *flyt.Flow {
 	// Create nodes with injected dependencies
-	parseNode := &ParseMessageNode{
-		BaseNode: flyt.NewBaseNode(),
-		slack:    b.slack,
-	}
-	llmNode := &LLMNode{
-		BaseNode: flyt.NewBaseNode(),
-		llm:      llmService,
-	}
-	toolNode := &ToolExecutorNode{BaseNode: flyt.NewBaseNode()}
-	formatNode := &FormatResponseNode{BaseNode: flyt.NewBaseNode()}
+	parseNode := NewParseMessageNode(b.slack)
+	llmNode := NewLLMNode(llmService)
+	toolNode := NewToolExecutorNode()
+	formatNode := NewFormatResponseNode()
 
 	// Create flow
-	flow := flyt.NewFlow(parseNode)
-	flow.Connect(parseNode, flyt.DefaultAction, llmNode)
-	flow.Connect(llmNode, "tool_call", toolNode)
-	flow.Connect(llmNode, "response", formatNode)
-	flow.Connect(toolNode, flyt.DefaultAction, llmNode)
-	flow.Connect(formatNode, flyt.DefaultAction, nil)
+	flow := flyt.NewFlow(parseNode).
+		Connect(parseNode, flyt.DefaultAction, llmNode).
+		Connect(llmNode, "tool_call", toolNode).
+		Connect(llmNode, "response", formatNode).
+		Connect(toolNode, flyt.DefaultAction, llmNode).
+		Connect(formatNode, flyt.DefaultAction, nil)
 
 	return flow
 }

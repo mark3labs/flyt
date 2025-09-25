@@ -13,16 +13,16 @@ import (
 // CreateSummarizeNode creates a node that summarizes text using an LLM
 // This version uses Result types for better type safety
 func CreateSummarizeNode(apiKey string) flyt.Node {
-	return flyt.NewNode(
-		flyt.WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
+	return flyt.NewNode().
+		WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
 			// Read text from shared store with type-safe access
 			text := shared.GetStringOr("text", "")
 			if text == "" {
 				return flyt.Result{}, fmt.Errorf("no text found in shared store")
 			}
 			return flyt.NewResult(text), nil
-		}),
-		flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+		}).
+		WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
 			// Type-safe string extraction
 			text := prepResult.AsStringOr("")
 			if text == "" {
@@ -40,8 +40,8 @@ func CreateSummarizeNode(apiKey string) flyt.Node {
 			}
 
 			return flyt.NewResult(summary), nil
-		}),
-		flyt.WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+		}).
+		WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
 			// Store the summary in shared store with type-safe access
 			summary := execResult.AsStringOr("Failed to generate summary")
 			shared.Set("summary", summary)
@@ -50,11 +50,10 @@ func CreateSummarizeNode(apiKey string) flyt.Node {
 			fmt.Printf("✅ Summary generated: %s\n", summary)
 
 			return flyt.DefaultAction, nil
-		}),
-		// Configure retries and wait time
-		flyt.WithMaxRetries(3),
-		flyt.WithWait(time.Second),
-	)
+		}).
+		WithMaxRetries(3).     // Configure retries
+		WithWait(time.Second). // Configure wait time
+		Build()
 }
 
 // CreateSummarizeNodeWithFallback demonstrates custom error handling
@@ -62,15 +61,15 @@ func CreateSummarizeNode(apiKey string) flyt.Node {
 func CreateSummarizeNodeWithFallback(apiKey string) flyt.Node {
 	attempts := 0
 
-	return flyt.NewNode(
-		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			text, ok := shared.Get("text")
 			if !ok {
 				return "", fmt.Errorf("no text found in shared store")
 			}
 			return text, nil
-		}),
-		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			attempts++
 			text := prepResult.(string)
 
@@ -90,8 +89,8 @@ func CreateSummarizeNodeWithFallback(apiKey string) flyt.Node {
 			}
 
 			return summary, nil
-		}),
-		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			summary := execResult.(string)
 
 			// If we got here after retries, note that
@@ -105,10 +104,10 @@ func CreateSummarizeNodeWithFallback(apiKey string) flyt.Node {
 			fmt.Printf("✅ Summary: %s\n", summary)
 
 			return flyt.DefaultAction, nil
-		}),
-		flyt.WithMaxRetries(3),
-		flyt.WithWait(500*time.Millisecond),
-	)
+		}).
+		WithMaxRetries(3).
+		WithWait(500 * time.Millisecond).
+		Build()
 }
 
 func main() {

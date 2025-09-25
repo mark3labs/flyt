@@ -13,8 +13,8 @@ import (
 
 // CreateChatNode creates an interactive chat node using the NewNode helper
 func CreateChatNode(llm *LLM) flyt.Node {
-	return flyt.NewNode(
-		flyt.WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
+	return flyt.NewNode().
+		WithPrepFuncAny(func(ctx context.Context, shared *flyt.SharedStore) (any, error) {
 			// Initialize messages if this is the first run
 			messages, ok := shared.Get("messages")
 			if !ok {
@@ -46,8 +46,8 @@ func CreateChatNode(llm *LLM) flyt.Node {
 			shared.Set("messages", messageList)
 
 			return messageList, nil
-		}),
-		flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
+		}).
+		WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
 			if prepResult == nil {
 				return nil, nil
 			}
@@ -61,8 +61,8 @@ func CreateChatNode(llm *LLM) flyt.Node {
 			}
 
 			return response, nil
-		}),
-		flyt.WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
+		}).
+		WithPostFuncAny(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult any) (flyt.Action, error) {
 			if prepResult == nil || execResult == nil {
 				fmt.Println("\nGoodbye!")
 				return "end", nil
@@ -81,8 +81,8 @@ func CreateChatNode(llm *LLM) flyt.Node {
 			shared.Set("messages", messageList)
 
 			return "continue", nil
-		}),
-	)
+		}).
+		Build()
 }
 
 func main() {
@@ -99,8 +99,8 @@ func main() {
 	chatNode := CreateChatNode(llm)
 
 	// Create the flow with self-loop
-	flow := flyt.NewFlow(chatNode)
-	flow.Connect(chatNode, "continue", chatNode) // Loop back to continue conversation
+	flow := flyt.NewFlow(chatNode).
+		Connect(chatNode, "continue", chatNode) // Loop back to continue conversation
 
 	// Start the chat
 	shared := flyt.NewSharedStore()
