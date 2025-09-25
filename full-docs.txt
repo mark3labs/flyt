@@ -8,7 +8,6 @@ Directory structure:
     ├── builder_test.go
     ├── flyt.go
     ├── flyt_test.go
-    ├── generic.go
     ├── go.mod
     ├── LICENSE
     ├── result.go
@@ -1007,25 +1006,25 @@ func (b *BatchNodeBuilder) Post(ctx context.Context, shared *SharedStore, prepRe
 
 // Fluent configuration methods
 func (b *BatchNodeBuilder) WithMaxRetries(retries int) *BatchNodeBuilder {
-	WithMaxRetries(retries)(b.BatchNode.CustomNode.BaseNode)
+	WithMaxRetries(retries)(b.BaseNode)
 	return b
 }
 
 func (b *BatchNodeBuilder) WithWait(wait time.Duration) *BatchNodeBuilder {
-	WithWait(wait)(b.BatchNode.CustomNode.BaseNode)
+	WithWait(wait)(b.BaseNode)
 	return b
 }
 
 func (b *BatchNodeBuilder) WithBatchConcurrency(n int) *BatchNodeBuilder {
-	b.BatchNode.CustomNode.BaseNode.batchConcurrency = n
+	b.batchConcurrency = n
 	return b
 }
 
 func (b *BatchNodeBuilder) WithBatchErrorHandling(continueOnError bool) *BatchNodeBuilder {
 	if continueOnError {
-		b.BatchNode.CustomNode.BaseNode.batchErrorHandling = "continue"
+		b.batchErrorHandling = "continue"
 	} else {
-		b.BatchNode.CustomNode.BaseNode.batchErrorHandling = "stop"
+		b.batchErrorHandling = "stop"
 	}
 	return b
 }
@@ -1036,23 +1035,23 @@ func (b *BatchNodeBuilder) WithBatchErrorHandling(continueOnError bool) *BatchNo
 // - func(context.Context, *flyt.SharedStore, []flyt.Result, []flyt.Result) (flyt.Action, error)
 
 func (b *BatchNodeBuilder) WithPrepFunc(fn func(context.Context, *SharedStore) ([]Result, error)) *BatchNodeBuilder {
-	b.BatchNode.batchPrepFunc = fn
+	b.batchPrepFunc = fn
 	return b
 }
 
 func (b *BatchNodeBuilder) WithExecFunc(fn func(context.Context, Result) (Result, error)) *BatchNodeBuilder {
-	b.BatchNode.CustomNode.execFunc = fn
+	b.execFunc = fn
 	return b
 }
 
 func (b *BatchNodeBuilder) WithPostFunc(fn func(context.Context, *SharedStore, []Result, []Result) (Action, error)) *BatchNodeBuilder {
-	b.BatchNode.batchPostFunc = fn
+	b.batchPostFunc = fn
 	return b
 }
 
 // Alternative: WithExecFuncAny for compatibility
 func (b *BatchNodeBuilder) WithExecFuncAny(fn func(context.Context, any) (any, error)) *BatchNodeBuilder {
-	b.BatchNode.CustomNode.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
+	b.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
 		val, err := fn(ctx, prepResult.Value())
 		if err != nil {
 			return Result{}, err
@@ -1100,20 +1099,20 @@ func runBatch(ctx context.Context, node Node, shared *SharedStore) (Action, erro
 
 	// Get batch configuration
 	var concurrency int
-	var errorHandling string = "continue"
+	var errorHandling = "continue"
 
 	if baseNode, ok := node.(*BaseNode); ok {
 		concurrency = baseNode.GetBatchConcurrency()
 		errorHandling = baseNode.GetBatchErrorHandling()
 	} else if customNode, ok := node.(*CustomNode); ok {
-		concurrency = customNode.BaseNode.GetBatchConcurrency()
-		errorHandling = customNode.BaseNode.GetBatchErrorHandling()
+		concurrency = customNode.GetBatchConcurrency()
+		errorHandling = customNode.GetBatchErrorHandling()
 	} else if batchNode, ok := node.(*BatchNode); ok {
-		concurrency = batchNode.CustomNode.BaseNode.GetBatchConcurrency()
-		errorHandling = batchNode.CustomNode.BaseNode.GetBatchErrorHandling()
+		concurrency = batchNode.GetBatchConcurrency()
+		errorHandling = batchNode.GetBatchErrorHandling()
 	} else if batchBuilder, ok := node.(*BatchNodeBuilder); ok {
-		concurrency = batchBuilder.BatchNode.CustomNode.BaseNode.GetBatchConcurrency()
-		errorHandling = batchBuilder.BatchNode.CustomNode.BaseNode.GetBatchErrorHandling()
+		concurrency = batchBuilder.GetBatchConcurrency()
+		errorHandling = batchBuilder.GetBatchErrorHandling()
 	}
 
 	// Execute items
@@ -1213,7 +1212,7 @@ func runBatchConcurrent(ctx context.Context, node Node, items []Result, results 
 
 func runExecWithRetries(ctx context.Context, node Node, item Result) (any, error) {
 	// Get retry settings
-	var maxRetries int = 1
+	var maxRetries = 1
 	var wait time.Duration = 0
 
 	if retryable, ok := node.(RetryableNode); ok {
@@ -1768,60 +1767,60 @@ func (b *NodeBuilder) ExecFallback(prepResult any, err error) (any, error) {
 
 // GetMaxRetries implements RetryableNode.GetMaxRetries by delegating to the embedded BaseNode
 func (b *NodeBuilder) GetMaxRetries() int {
-	return b.CustomNode.BaseNode.GetMaxRetries()
+	return b.CustomNode.GetMaxRetries()
 }
 
 // GetWait implements RetryableNode.GetWait by delegating to the embedded BaseNode
 func (b *NodeBuilder) GetWait() time.Duration {
-	return b.CustomNode.BaseNode.GetWait()
+	return b.CustomNode.GetWait()
 }
 
 // WithMaxRetries sets the maximum number of retries for the node's Exec phase.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithMaxRetries(retries int) *NodeBuilder {
-	WithMaxRetries(retries)(b.CustomNode.BaseNode)
+	WithMaxRetries(retries)(b.BaseNode)
 	return b
 }
 
 // WithWait sets the wait duration between retries.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithWait(wait time.Duration) *NodeBuilder {
-	WithWait(wait)(b.CustomNode.BaseNode)
+	WithWait(wait)(b.BaseNode)
 	return b
 }
 
 // WithPrepFunc sets a custom Prep implementation using Result types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithPrepFunc(fn func(context.Context, *SharedStore) (Result, error)) *NodeBuilder {
-	b.CustomNode.prepFunc = fn
+	b.prepFunc = fn
 	return b
 }
 
 // WithExecFunc sets a custom Exec implementation using Result types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithExecFunc(fn func(context.Context, Result) (Result, error)) *NodeBuilder {
-	b.CustomNode.execFunc = fn
+	b.execFunc = fn
 	return b
 }
 
 // WithPostFunc sets a custom Post implementation using Result types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithPostFunc(fn func(context.Context, *SharedStore, Result, Result) (Action, error)) *NodeBuilder {
-	b.CustomNode.postFunc = fn
+	b.postFunc = fn
 	return b
 }
 
 // WithExecFallbackFunc sets a custom ExecFallback implementation.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithExecFallbackFunc(fn func(any, error) (any, error)) *NodeBuilder {
-	b.CustomNode.execFallbackFunc = fn
+	b.execFallbackFunc = fn
 	return b
 }
 
 // WithPrepFuncAny sets a custom Prep implementation using any types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithPrepFuncAny(fn func(context.Context, *SharedStore) (any, error)) *NodeBuilder {
-	b.CustomNode.prepFunc = func(ctx context.Context, shared *SharedStore) (Result, error) {
+	b.prepFunc = func(ctx context.Context, shared *SharedStore) (Result, error) {
 		val, err := fn(ctx, shared)
 		if err != nil {
 			return Result{}, err
@@ -1834,7 +1833,7 @@ func (b *NodeBuilder) WithPrepFuncAny(fn func(context.Context, *SharedStore) (an
 // WithExecFuncAny sets a custom Exec implementation using any types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithExecFuncAny(fn func(context.Context, any) (any, error)) *NodeBuilder {
-	b.CustomNode.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
+	b.execFunc = func(ctx context.Context, prepResult Result) (Result, error) {
 		val, err := fn(ctx, prepResult.Value())
 		if err != nil {
 			return Result{}, err
@@ -1847,7 +1846,7 @@ func (b *NodeBuilder) WithExecFuncAny(fn func(context.Context, any) (any, error)
 // WithPostFuncAny sets a custom Post implementation using any types.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithPostFuncAny(fn func(context.Context, *SharedStore, any, any) (Action, error)) *NodeBuilder {
-	b.CustomNode.postFunc = func(ctx context.Context, shared *SharedStore, prepResult, execResult Result) (Action, error) {
+	b.postFunc = func(ctx context.Context, shared *SharedStore, prepResult, execResult Result) (Action, error) {
 		return fn(ctx, shared, prepResult.Value(), execResult.Value())
 	}
 	return b
@@ -1856,7 +1855,7 @@ func (b *NodeBuilder) WithPostFuncAny(fn func(context.Context, *SharedStore, any
 // WithBatchConcurrency sets the concurrency level for batch processing.
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithBatchConcurrency(n int) *NodeBuilder {
-	b.CustomNode.BaseNode.batchConcurrency = n
+	b.batchConcurrency = n
 	return b
 }
 
@@ -1864,9 +1863,9 @@ func (b *NodeBuilder) WithBatchConcurrency(n int) *NodeBuilder {
 // Returns the builder for method chaining.
 func (b *NodeBuilder) WithBatchErrorHandling(continueOnError bool) *NodeBuilder {
 	if continueOnError {
-		b.CustomNode.BaseNode.batchErrorHandling = "continue"
+		b.batchErrorHandling = "continue"
 	} else {
-		b.CustomNode.BaseNode.batchErrorHandling = "stop"
+		b.batchErrorHandling = "stop"
 	}
 	return b
 }
@@ -2663,18 +2662,6 @@ const (
 	// DefaultAction is the default action if none is specified.
 	// Flows use this when a node doesn't explicitly return an action.
 	DefaultAction Action = "default"
-
-	// KeyItems is the shared store key for items to be processed.
-	// Batch nodes look for items under this key by default.
-	KeyItems = "items"
-
-	// KeyResults is the shared store key for processing results.
-	// Batch nodes store their results under this key by default.
-	KeyResults = "results"
-
-	// KeyBatchCount is the shared store key for batch count.
-	// Batch flows store the number of iterations under this key.
-	KeyBatchCount = "batch_count"
 )
 
 // Node is the interface that all nodes must implement.
@@ -2938,7 +2925,7 @@ func Run(ctx context.Context, node Node, shared *SharedStore) (Action, error) {
 	}
 
 	// Get retry settings if available
-	var maxRetries int = 1
+	var maxRetries = 1
 	var wait time.Duration = 0
 
 	if retryable, ok := node.(RetryableNode); ok {
@@ -3308,22 +3295,6 @@ func ToSlice(v any) []any {
 		return []any{v} // Single item
 	}
 }
-
-// FlowFactory creates new instances of a flow.
-// This is used to create reusable flow definitions. Each call should return
-// a new flow instance to avoid race conditions when running flows concurrently.
-//
-// Example:
-//
-//	factory := func() *flyt.Flow {
-//	    node1 := &ProcessNode{BaseNode: flyt.NewBaseNode()}
-//	    node2 := &SaveNode{BaseNode: flyt.NewBaseNode()}
-//
-//	    flow := flyt.NewFlow(node1)
-//	    flow.Connect(node1, flyt.DefaultAction, node2)
-//	    return flow
-//	}
-type FlowFactory func() *Flow
 
 // CustomNode is a node implementation that uses custom functions
 // for Prep, Exec, and Post phases. This allows creating nodes
@@ -4457,104 +4428,6 @@ func TestFlowConnectChainingBackwardsCompatibility(t *testing.T) {
 }
 
 // BenchmarkBatchNodeProcessing benchmarks batch processing
-
-
-
-================================================
-FILE: generic.go
-================================================
-package flyt
-
-import "context"
-
-// NodeG is a generic version of Node interface for type-safe implementations
-type NodeG[P, E any] interface {
-	// PrepG reads and preprocesses data from shared store with typed result
-	PrepG(ctx context.Context, shared *SharedStore) (P, error)
-
-	// ExecG executes the main logic with typed input and output
-	ExecG(ctx context.Context, prepResult P) (E, error)
-
-	// PostG processes results with typed inputs
-	PostG(ctx context.Context, shared *SharedStore, prepResult P, execResult E) (Action, error)
-}
-
-// BaseNodeG provides a generic base implementation
-type BaseNodeG[P, E any] struct {
-	*BaseNode
-}
-
-// NewBaseNodeG creates a new generic BaseNode
-func NewBaseNodeG[P, E any](opts ...NodeOption) *BaseNodeG[P, E] {
-	return &BaseNodeG[P, E]{
-		BaseNode: NewBaseNode(opts...),
-	}
-}
-
-// PrepG default implementation
-func (n *BaseNodeG[P, E]) PrepG(ctx context.Context, shared *SharedStore) (P, error) {
-	var zero P
-	return zero, nil
-}
-
-// ExecG default implementation
-func (n *BaseNodeG[P, E]) ExecG(ctx context.Context, prepResult P) (E, error) {
-	var zero E
-	return zero, nil
-}
-
-// PostG default implementation
-func (n *BaseNodeG[P, E]) PostG(ctx context.Context, shared *SharedStore, prepResult P, execResult E) (Action, error) {
-	return DefaultAction, nil
-}
-
-// NodeAdapter adapts a generic node to the standard Node interface
-type NodeAdapter[P, E any] struct {
-	node NodeG[P, E]
-}
-
-// NewNodeAdapter creates an adapter from generic to standard node
-func NewNodeAdapter[P, E any](node NodeG[P, E]) Node {
-	return &NodeAdapter[P, E]{node: node}
-}
-
-func (a *NodeAdapter[P, E]) Prep(ctx context.Context, shared *SharedStore) (any, error) {
-	return a.node.PrepG(ctx, shared)
-}
-
-func (a *NodeAdapter[P, E]) Exec(ctx context.Context, prepResult any) (any, error) {
-	// Safe type assertion with fallback
-	if typed, ok := prepResult.(P); ok {
-		return a.node.ExecG(ctx, typed)
-	}
-	// Attempt zero value if nil
-	if prepResult == nil {
-		var zero P
-		return a.node.ExecG(ctx, zero)
-	}
-	var zero E
-	return zero, nil
-}
-
-func (a *NodeAdapter[P, E]) Post(ctx context.Context, shared *SharedStore, prepResult, execResult any) (Action, error) {
-	var p P
-	var e E
-
-	if typed, ok := prepResult.(P); ok {
-		p = typed
-	}
-	if typed, ok := execResult.(E); ok {
-		e = typed
-	}
-
-	return a.node.PostG(ctx, shared, p, e)
-}
-
-// RunG executes a generic node with type safety
-func RunG[P, E any](ctx context.Context, node NodeG[P, E], shared *SharedStore) (Action, error) {
-	// Use the adapter to run through standard flow
-	return Run(ctx, NewNodeAdapter(node), shared)
-}
 
 
 
