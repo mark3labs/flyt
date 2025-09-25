@@ -100,6 +100,43 @@ func main() {
 }
 ```
 
+### Builder Pattern (New)
+
+Flyt now supports a fluent builder pattern for creating nodes:
+
+```go
+node := flyt.NewNode().
+    WithMaxRetries(3).
+    WithWait(time.Second).
+    WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+        fmt.Println("Hello from builder pattern!")
+        return flyt.R("done"), nil
+    })
+
+// The Build() method is optional since NodeBuilder implements Node
+// node := flyt.NewNode().WithExecFunc(fn).Build()
+```
+
+You can mix traditional and builder patterns:
+
+```go
+// Start with traditional options
+node := flyt.NewNode(
+    flyt.WithMaxRetries(3),
+    flyt.WithWait(time.Second),
+)
+
+// Continue with builder pattern
+node = node.
+    WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+        return flyt.R("processed"), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+        shared.Set("result", execResult.Value())
+        return flyt.DefaultAction, nil
+    })
+```
+
 ## Core Concepts
 
 ### Nodes
@@ -281,6 +318,31 @@ The type-safe getters handle numeric conversions automatically:
 - `GetSlice()` uses the same conversion logic as `ToSlice()` utility
 
 ## Intermediate Patterns
+
+### Creating Nodes with Builder Pattern
+
+The builder pattern provides a fluent interface for creating nodes:
+
+```go
+node := flyt.NewNode().
+    WithMaxRetries(3).
+    WithWait(time.Second).
+    WithPrepFunc(func(ctx context.Context, shared *flyt.SharedStore) (flyt.Result, error) {
+        // Read input data
+        data := shared.Get("input")
+        return flyt.NewResult(data), nil
+    }).
+    WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
+        // Process data
+        result := processData(prepResult.Value())
+        return flyt.NewResult(result), nil
+    }).
+    WithPostFunc(func(ctx context.Context, shared *flyt.SharedStore, prepResult, execResult flyt.Result) (flyt.Action, error) {
+        // Store result
+        shared.Set("output", execResult.Value())
+        return flyt.DefaultAction, nil
+    })
+```
 
 ### Configuration via Closures
 

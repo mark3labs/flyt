@@ -1107,46 +1107,28 @@ func (n *CustomNode) ExecFallback(prepResult any, err error) (any, error) {
 	return n.BaseNode.ExecFallback(prepResult, err)
 }
 
+// CustomNodeOption is an option for configuring a CustomNode.
+// It allows setting custom implementations for Prep, Exec, and Post methods.
+
 // NewNode creates a new node with custom function implementations.
-// This is a convenience function for creating nodes without defining new types.
-// It accepts both NodeOption (for BaseNode configuration) and CustomNodeOption
-// (for custom function implementations).
+// Returns a NodeBuilder that implements Node and provides chainable configuration methods.
 //
-// You can choose between two styles of custom functions:
+// Can be used in two styles:
 //
-// Result-based (recommended for complex operations):
-//   - WithPrepFunc, WithExecFunc, WithPostFunc
-//   - Provides type-safe accessors and conversion helpers
-//   - Better for complex data transformations
-//
-// Any-based (recommended for simple operations):
-//   - WithPrepFuncAny, WithExecFuncAny, WithPostFuncAny
-//   - Direct any types matching Node interface
-//   - Better for simple pass-through or basic operations
-//
-// Parameters:
-//   - opts: Mix of NodeOption and CustomNodeOption values
-//
-// Example with Result types:
+// Traditional (backwards compatible):
 //
 //	node := flyt.NewNode(
 //	    flyt.WithMaxRetries(3),
-//	    flyt.WithExecFunc(func(ctx context.Context, prepResult flyt.Result) (flyt.Result, error) {
-//	        userId := prepResult.AsIntOr(0)
-//	        user := fetchUser(userId)
-//	        return flyt.NewResult(user), nil
-//	    }),
+//	    flyt.WithExecFunc(execFn),
 //	)
 //
-// Example with any types:
+// Builder pattern:
 //
-//	node := flyt.NewNode(
-//	    flyt.WithMaxRetries(3),
-//	    flyt.WithExecFuncAny(func(ctx context.Context, prepResult any) (any, error) {
-//	        return processData(prepResult), nil
-//	    }),
-//	)
-func NewNode(opts ...any) Node {
+//	node := flyt.NewNode().
+//	    WithMaxRetries(3).
+//	    WithExecFunc(execFn).
+//	    Build()  // Build() is optional
+func NewNode(opts ...any) *NodeBuilder {
 	node := &CustomNode{
 		BaseNode: NewBaseNode(),
 	}
@@ -1178,7 +1160,7 @@ func NewNode(opts ...any) Node {
 		opt.apply(node)
 	}
 
-	return node
+	return &NodeBuilder{CustomNode: node}
 }
 
 // CustomNodeOption is an option for configuring a CustomNode.
