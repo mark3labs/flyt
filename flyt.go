@@ -1129,11 +1129,20 @@ func (n *CustomNode) Prep(ctx context.Context, shared *SharedStore) (any, error)
 // Exec implements Node.Exec by calling the custom execFunc if provided
 func (n *CustomNode) Exec(ctx context.Context, prepResult any) (any, error) {
 	if n.execFunc != nil {
-		// Check if prepResult is already a Result (when called from batch processing)
+		var result Result
+		var err error
 		if r, ok := prepResult.(Result); ok {
-			return n.execFunc(ctx, r)
+			result, err = n.execFunc(ctx, r)
+		} else {
+			result, err = n.execFunc(ctx, NewResult(prepResult))
 		}
-		return n.execFunc(ctx, NewResult(prepResult))
+		if err != nil {
+			return nil, err
+		}
+		if result.IsError() {
+			return result, nil
+		}
+		return result.Value(), nil
 	}
 	return n.BaseNode.Exec(ctx, prepResult)
 }

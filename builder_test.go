@@ -98,9 +98,12 @@ func TestNodeBuilderChaining(t *testing.T) {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
-				r := result.(flyt.Result)
-				if r.MustString() != "chained" {
-					t.Errorf("expected 'chained', got %v", r.Value())
+				s, ok := result.(string)
+				if !ok {
+					t.Errorf("expected string, got %T", result)
+				}
+				if s != "chained" {
+					t.Errorf("expected 'chained', got %v", s)
 				}
 			},
 		},
@@ -234,9 +237,12 @@ func TestNodeBuilderChaining(t *testing.T) {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
-				r := result.(flyt.Result)
-				if r.MustString() != "built" {
-					t.Errorf("expected 'built', got %v", r.Value())
+				s, ok := result.(string)
+				if !ok {
+					t.Errorf("expected string, got %T", result)
+				}
+				if s != "built" {
+					t.Errorf("expected 'built', got %v", s)
 				}
 			},
 		},

@@ -826,3 +826,139 @@ func TestFlowConnectChainingBackwardsCompatibility(t *testing.T) {
 }
 
 // BenchmarkBatchNodeProcessing benchmarks batch processing
+
+// TestResultNotDoubleWrapped verifies that Result.Bind() works correctly in PostFunc
+// This test addresses the double-wrapping bug where execResult was wrapped twice.
+func TestResultNotDoubleWrapped(t *testing.T) {
+	type TestData struct {
+		Message string
+		Count   int
+	}
+
+	var receivedInPost TestData
+
+	node := NewNode(
+		WithExecFunc(func(ctx context.Context, prepResult Result) (Result, error) {
+			data := TestData{
+				Message: "test message",
+				Count:   123,
+			}
+			return R(data), nil
+		}),
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prepResult, execResult Result) (Action, error) {
+			var result TestData
+			if err := execResult.Bind(&result); err != nil {
+				t.Errorf("Bind failed: %v", err)
+				return DefaultAction, err
+			}
+
+			receivedInPost = result
+			return DefaultAction, nil
+		}),
+	)
+
+	ctx := context.Background()
+	shared := NewSharedStore()
+	_, err := Run(ctx, node, shared)
+
+	if err != nil {
+		t.Fatalf("Flow execution failed: %v", err)
+	}
+
+	if receivedInPost.Message != "test message" {
+		t.Errorf("Expected Message='test message', got '%s'", receivedInPost.Message)
+	}
+	if receivedInPost.Count != 123 {
+		t.Errorf("Expected Count=123, got %d", receivedInPost.Count)
+	}
+}
+
+// TestPrepResultBindInExec verifies that prepResult.Bind() works in ExecFunc
+func TestPrepResultBindInExec(t *testing.T) {
+	type PrepData struct {
+		Input string
+		Value int
+	}
+
+	type ExecData struct {
+		Output string
+	}
+
+	var receivedInExec PrepData
+
+	node := NewNode(
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) (Result, error) {
+			return R(PrepData{Input: "prep data", Value: 42}), nil
+		}),
+		WithExecFunc(func(ctx context.Context, prepResult Result) (Result, error) {
+			var data PrepData
+			if err := prepResult.Bind(&data); err != nil {
+				return Result{}, fmt.Errorf("Bind failed in Exec: %w", err)
+			}
+			receivedInExec = data
+			return R(ExecData{Output: "processed"}), nil
+		}),
+	)
+
+	ctx := context.Background()
+	shared := NewSharedStore()
+	_, err := Run(ctx, node, shared)
+
+	if err != nil {
+		t.Fatalf("Flow execution failed: %v", err)
+	}
+
+	if receivedInExec.Input != "prep data" {
+		t.Errorf("Expected Input='prep data', got '%s'", receivedInExec.Input)
+	}
+	if receivedInExec.Value != 42 {
+		t.Errorf("Expected Value=42, got %d", receivedInExec.Value)
+	}
+}
+
+// TestBothResultsBindInPost verifies that both prepResult and execResult Bind() work in PostFunc
+func TestBothResultsBindInPost(t *testing.T) {
+	type PrepData struct {
+		PrepField string
+	}
+
+	type ExecData struct {
+		ExecField string
+	}
+
+	var receivedPrep PrepData
+	var receivedExec ExecData
+
+	node := NewNode(
+		WithPrepFunc(func(ctx context.Context, shared *SharedStore) (Result, error) {
+			return R(PrepData{PrepField: "from prep"}), nil
+		}),
+		WithExecFunc(func(ctx context.Context, prepResult Result) (Result, error) {
+			return R(ExecData{ExecField: "from exec"}), nil
+		}),
+		WithPostFunc(func(ctx context.Context, shared *SharedStore, prepResult, execResult Result) (Action, error) {
+			if err := prepResult.Bind(&receivedPrep); err != nil {
+				return DefaultAction, fmt.Errorf("prepResult.Bind failed: %w", err)
+			}
+			if err := execResult.Bind(&receivedExec); err != nil {
+				return DefaultAction, fmt.Errorf("execResult.Bind failed: %w", err)
+			}
+			return DefaultAction, nil
+		}),
+	)
+
+	ctx := context.Background()
+	shared := NewSharedStore()
+	_, err := Run(ctx, node, shared)
+
+	if err != nil {
+		t.Fatalf("Flow execution failed: %v", err)
+	}
+
+	if receivedPrep.PrepField != "from prep" {
+		t.Errorf("Expected PrepField='from prep', got '%s'", receivedPrep.PrepField)
+	}
+	if receivedExec.ExecField != "from exec" {
+		t.Errorf("Expected ExecField='from exec', got '%s'", receivedExec.ExecField)
+	}
+}
